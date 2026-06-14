@@ -56,6 +56,8 @@ npm install -g okfy-ai
 okfy demo
 ```
 
+`okfy-ai` is the npm package name. `okfy` is the installed CLI command.
+
 Package: [okfy-ai on npm](https://www.npmjs.com/package/okfy-ai)
 
 Requires Node.js 20+.
@@ -63,7 +65,7 @@ Requires Node.js 20+.
 ## Demo
 
 ```bash
-npx -y okfy-ai demo
+okfy demo
 ```
 
 The offline demo validates the bundled OKF fixture and prints a ready MCP config.
@@ -83,18 +85,20 @@ MCP config:
 Docs website:
 
 ```bash
-npx -y okfy-ai crawl https://docs.stripe.com/checkout --out ./stripe-checkout-okf --max-pages 25
-npx -y okfy-ai validate ./stripe-checkout-okf
-npx -y okfy-ai inspect ./stripe-checkout-okf
-npx -y okfy-ai serve ./stripe-checkout-okf --mcp
+okfy crawl https://docs.stripe.com/checkout --out ./stripe-checkout-okf --max-pages 25
+okfy validate ./stripe-checkout-okf
+okfy inspect ./stripe-checkout-okf
+okfy serve ./stripe-checkout-okf --mcp
 ```
+
+Without installing, replace `okfy` with `npx -y okfy-ai`.
 
 Local Markdown:
 
 ```bash
-npx -y okfy-ai import ./docs --out ./docs-okf --source-name "Project docs" --force
-npx -y okfy-ai validate ./docs-okf
-npx -y okfy-ai serve ./docs-okf --mcp
+okfy import ./docs --out ./docs-okf --source-name "Project docs" --force
+okfy validate ./docs-okf
+okfy serve ./docs-okf --mcp
 ```
 
 ## MCP
@@ -107,6 +111,19 @@ Add a generated bundle to any stdio MCP client:
     "stripe-okf": {
       "command": "npx",
       "args": ["-y", "okfy-ai", "serve", "./stripe-checkout-okf", "--mcp"]
+    }
+  }
+}
+```
+
+This `npx -y okfy-ai` form is intentional for MCP configs: the client can launch okfy without requiring a global install. If you installed globally, this equivalent config also works:
+
+```json
+{
+  "mcpServers": {
+    "stripe-okf": {
+      "command": "okfy",
+      "args": ["serve", "./stripe-checkout-okf", "--mcp"]
     }
   }
 }

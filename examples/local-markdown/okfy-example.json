@@ -1,5 +1,5 @@
 {
-  "sourceCommand": "npx -y okfy-ai import ./examples/local-markdown --out ./tmp/okfy-docs --force --stable-timestamps",
+  "sourceCommand": "okfy import ./examples/local-markdown --out ./tmp/okfy-docs --force --stable-timestamps",
   "expectedConceptCount": 9,
   "expectedValidationStatus": "valid",
   "suggestedAgentQuestions": [

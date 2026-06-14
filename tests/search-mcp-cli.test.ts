@@ -94,9 +94,11 @@ describe("CLI smoke", () => {
       return;
     }
 
-    const { stdout } = await execFileAsync(process.execPath, [cli, "validate", bundleDir, "--json"]);
+    const { stdout, stderr } = await execFileAsync(process.execPath, [cli, "validate", bundleDir, "--json"]);
     const report = JSON.parse(stdout) as { valid: boolean; conceptCount: number };
     expect(report).toMatchObject({ valid: true, conceptCount: 5 });
+    expect(stderr).toContain("okfy validate: checking");
+    expect(stderr).toContain("okfy validate: valid, 5 concepts");
   });
 
   it("serves MCP over stdio as JSON-RPC only from built CLI", async () => {
@@ -161,7 +163,8 @@ describe("CLI smoke", () => {
         const parsed = JSON.parse(line) as { jsonrpc?: string };
         expect(parsed.jsonrpc).toBe("2.0");
       }
-      expect(stderr.trim()).toBe("");
+      expect(stderr).toContain("okfy serve: loading examples/bundles/okfy-docs");
+      expect(stderr).toContain("okfy serve: ready on stdio");
     } finally {
       child.kill("SIGTERM");
     }

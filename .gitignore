@@ -5,3 +5,4 @@ coverage/
 .DS_Store
 _private/
 launch/
+*-okf/

@@ -86,6 +86,42 @@ type CrawlOptions = {
     dryRun?: boolean;
     allowPrivateNetwork?: boolean;
     timestamp?: string;
+    onProgress?: (event: CrawlProgressEvent) => void;
+};
+type CrawlProgressEvent = {
+    type: "start";
+    seed: string;
+    maxPages: number;
+    maxDepth: number;
+} | {
+    type: "fetch";
+    url: string;
+    fetched: number;
+    queued: number;
+    maxPages: number;
+} | {
+    type: "fetched";
+    url: string;
+    fetched: number;
+    queued: number;
+    discovered: number;
+    maxPages: number;
+} | {
+    type: "skipped";
+    url: string;
+    fetched: number;
+    queued: number;
+    maxPages: number;
+} | {
+    type: "failed";
+    url: string;
+    fetched: number;
+    queued: number;
+    maxPages: number;
+} | {
+    type: "writing";
+    concepts: number;
+    outDir: string;
 };
 type CrawlResult = {
     pagesFetched: number;
@@ -176,4 +212,4 @@ type WriteBundleOptions = {
 };
 declare function writeOkfBundle(docs: NormalizedDocument[], options: WriteBundleOptions): Promise<string[]>;
 
-export { BundleSearch, type BundleStats, type Concept, type ContentType, type CrawlOptions, type CrawlResult, type ImportOptions, type KnowledgeGraph, type NormalizedDocument, type RawDocument, type SearchResult, type ServeOptions, type ValidationIssue, type ValidationReport, type WriteBundleOptions, buildGraph, crawlWebsite, createMcpServer, descriptionFromMarkdown, extractHeadings, extractInternalLinks, extractMarkdownLinks, importLocal, inferTags, inferType, inspectBundle, normalizeDocument, readBundle, readConceptFile, serveMcpStdio, validateBundle, writeOkfBundle };
+export { BundleSearch, type BundleStats, type Concept, type ContentType, type CrawlOptions, type CrawlProgressEvent, type CrawlResult, type ImportOptions, type KnowledgeGraph, type NormalizedDocument, type RawDocument, type SearchResult, type ServeOptions, type ValidationIssue, type ValidationReport, type WriteBundleOptions, buildGraph, crawlWebsite, createMcpServer, descriptionFromMarkdown, extractHeadings, extractInternalLinks, extractMarkdownLinks, importLocal, inferTags, inferType, inspectBundle, normalizeDocument, readBundle, readConceptFile, serveMcpStdio, validateBundle, writeOkfBundle };

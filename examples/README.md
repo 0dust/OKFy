@@ -63,7 +63,7 @@ Purpose: deterministic offline input for `okfy import`.
 Source command:
 
 ```bash
-npx -y okfy-ai import ./examples/local-markdown --out ./tmp/okfy-docs --force --stable-timestamps
+okfy import ./examples/local-markdown --out ./tmp/okfy-docs --force --stable-timestamps
 ```
 
 Expected concept count:
@@ -81,14 +81,14 @@ valid
 Validate:
 
 ```bash
-npx -y okfy-ai validate ./tmp/okfy-docs
-npx -y okfy-ai inspect ./tmp/okfy-docs
+okfy validate ./tmp/okfy-docs
+okfy inspect ./tmp/okfy-docs
 ```
 
 Serve through MCP:
 
 ```bash
-npx -y okfy-ai serve ./tmp/okfy-docs --mcp
+okfy serve ./tmp/okfy-docs --mcp
 ```
 
 Suggested agent questions:

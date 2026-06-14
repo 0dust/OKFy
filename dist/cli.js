@@ -5,7 +5,7 @@ import {
   inspectBundle,
   serveMcpStdio,
   validateBundle
-} from "./chunk-C46QXZDU.js";
+} from "./chunk-6AP7LVJG.js";
 
 // src/cli.ts
 import fs from "fs";
@@ -15,6 +15,16 @@ import { Command } from "commander";
 import pc from "picocolors";
 var program = new Command();
 var packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+var isTty = Boolean(process.stderr.isTTY);
+function readPackageVersion() {
+  try {
+    const raw = fs.readFileSync(path.join(packageRoot, "package.json"), "utf8");
+    const parsed = JSON.parse(raw);
+    return parsed.version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
 function collect(value, previous) {
   previous.push(value);
   return previous;
@@ -46,14 +56,50 @@ function printStats(stats) {
     for (const [domain, count] of Object.entries(stats.sourceDomains)) console.log(`  ${domain}: ${count}`);
   }
 }
-program.name("okfy").description("Turn docs into agent memory with Open Knowledge Format and MCP.").version("0.1.0");
+function printStatus(message) {
+  process.stderr.write(`${message}
+`);
+}
+function printCrawlProgress(event) {
+  const clear = isTty ? "\r\x1B[K" : "";
+  switch (event.type) {
+    case "start":
+      process.stderr.write(`okfy crawl: starting ${event.seed} (max ${event.maxPages} pages, depth ${event.maxDepth})
+`);
+      break;
+    case "fetch":
+      process.stderr.write(`${clear}okfy crawl: fetching ${event.fetched}/${event.maxPages}, queued ${event.queued}: ${event.url}`);
+      if (!isTty) process.stderr.write("\n");
+      break;
+    case "fetched":
+      process.stderr.write(
+        `${clear}okfy crawl: fetched ${event.fetched}/${event.maxPages}, queued ${event.queued}, discovered +${event.discovered}: ${event.url}
+`
+      );
+      break;
+    case "skipped":
+      process.stderr.write(`${clear}okfy crawl: skipped ${event.fetched}/${event.maxPages}, queued ${event.queued}: ${event.url}
+`);
+      break;
+    case "failed":
+      process.stderr.write(`${clear}okfy crawl: failed ${event.fetched}/${event.maxPages}, queued ${event.queued}: ${event.url}
+`);
+      break;
+    case "writing":
+      process.stderr.write(`${clear}okfy crawl: writing ${event.concepts} concepts to ${event.outDir}
+`);
+      break;
+  }
+}
+program.name("okfy").description("Turn docs into agent memory with Open Knowledge Format and MCP.").version(readPackageVersion());
 program.command("crawl").argument("<url>", "Docs URL to crawl").requiredOption("--out <dir>", "Output OKF bundle directory").option("--max-pages <n>", "Maximum pages", (value) => Number(value), 100).option("--max-depth <n>", "Maximum crawl depth", (value) => Number(value), 4).option("--include <pattern>", "Include glob or regex", collect, []).option("--exclude <pattern>", "Exclude glob or regex", collect, []).option("--same-origin", "Stay on same origin", true).option("--no-same-origin", "Allow cross-origin links").option("--respect-robots", "Respect robots.txt", true).option("--no-respect-robots", "Ignore robots.txt").option("--concurrency <n>", "Fetch concurrency", (value) => Number(value), 4).option("--title <name>", "Bundle title").option("--force", "Overwrite output directory", false).option("--dry-run", "List pages that would be crawled", false).option("--allow-private-network", "Allow localhost/private IP crawl targets", false).option("--stable-timestamps", "Use a deterministic timestamp in generated frontmatter", false).action(async (url, options) => {
   try {
     const result = await crawlWebsite({
       seedUrl: url,
       outDir: options.out,
       ...options,
-      timestamp: options.stableTimestamps ? "2026-06-14T00:00:00.000Z" : void 0
+      timestamp: options.stableTimestamps ? "2026-06-14T00:00:00.000Z" : void 0,
+      onProgress: printCrawlProgress
     });
     if (options.dryRun) {
       console.log("okfy crawl dry run");
@@ -75,6 +121,8 @@ program.command("crawl").argument("<url>", "Docs URL to crawl").requiredOption("
 });
 program.command("import").argument("<path>", "Local docs folder or file").requiredOption("--out <dir>", "Output OKF bundle directory").option("--source-name <name>", "Source name").option("--include <glob>", "Include glob", collect, []).option("--exclude <glob>", "Exclude glob", collect, []).option("--force", "Overwrite output directory", false).option("--stable-timestamps", "Use a deterministic timestamp in generated frontmatter", false).action(async (input, options) => {
   try {
+    printStatus(`okfy import: reading ${input}`);
+    printStatus(`okfy import: writing bundle to ${options.out}`);
     const result = await importLocal({
       inputPath: input,
       outDir: options.out,
@@ -85,19 +133,25 @@ program.command("import").argument("<path>", "Local docs folder or file").requir
     console.log(`Source: ${input}`);
     console.log(`Concepts: ${result.written.length} written`);
     console.log(`Output: ${options.out}`);
+    printStatus(`okfy import: done, wrote ${result.written.length} concepts`);
   } catch (error) {
     console.error(pc.red(error?.message ?? "Import failed."));
     process.exitCode = 1;
   }
 });
 program.command("validate").argument("<bundle>", "OKF bundle directory").option("--json", "Print JSON report", false).action(async (bundle, options) => {
+  printStatus(`okfy validate: checking ${bundle}`);
   const report = await validateBundle(bundle);
   printValidation(report, options.json);
+  printStatus(`okfy validate: ${report.valid ? "valid" : "invalid"}, ${report.conceptCount} concepts`);
   if (!report.valid) process.exitCode = 1;
 });
 program.command("inspect").argument("<bundle>", "OKF bundle directory").action(async (bundle) => {
   try {
-    printStats(await inspectBundle(bundle));
+    printStatus(`okfy inspect: reading ${bundle}`);
+    const stats = await inspectBundle(bundle);
+    printStats(stats);
+    printStatus(`okfy inspect: done, ${stats.conceptCount} concepts, ${stats.linkCount} links`);
   } catch (error) {
     console.error(pc.red(error?.message ?? "Inspect failed."));
     process.exitCode = 1;
@@ -114,7 +168,11 @@ program.command("serve").argument("<bundle>", "OKF bundle directory").option("--
     process.exitCode = 1;
     return;
   }
+  printStatus(`okfy serve: loading ${bundle}`);
+  printStatus(`okfy serve: starting MCP stdio server "${options.name}"`);
   await serveMcpStdio({ bundleDir: bundle, name: options.name, maxResultChars: options.maxResultChars });
+  printStatus("okfy serve: ready on stdio (stdout is reserved for MCP JSON-RPC)");
+  printStatus("okfy serve: tools bundle_summary, search_concepts, read_concept, get_neighbors, list_types, list_tags");
 });
 function resolveDemoBundle() {
   const relativeBundle = "examples/bundles/okfy-docs";
@@ -137,7 +195,7 @@ program.command("demo").description("Run offline demo against committed example 
   console.log("MCP config:");
   console.log(
     JSON.stringify(
-      { mcpServers: { "okfy-docs": { command: "npx", args: ["okfy-ai", "serve", bundle, "--mcp"] } } },
+      { mcpServers: { "okfy-docs": { command: "npx", args: ["-y", "okfy-ai", "serve", bundle, "--mcp"] } } },
       null,
       2
     )

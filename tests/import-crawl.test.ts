@@ -63,6 +63,7 @@ describe("crawl dry run", () => {
     const outDir = await tempOut();
 
     try {
+      const progress: string[] = [];
       const result = await crawlWebsite({
         seedUrl: `http://127.0.0.1:${address.port}/`,
         outDir,
@@ -70,7 +71,8 @@ describe("crawl dry run", () => {
         maxDepth: 2,
         dryRun: true,
         allowPrivateNetwork: true,
-        respectRobots: false
+        respectRobots: false,
+        onProgress: (event) => progress.push(event.type)
       });
 
       expect(result.dryRunPages).toEqual([
@@ -78,6 +80,9 @@ describe("crawl dry run", () => {
         `http://127.0.0.1:${address.port}/a`,
         `http://127.0.0.1:${address.port}/b`
       ]);
+      expect(progress).toContain("start");
+      expect(progress).toContain("fetch");
+      expect(progress).toContain("fetched");
       await expect(fs.readdir(outDir)).resolves.toEqual([]);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));

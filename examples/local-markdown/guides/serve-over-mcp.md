@@ -3,7 +3,7 @@
 After generating an OKF bundle, serve it over stdio MCP:
 
 ```bash
-npx -y okfy-ai serve ./tmp/okfy-docs --mcp
+okfy serve ./tmp/okfy-docs --mcp
 ```
 
 Agents should not read the whole bundle first. The efficient flow is:

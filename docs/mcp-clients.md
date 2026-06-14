@@ -3,19 +3,23 @@
 okfy exposes OKF bundles through a local stdio MCP server:
 
 ```bash
-npx -y okfy-ai serve ./tmp/okfy-docs --mcp
+okfy serve ./tmp/okfy-docs --mcp
 ```
 
-Use stdio for local bundles. MCP stdio means the client launches `okfy` as a subprocess, sends JSON-RPC messages on stdin, and reads JSON-RPC responses on stdout. okfy logs should go to stderr.
+Shell examples assume `npm install -g okfy-ai`, then the `okfy` CLI command.
+
+MCP config examples use `npx -y okfy-ai` by default. That is normal for stdio MCP servers because the MCP client can launch the npm package without requiring a global install.
+
+Use stdio for local bundles. MCP stdio means the client launches a local command as a subprocess, sends JSON-RPC messages on stdin, and reads JSON-RPC responses on stdout. okfy logs should go to stderr.
 
 ## Prepare a Bundle
 
 Offline fixture:
 
 ```bash
-npx -y okfy-ai import ./examples/local-markdown --out ./tmp/okfy-docs --force
-npx -y okfy-ai validate ./tmp/okfy-docs
-npx -y okfy-ai inspect ./tmp/okfy-docs
+okfy import ./examples/local-markdown --out ./tmp/okfy-docs --force
+okfy validate ./tmp/okfy-docs
+okfy inspect ./tmp/okfy-docs
 ```
 
 Expected output:
@@ -29,14 +33,21 @@ Broken links: 0
 Docs-site crawl:
 
 ```bash
-npx -y okfy-ai crawl https://docs.stripe.com/checkout --out ./stripe-checkout-okf --max-pages 25
-npx -y okfy-ai validate ./stripe-checkout-okf
-npx -y okfy-ai serve ./stripe-checkout-okf --mcp
+okfy crawl https://docs.stripe.com/checkout --out ./stripe-checkout-okf --max-pages 25
+okfy validate ./stripe-checkout-okf
+okfy serve ./stripe-checkout-okf --mcp
 ```
 
 ## Claude Code
 
 Add okfy as a local stdio server:
+
+```bash
+claude mcp add --transport stdio okfy-docs -- okfy serve ./tmp/okfy-docs --mcp
+claude mcp list
+```
+
+No-install equivalent:
 
 ```bash
 claude mcp add --transport stdio okfy-docs -- npx -y okfy-ai serve ./tmp/okfy-docs --mcp
@@ -85,9 +96,10 @@ Troubleshooting:
 
 - `spawn npx ENOENT`: install Node.js >=20 and ensure `npx` is on `PATH`.
 - Server pending: run `/mcp`; approve project-scoped `.mcp.json` if prompted.
-- Empty tools: run `npx -y okfy-ai validate ./tmp/okfy-docs`; invalid bundles should fail before serving.
+- Empty tools: run `okfy validate ./tmp/okfy-docs`; invalid bundles should fail before serving.
 - Output too large: lower `--max-result-chars`, or ask the agent to search before reading concepts.
 - Wrong bundle path: use an absolute path in config if client starts from another working directory.
+- Already installed globally: use `"command": "okfy"` and args `["serve", "./tmp/okfy-docs", "--mcp"]`.
 
 ## Claude Desktop
 
@@ -133,6 +145,7 @@ Troubleshooting:
 - Server exits immediately: run exact command in terminal and fix bundle validation errors.
 - No okfy tools visible: restart Claude Desktop after config changes.
 - Relative path fails: use absolute bundle path.
+- Already installed globally: use `"command": "okfy"` and args `["serve", "/absolute/path/to/okfy/tmp/okfy-docs", "--mcp"]`.
 
 ## Codex
 
@@ -170,6 +183,13 @@ npx -y okfy-ai serve ./tmp/okfy-docs --mcp
 CLI alternative:
 
 ```bash
+codex mcp add okfy_docs -- okfy serve ./tmp/okfy-docs --mcp
+codex mcp --help
+```
+
+No-install CLI alternative:
+
+```bash
 codex mcp add okfy_docs -- npx -y okfy-ai serve ./tmp/okfy-docs --mcp
 codex mcp --help
 ```
@@ -204,6 +224,7 @@ Troubleshooting:
 - Tool timeout: increase `tool_timeout_sec` for large bundles.
 - Relative path wrong: set `cwd` or use absolute bundle path.
 - Need current server list: run `/mcp` in TUI.
+- Already installed globally: use `command = "okfy"` and `args = ["serve", "./tmp/okfy-docs", "--mcp"]`.
 
 ## Generic MCP stdio
 
@@ -255,6 +276,7 @@ Troubleshooting:
 - `tools/list` empty: confirm `okfy serve` was started with `--mcp`.
 - Search returns weak matches: run `okfy inspect` and verify titles, descriptions, and tags were generated.
 - Agent reads too much: ask it to call `search_concepts` first and `read_concept` with `max_chars`.
+- Already installed globally: use `"command": "okfy"` and args `["serve", "./tmp/okfy-docs", "--mcp"]`.
 
 ## Available okfy MCP Tools
 

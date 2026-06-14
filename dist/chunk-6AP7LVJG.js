@@ -455,6 +455,7 @@ async function crawlWebsite(options) {
   let skipped = 0;
   let failed = 0;
   const limit = pLimit(options.concurrency ?? 4);
+  options.onProgress?.({ type: "start", seed, maxPages, maxDepth });
   while (queue.length > 0 && visited.size < maxPages) {
     const batch = queue.splice(0, Math.min(queue.length, maxPages - visited.size));
     const results = await Promise.all(
@@ -464,9 +465,11 @@ async function crawlWebsite(options) {
           visited.add(item.url);
           if (!shouldVisit(item.url, seed, options, robots)) {
             skipped += 1;
+            options.onProgress?.({ type: "skipped", url: item.url, fetched: documents.length, queued: queue.length, maxPages });
             return;
           }
           planned.push(item.url);
+          options.onProgress?.({ type: "fetch", url: item.url, fetched: documents.length, queued: queue.length, maxPages });
           try {
             const fetched = await fetchText(item.url);
             const contentType = contentTypeFromHeader(fetched.contentType);
@@ -483,6 +486,7 @@ async function crawlWebsite(options) {
             };
             const doc = normalizeDocument(raw);
             if (!options.dryRun) documents.push(doc);
+            let discovered = 0;
             if (item.depth < maxDepth) {
               const links = options.dryRun && contentType === "html" ? extractRawHtmlLinks(fetched.text) : doc.links;
               for (const link of links) {
@@ -491,14 +495,24 @@ async function crawlWebsite(options) {
                   if (!queued.has(next) && shouldVisit(next, seed, options, robots) && queued.size < maxPages * 4) {
                     queued.add(next);
                     queue.push({ url: next, depth: item.depth + 1 });
+                    discovered += 1;
                   }
                 } catch {
                   skipped += 1;
                 }
               }
             }
+            options.onProgress?.({
+              type: "fetched",
+              url: item.url,
+              fetched: options.dryRun ? planned.length : documents.length,
+              queued: queue.length,
+              discovered,
+              maxPages
+            });
           } catch {
             failed += 1;
+            options.onProgress?.({ type: "failed", url: item.url, fetched: documents.length, queued: queue.length, maxPages });
           }
         })
       )
@@ -509,6 +523,7 @@ async function crawlWebsite(options) {
     return { pagesFetched: planned.length, skipped, failed, written: [], documents: [], dryRunPages: planned.slice(0, maxPages) };
   }
   if (documents.length === 0) throw new Error("Crawl generated zero concepts.");
+  options.onProgress?.({ type: "writing", concepts: documents.length, outDir: options.outDir });
   const written = await writeOkfBundle(documents, {
     outDir: options.outDir,
     title: options.title,

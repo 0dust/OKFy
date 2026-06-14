@@ -10,10 +10,13 @@ describe("public surface", () => {
   it("README points at public product assets and current demo output", async () => {
     const cli = path.resolve("dist/cli.js");
     await fs.access(cli);
-    const [{ stdout: demoOutput }, readme] = await Promise.all([
+    const [{ stdout: demoOutput }, { stdout: versionOutput }, readme, packageJson] = await Promise.all([
       execFileAsync(process.execPath, [cli, "demo"]),
-      fs.readFile("README.md", "utf8")
+      execFileAsync(process.execPath, [cli, "--version"]),
+      fs.readFile("README.md", "utf8"),
+      fs.readFile("package.json", "utf8")
     ]);
+    const parsedPackage = JSON.parse(packageJson) as { version?: string };
 
     for (const expected of [
       "Offline bundle: examples/bundles/okfy-docs",
@@ -24,6 +27,7 @@ describe("public surface", () => {
     ]) {
       expect(demoOutput).toContain(expected);
     }
+    expect(versionOutput.trim()).toBe(parsedPackage.version);
 
     expect(readme).toContain("![okfy terminal demo](assets/demo.gif)");
     expect(readme).toContain('<source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.png">');
@@ -89,7 +93,7 @@ describe("public surface", () => {
     expect(files).not.toContain("docs/okfy-mcp-prd.md");
   });
 
-  it("documents the publishable scoped npm package", async () => {
+  it("documents the publishable npm package", async () => {
     const [packageJson, readme, npmReadme, mcpDocs] = await Promise.all([
       fs.readFile("package.json", "utf8"),
       fs.readFile("README.md", "utf8"),
@@ -100,11 +104,18 @@ describe("public surface", () => {
 
     expect(parsed.name).toBe("okfy-ai");
     expect(parsed.bin?.okfy).toBe("dist/cli.js");
-    expect(readme).toContain("npx -y okfy-ai demo");
+    expect(parsed.bin?.["okfy-ai"]).toBe("dist/cli.js");
+    expect(readme).toContain("`okfy-ai` is the npm package name. `okfy` is the installed CLI command.");
+    expect(readme).toContain("This `npx -y okfy-ai` form is intentional for MCP configs");
+    expect(readme).toContain("Without installing, replace `okfy` with `npx -y okfy-ai`.");
     expect(npmReadme).toContain("# okfy-ai");
     expect(npmReadme).toContain("npm install -g okfy-ai");
+    expect(npmReadme).toContain("`okfy-ai` is the npm package name. `okfy` is the installed CLI command.");
+    expect(npmReadme).toContain("This `npx -y okfy-ai` form is normal for MCP configs");
     expect(npmReadme).not.toContain("assets/logo.svg");
-    expect(mcpDocs).toContain("npx -y okfy-ai serve ./tmp/okfy-docs --mcp");
+    expect(mcpDocs).toContain("Shell examples assume `npm install -g okfy-ai`");
+    expect(mcpDocs).toContain("MCP config examples use `npx -y okfy-ai` by default.");
+    expect(mcpDocs).toContain("okfy serve ./tmp/okfy-docs --mcp");
     expect(`${readme}\n${npmReadme}\n${mcpDocs}`).not.toMatch(/npx -y okfy(?:@|\s)/);
   });
 });

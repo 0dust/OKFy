@@ -3,8 +3,8 @@
 Use `okfy import` when docs already live in a local project checkout, wiki export, Obsidian vault, or static-site source folder.
 
 ```bash
-npx -y okfy-ai import ./examples/local-markdown --out ./tmp/okfy-docs --force
-npx -y okfy-ai validate ./tmp/okfy-docs
+okfy import ./examples/local-markdown --out ./tmp/okfy-docs --force
+okfy validate ./tmp/okfy-docs
 ```
 
 Expected result:
