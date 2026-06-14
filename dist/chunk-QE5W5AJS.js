@@ -136,9 +136,24 @@ function descriptionFromMarkdown(markdown) {
 
 // src/writer.ts
 import fs from "fs/promises";
+import os from "os";
+import path3 from "path";
+
+// src/okf.ts
 import path2 from "path";
+var RESERVED_FILENAMES = /* @__PURE__ */ new Set(["index.md", "log.md"]);
+function toOkfPath(input) {
+  return input.split(path2.sep).join("/");
+}
+function isReservedOkfPath(input) {
+  return RESERVED_FILENAMES.has(path2.posix.basename(toOkfPath(input)).toLowerCase());
+}
+function isConceptMarkdownPath(input) {
+  return input.toLowerCase().endsWith(".md") && !isReservedOkfPath(input);
+}
 
 // src/util/url.ts
+import dns from "dns/promises";
 import net from "net";
 var TRACKING_PARAMS = [/^utm_/i, /^fbclid$/i, /^gclid$/i, /^mc_/i];
 function canonicalizeUrl(input, base) {
@@ -167,19 +182,62 @@ function isHttpUrl(input) {
     return false;
   }
 }
+function isPrivateIpv4Parts(parts) {
+  const [a = 0, b = 0] = parts;
+  return a === 0 || a === 10 || a === 127 || a === 100 && b >= 64 && b <= 127 || a === 172 && b >= 16 && b <= 31 || a === 192 && b === 168 || a === 169 && b === 254 || a >= 224;
+}
+function mappedIpv4PartsFromIpv6(host) {
+  const dotted = host.match(/^(?:::|0:0:0:0:0:)ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i)?.[1];
+  if (dotted) {
+    const parts = dotted.split(".").map(Number);
+    if (parts.length === 4 && parts.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)) return parts;
+  }
+  const hex = host.match(/^(?:::|0:0:0:0:0:)ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+  if (!hex) return void 0;
+  const high = Number.parseInt(hex[1] ?? "", 16);
+  const low = Number.parseInt(hex[2] ?? "", 16);
+  if (!Number.isInteger(high) || !Number.isInteger(low) || high < 0 || high > 65535 || low < 0 || low > 65535) {
+    return void 0;
+  }
+  return [high >> 8, high & 255, low >> 8, low & 255];
+}
 function isPrivateNetworkUrl(input) {
   const url = new URL(input);
-  const host = url.hostname.toLowerCase();
+  const host = url.hostname.toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
   if (host === "localhost" || host.endsWith(".localhost")) return true;
-  if (host === "::1" || host.startsWith("fe80:")) return true;
+  if (host === "::" || host === "::1" || host.startsWith("fe80:")) return true;
   const ipKind = net.isIP(host);
   if (ipKind === 4) {
     const parts = host.split(".").map(Number);
-    const [a = 0, b = 0] = parts;
-    return a === 10 || a === 127 || a === 172 && b >= 16 && b <= 31 || a === 192 && b === 168 || a === 169 && b === 254;
+    return isPrivateIpv4Parts(parts);
   }
-  if (ipKind === 6) return host === "::1" || host.startsWith("fc") || host.startsWith("fd");
+  if (ipKind === 6) {
+    const mappedIpv4Parts = mappedIpv4PartsFromIpv6(host);
+    if (mappedIpv4Parts) return isPrivateIpv4Parts(mappedIpv4Parts);
+    return host === "::" || host === "::1" || host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80:");
+  }
   return false;
+}
+async function resolvesToPrivateNetwork(input) {
+  if (isPrivateNetworkUrl(input)) return true;
+  const url = new URL(input);
+  const host = url.hostname.toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
+  if (net.isIP(host)) return false;
+  let records;
+  try {
+    records = await dns.lookup(host, { all: true, verbatim: true });
+  } catch {
+    return false;
+  }
+  return records.some((record) => {
+    const host2 = record.address.includes(":") ? `[${record.address}]` : record.address;
+    return isPrivateNetworkUrl(`${url.protocol}//${host2}`);
+  });
+}
+async function assertPublicNetworkUrl(input) {
+  if (await resolvesToPrivateNetwork(input)) {
+    throw new Error("Private network crawl target rejected. Use --allow-private-network for trusted local fixtures.");
+  }
 }
 
 // src/writer.ts
@@ -216,12 +274,12 @@ function assignOutputPaths(docs) {
   const used = /* @__PURE__ */ new Set();
   const result = /* @__PURE__ */ new Map();
   for (const doc of docs) {
-    const base = doc.resource ? urlToOutputPath(doc.resource) : ensureMarkdownPath(doc.sourcePath ?? doc.sourceId);
+    const base = safeConceptOutputPath(doc.resource ? urlToOutputPath(doc.resource) : ensureMarkdownPath(doc.sourcePath ?? doc.sourceId));
     let candidate = base;
     let index = 2;
     while (used.has(candidate)) {
-      const parsed = path2.posix.parse(base);
-      candidate = path2.posix.join(parsed.dir, `${parsed.name}-${index}${parsed.ext}`);
+      const parsed = path3.posix.parse(base);
+      candidate = path3.posix.join(parsed.dir, `${parsed.name}-${index}${parsed.ext}`);
       index += 1;
     }
     used.add(candidate);
@@ -229,6 +287,12 @@ function assignOutputPaths(docs) {
     doc.outputPath = candidate;
   }
   return result;
+}
+function safeConceptOutputPath(candidate) {
+  if (!isReservedOkfPath(candidate)) return candidate;
+  const parsed = path3.posix.parse(candidate);
+  const safeName = parsed.name.toLowerCase() === "log" ? "change-log" : parsed.dir ? "overview" : "home";
+  return path3.posix.join(parsed.dir, `${safeName}.md`);
 }
 function rewriteLinks(doc, sourceToOutput) {
   return doc.markdown.replace(/\[([^\]]*)\]\(([^)\s]+)([^)]*)\)/g, (full, text, href, suffix) => {
@@ -254,7 +318,7 @@ function rewriteLinks(doc, sourceToOutput) {
       }
     }
     if (!href.startsWith("#") && doc.sourcePath) {
-      const abs = toPosixPath(path2.posix.normalize(path2.posix.join(path2.posix.dirname(doc.sourcePath), href)));
+      const abs = toPosixPath(path3.posix.normalize(path3.posix.join(path3.posix.dirname(doc.sourcePath), href)));
       const noHash = abs.split("#")[0] ?? abs;
       const target = sourceToOutput.get(noHash);
       if (target && doc.outputPath) return `[${text}](${relativeMarkdownLink(doc.outputPath, target)}${suffix})`;
@@ -262,11 +326,64 @@ function rewriteLinks(doc, sourceToOutput) {
     return full;
   });
 }
-async function ensureCleanOutDir(outDir, force) {
+async function pathExists(target) {
+  try {
+    await fs.lstat(target);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+}
+async function resolveForSafety(target) {
+  const resolved = path3.resolve(target);
+  if (await pathExists(resolved)) return fs.realpath(resolved);
+  const parent = path3.dirname(resolved);
+  const realParent = await fs.realpath(parent);
+  return path3.join(realParent, path3.basename(resolved));
+}
+async function findRepoRoot(start) {
+  let current = path3.resolve(start);
+  while (true) {
+    if (await pathExists(path3.join(current, ".git"))) return fs.realpath(current);
+    const parent = path3.dirname(current);
+    if (parent === current) return void 0;
+    current = parent;
+  }
+}
+async function assertSafeForceOutDir(outDir, options) {
+  if (options.dangerouslyAllowUnsafeOutput) return;
+  if (outDir.trim() === "") throw new Error("Unsafe output directory for --force: empty path.");
+  const rawResolved = path3.resolve(outDir);
+  const existing = await pathExists(rawResolved);
+  if (existing) {
+    const stat = await fs.lstat(rawResolved);
+    if (stat.isSymbolicLink()) {
+      throw new Error(`Unsafe output directory for --force: refusing symlink ${outDir}.`);
+    }
+  }
+  const realOutDir = await resolveForSafety(outDir);
+  const forbidden = /* @__PURE__ */ new Map([
+    [path3.parse(realOutDir).root, "filesystem root"],
+    [await fs.realpath(os.homedir()), "home directory"],
+    [await fs.realpath(process.cwd()), "current working directory"]
+  ]);
+  const repoRoot = await findRepoRoot(process.cwd());
+  if (repoRoot) forbidden.set(repoRoot, "repository root");
+  if (options.inputPath) {
+    const inputReal = await resolveForSafety(options.inputPath);
+    forbidden.set(inputReal, "input path");
+    forbidden.set(path3.dirname(inputReal), "parent of input path");
+  }
+  const reason = forbidden.get(realOutDir);
+  if (reason) throw new Error(`Unsafe output directory for --force: refusing to delete ${reason} (${realOutDir}).`);
+}
+async function ensureCleanOutDir(outDir, options) {
+  if (options.force) await assertSafeForceOutDir(outDir, options);
   try {
     const entries = await fs.readdir(outDir);
     if (entries.length > 0) {
-      if (!force) throw new Error(`Output directory is not empty: ${outDir}. Use --force to overwrite.`);
+      if (!options.force) throw new Error(`Output directory is not empty: ${outDir}. Use --force to overwrite.`);
       await fs.rm(outDir, { recursive: true, force: true });
     }
   } catch (error) {
@@ -274,70 +391,57 @@ async function ensureCleanOutDir(outDir, force) {
   }
   await fs.mkdir(outDir, { recursive: true });
 }
+function titleForPath(relPath, fallback) {
+  const basename = path3.posix.basename(relPath, ".md");
+  return fallback || basename;
+}
+function markdownLink(fromDir, toPath) {
+  if (fromDir === ".") return toPath;
+  return path3.posix.relative(fromDir, toPath);
+}
+function indexTitle(dir, options) {
+  if (dir === ".") return options.title ?? options.sourceName ?? "OKF Bundle";
+  const leaf = path3.posix.basename(dir);
+  return leaf.split(/[-_\s]+/).filter(Boolean).map((word) => word.slice(0, 1).toUpperCase() + word.slice(1)).join(" ");
+}
+async function writePlainIndex(outDir, dir, concepts, options) {
+  const indexPath = dir === "." ? "index.md" : path3.posix.join(dir, "index.md");
+  const entries = (dir === "." ? concepts : concepts.filter((concept) => path3.posix.dirname(concept.relPath) === dir)).slice().sort((a, b) => a.relPath.localeCompare(b.relPath));
+  const lines = [
+    `# ${indexTitle(dir, options)}`,
+    "",
+    ...entries.map((concept) => `* [${concept.title}](${markdownLink(dir, concept.relPath)}) - ${concept.description}`)
+  ];
+  await fs.mkdir(path3.dirname(path3.join(outDir, indexPath)), { recursive: true });
+  await fs.writeFile(path3.join(outDir, indexPath), `${lines.join("\n").trimEnd()}
+`, "utf8");
+  return indexPath;
+}
 async function writeOkfBundle(docs, options) {
   if (docs.length === 0) throw new Error("No documents to write.");
-  await ensureCleanOutDir(options.outDir, options.force);
+  await ensureCleanOutDir(options.outDir, options);
   const timestamp = options.timestamp ?? (/* @__PURE__ */ new Date()).toISOString();
   const sourceToOutput = assignOutputPaths(docs);
   const written = [];
+  const concepts = [];
   for (const doc of docs) {
     const relPath = doc.outputPath ?? "index.md";
-    const absolute = path2.join(options.outDir, relPath);
-    await fs.mkdir(path2.dirname(absolute), { recursive: true });
+    const absolute = path3.join(options.outDir, relPath);
+    await fs.mkdir(path3.dirname(absolute), { recursive: true });
     const body = withTitle(doc.title, rewriteLinks(doc, sourceToOutput));
     await fs.writeFile(absolute, `${frontmatter(doc, timestamp)}${body}
 `, "utf8");
     written.push(relPath);
+    concepts.push({
+      relPath,
+      title: titleForPath(relPath, doc.title),
+      description: descriptionFromMarkdown(doc.markdown)
+    });
   }
-  if (!written.includes("index.md")) {
-    const title = options.title ?? options.sourceName ?? "OKF Bundle";
-    const list = written.sort().map((file) => `- [${file.replace(/\.md$/, "")}](./${file})`).join("\n");
-    const indexDoc = [
-      "---",
-      'type: "Bundle Index"',
-      `title: ${yamlScalar(title)}`,
-      `description: ${yamlScalar(`Index for ${title}.`)}`,
-      `resource: ${yamlScalar(options.sourceName ?? title)}`,
-      "tags:",
-      '  - "index"',
-      `timestamp: ${yamlScalar(timestamp)}`,
-      "---",
-      "",
-      `# ${title}`,
-      "",
-      list,
-      ""
-    ].join("\n");
-    await fs.writeFile(path2.join(options.outDir, "index.md"), indexDoc, "utf8");
-    written.unshift("index.md");
-  }
-  const dirs = [...new Set(written.map((file) => path2.posix.dirname(file)).filter((dir) => dir !== "."))].sort();
+  written.push(await writePlainIndex(options.outDir, ".", concepts, options));
+  const dirs = [...new Set(concepts.map((concept) => path3.posix.dirname(concept.relPath)).filter((dir) => dir !== "."))].sort();
   for (const dir of dirs) {
-    const indexPath = path2.posix.join(dir, "index.md");
-    if (written.includes(indexPath)) continue;
-    const children = written.filter((file) => path2.posix.dirname(file) === dir && path2.posix.basename(file) !== "index.md").sort();
-    if (children.length === 0) continue;
-    const title = `${dir.split("/").map((segment) => segment.slice(0, 1).toUpperCase() + segment.slice(1)).join(" / ")} Index`;
-    const list = children.map((file) => `- [${path2.posix.basename(file, ".md")}](./${path2.posix.basename(file)})`).join("\n");
-    const folderIndex = [
-      "---",
-      'type: "Folder Index"',
-      `title: ${yamlScalar(title)}`,
-      `description: ${yamlScalar(`Index for ${dir}.`)}`,
-      `resource: ${yamlScalar(options.sourceName ?? dir)}`,
-      "tags:",
-      '  - "index"',
-      `timestamp: ${yamlScalar(timestamp)}`,
-      "---",
-      "",
-      `# ${title}`,
-      "",
-      list,
-      ""
-    ].join("\n");
-    await fs.mkdir(path2.join(options.outDir, dir), { recursive: true });
-    await fs.writeFile(path2.join(options.outDir, indexPath), folderIndex, "utf8");
-    written.push(indexPath);
+    written.push(await writePlainIndex(options.outDir, dir, concepts, options));
   }
   return written.sort();
 }
@@ -370,18 +474,40 @@ function matchesAnyPattern(value, patterns) {
 // src/crawler.ts
 var USER_AGENT = "okfy/0.1 (+https://github.com/0dust/OKFy)";
 var MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
-async function fetchText(url) {
+function isRedirect(status) {
+  return status >= 300 && status < 400;
+}
+function isSecurityRejection(error) {
+  const message = error instanceof Error ? error.message : "";
+  return message.includes("Private network crawl target rejected") || message.includes("Cross-origin redirect rejected");
+}
+async function fetchWithRedirects(url, options, signal) {
+  let current = url;
+  for (let redirectCount = 0; redirectCount <= 10; redirectCount += 1) {
+    if (!options.allowPrivateNetwork) await assertPublicNetworkUrl(current);
+    if (options.sameOriginSeed && !sameOrigin(current, options.sameOriginSeed)) {
+      throw new Error(`Cross-origin redirect rejected: ${current}`);
+    }
+    const response = await fetch(current, {
+      signal,
+      headers: { "user-agent": USER_AGENT, accept: "text/html,text/markdown,text/plain,*/*" },
+      redirect: "manual"
+    });
+    if (!isRedirect(response.status)) return response;
+    const location = response.headers.get("location");
+    if (!location) throw new Error(`Redirect missing location for ${current}`);
+    current = canonicalizeUrl(location, current);
+  }
+  throw new Error(`Too many redirects for ${url}`);
+}
+async function fetchText(url, options = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15e3);
   try {
     let lastError;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        const response = await fetch(url, {
-          signal: controller.signal,
-          headers: { "user-agent": USER_AGENT, accept: "text/html,text/markdown,text/plain,*/*" },
-          redirect: "follow"
-        });
+        const response = await fetchWithRedirects(url, options, controller.signal);
         if (!response.ok) {
           if ((response.status >= 500 || response.status === 429) && attempt < 2) {
             await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
@@ -396,6 +522,7 @@ async function fetchText(url) {
         return { text, contentType: response.headers.get("content-type") ?? "" };
       } catch (error) {
         lastError = error;
+        if (isSecurityRejection(error)) throw error;
         if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
       }
     }
@@ -408,8 +535,8 @@ async function loadRobots(seedUrl, enabled) {
   if (!enabled) return void 0;
   const origin = new URL(seedUrl).origin;
   try {
-    const response = await fetch(`${origin}/robots.txt`, { headers: { "user-agent": USER_AGENT } });
-    const text = response.ok ? await response.text() : "";
+    const fetched = await fetchText(`${origin}/robots.txt`, { sameOriginSeed: seedUrl });
+    const text = fetched.text;
     return robotsParser(`${origin}/robots.txt`, text);
   } catch {
     return robotsParser(`${origin}/robots.txt`, "");
@@ -444,6 +571,7 @@ async function crawlWebsite(options) {
   if (!options.allowPrivateNetwork && isPrivateNetworkUrl(seed)) {
     throw new Error("Private network crawl target rejected. Use --allow-private-network for trusted local fixtures.");
   }
+  if (!options.allowPrivateNetwork) await assertPublicNetworkUrl(seed);
   const maxPages = options.maxPages ?? 100;
   const maxDepth = options.maxDepth ?? 4;
   const robots = await loadRobots(seed, options.respectRobots ?? true);
@@ -471,7 +599,10 @@ async function crawlWebsite(options) {
           planned.push(item.url);
           options.onProgress?.({ type: "fetch", url: item.url, fetched: documents.length, queued: queue.length, maxPages });
           try {
-            const fetched = await fetchText(item.url);
+            const fetched = await fetchText(item.url, {
+              allowPrivateNetwork: options.allowPrivateNetwork,
+              sameOriginSeed: options.sameOrigin ?? true ? seed : void 0
+            });
             const contentType = contentTypeFromHeader(fetched.contentType);
             if (!contentType) {
               skipped += 1;
@@ -492,7 +623,7 @@ async function crawlWebsite(options) {
               for (const link of links) {
                 try {
                   const next = canonicalizeUrl(link.href, item.url);
-                  if (!queued.has(next) && shouldVisit(next, seed, options, robots) && queued.size < maxPages * 4) {
+                  if (!queued.has(next) && shouldVisit(next, seed, options, robots) && (options.allowPrivateNetwork || !await resolvesToPrivateNetwork(next)) && queued.size < maxPages * 4) {
                     queued.add(next);
                     queue.push({ url: next, depth: item.depth + 1 });
                     discovered += 1;
@@ -510,7 +641,8 @@ async function crawlWebsite(options) {
               discovered,
               maxPages
             });
-          } catch {
+          } catch (error) {
+            if (isSecurityRejection(error)) throw error;
             failed += 1;
             options.onProgress?.({ type: "failed", url: item.url, fetched: documents.length, queued: queue.length, maxPages });
           }
@@ -529,6 +661,7 @@ async function crawlWebsite(options) {
     title: options.title,
     sourceName: seed,
     force: options.force,
+    dangerouslyAllowUnsafeOutput: options.dangerouslyAllowUnsafeOutput,
     timestamp: options.timestamp
   });
   return { pagesFetched: documents.length, skipped, failed, written, documents };
@@ -536,9 +669,9 @@ async function crawlWebsite(options) {
 
 // src/importer.ts
 import fs2 from "fs/promises";
-import path3 from "path";
+import path4 from "path";
 function contentTypeFor(file) {
-  const ext = path3.extname(file).toLowerCase();
+  const ext = path4.extname(file).toLowerCase();
   if (ext === ".md") return "markdown";
   if (ext === ".mdx") return "mdx";
   if (ext === ".html" || ext === ".htm") return "html";
@@ -551,7 +684,7 @@ async function listFiles(root) {
   const files = [];
   async function walk(dir) {
     for (const entry of await fs2.readdir(dir, { withFileTypes: true })) {
-      const absolute = path3.join(dir, entry.name);
+      const absolute = path4.join(dir, entry.name);
       if (entry.isDirectory()) {
         if (![".git", "node_modules", "dist"].includes(entry.name)) await walk(absolute);
       } else if (entry.isFile()) {
@@ -563,11 +696,11 @@ async function listFiles(root) {
   return files.sort();
 }
 async function importLocal(options) {
-  const root = path3.resolve(options.inputPath);
+  const root = path4.resolve(options.inputPath);
   const files = await listFiles(root);
   const docs = [];
   for (const file of files) {
-    const rel = path3.relative(root, file).split(path3.sep).join("/");
+    const rel = path4.relative(root, file).split(path4.sep).join("/");
     if (options.include?.length && !matchesAnyPattern(rel, options.include)) continue;
     if (matchesAnyPattern(rel, options.exclude)) continue;
     const contentType = contentTypeFor(file);
@@ -587,21 +720,25 @@ async function importLocal(options) {
     title: options.sourceName,
     sourceName: options.sourceName ?? options.inputPath,
     force: options.force,
+    inputPath: root,
+    dangerouslyAllowUnsafeOutput: options.dangerouslyAllowUnsafeOutput,
     timestamp: options.timestamp
   });
   return { written, documents: docs };
 }
 
 // src/graph.ts
-import path4 from "path";
+import path5 from "path";
 function extractInternalLinks(concept) {
   const links = /* @__PURE__ */ new Set();
   for (const match of concept.body.matchAll(/\[[^\]]*]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)) {
     const href = match[1] ?? "";
-    if (/^(https?:)?\/\//.test(href) || href.startsWith("mailto:") || href.startsWith("#")) continue;
     const noHash = href.split("#")[0] ?? href;
     if (!noHash) continue;
-    const resolved = path4.posix.normalize(path4.posix.join(path4.posix.dirname(concept.path), noHash));
+    if (/^(https?:)?\/\//i.test(noHash) || /^mailto:/i.test(noHash)) continue;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(noHash)) continue;
+    const resolved = noHash.startsWith("/") ? path5.posix.normalize(noHash.slice(1)) : path5.posix.normalize(path5.posix.join(path5.posix.dirname(concept.path), noHash));
+    if (!resolved || resolved === ".") continue;
     links.add(stripMdExtension(resolved));
   }
   return [...links].sort();
@@ -627,13 +764,13 @@ function buildGraph(conceptsByAnyKey) {
 
 // src/reader.ts
 import fs3 from "fs/promises";
-import path5 from "path";
+import path6 from "path";
 import matter from "gray-matter";
 async function listMarkdownFiles(dir) {
   const result = [];
   async function walk(current) {
     for (const entry of await fs3.readdir(current, { withFileTypes: true })) {
-      const absolute = path5.join(current, entry.name);
+      const absolute = path6.join(current, entry.name);
       if (entry.isDirectory()) await walk(absolute);
       else if (entry.isFile() && entry.name.endsWith(".md")) result.push(absolute);
     }
@@ -648,7 +785,8 @@ function stringArray(value) {
 async function readConceptFile(bundleDir, absolutePath) {
   const raw = await fs3.readFile(absolutePath, "utf8");
   const parsed = matter(raw);
-  const relPath = toPosixPath(path5.relative(bundleDir, absolutePath));
+  const relPath = toPosixPath(path6.relative(bundleDir, absolutePath));
+  if (isReservedOkfPath(relPath)) throw new Error(`Reserved OKF file is not a concept: ${relPath}`);
   const id = stripMdExtension(relPath);
   const frontmatter2 = parsed.data;
   return {
@@ -667,6 +805,8 @@ async function readBundle(bundleDir) {
   const files = await listMarkdownFiles(bundleDir);
   const concepts = /* @__PURE__ */ new Map();
   for (const file of files) {
+    const relPath = toPosixPath(path6.relative(bundleDir, file));
+    if (!isConceptMarkdownPath(relPath)) continue;
     const concept = await readConceptFile(bundleDir, file);
     concepts.set(concept.id, concept);
     concepts.set(concept.path, concept);
@@ -730,13 +870,13 @@ var BundleSearch = class _BundleSearch {
 
 // src/validate.ts
 import fs4 from "fs/promises";
-import path6 from "path";
+import path7 from "path";
 import matter2 from "gray-matter";
 async function listMarkdownFiles2(dir) {
   const result = [];
   async function walk(current) {
     for (const entry of await fs4.readdir(current, { withFileTypes: true })) {
-      const absolute = path6.join(current, entry.name);
+      const absolute = path7.join(current, entry.name);
       if (entry.isDirectory()) await walk(absolute);
       else if (entry.isFile() && entry.name.endsWith(".md")) result.push(absolute);
     }
@@ -747,6 +887,59 @@ async function listMarkdownFiles2(dir) {
 function issue(severity, code, message, file) {
   return { severity, code, message, path: file };
 }
+function firstContentLine(content) {
+  return content.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? "";
+}
+function parseFrontmatter(raw) {
+  const parsed = matter2(raw);
+  return { data: parsed.data, content: parsed.content };
+}
+function validateIndexFile(raw, rel, issues) {
+  let body = raw;
+  if (raw.startsWith("---")) {
+    if (rel !== "index.md") {
+      issues.push(issue("error", "reserved_index_frontmatter", "Only bundle-root index.md may contain okf_version frontmatter.", rel));
+      return;
+    }
+    let parsed;
+    try {
+      parsed = parseFrontmatter(raw);
+    } catch (error) {
+      issues.push(issue("error", "malformed_frontmatter", error?.message ?? "Malformed YAML frontmatter.", rel));
+      return;
+    }
+    const keys = Object.keys(parsed.data);
+    if (keys.length !== 1 || keys[0] !== "okf_version" || typeof parsed.data.okf_version !== "string") {
+      issues.push(issue("error", "reserved_index_frontmatter", "Root index.md frontmatter may contain only string okf_version.", rel));
+    }
+    body = parsed.content;
+  }
+  const firstLine = firstContentLine(body);
+  if (!firstLine.startsWith("# ")) {
+    issues.push(issue("error", "invalid_index_structure", "index.md must be a markdown directory listing headed by a section title.", rel));
+  }
+}
+function validateLogFile(raw, rel, issues) {
+  if (raw.startsWith("---")) {
+    issues.push(issue("error", "reserved_log_frontmatter", "log.md must not contain YAML frontmatter.", rel));
+    return;
+  }
+  const firstLine = firstContentLine(raw);
+  if (!firstLine.startsWith("# ")) {
+    issues.push(issue("error", "invalid_log_structure", "log.md must be a markdown update log headed by a title.", rel));
+  }
+  for (const line of raw.split(/\r?\n/)) {
+    const heading = line.match(/^##\s+(.+)$/);
+    if (heading && !/^\d{4}-\d{2}-\d{2}\b/.test(heading[1] ?? "")) {
+      issues.push(issue("error", "invalid_log_date", "log.md date headings must use YYYY-MM-DD.", rel));
+    }
+  }
+}
+function validateReservedFile(raw, rel, issues) {
+  const name = path7.posix.basename(rel).toLowerCase();
+  if (name === "index.md") validateIndexFile(raw, rel, issues);
+  if (name === "log.md") validateLogFile(raw, rel, issues);
+}
 async function validateBundle(bundleDir) {
   const issues = [];
   let files = [];
@@ -756,13 +949,22 @@ async function validateBundle(bundleDir) {
     return {
       valid: false,
       issues: [issue("error", "bundle_unreadable", error?.message ?? "Bundle cannot be read.")],
-      conceptCount: 0
+      conceptCount: 0,
+      reservedFileCount: 0,
+      warningCount: 0
     };
   }
-  const seenIds = /* @__PURE__ */ new Set();
+  const conceptFiles = files.filter((file) => isConceptMarkdownPath(path7.relative(bundleDir, file).split(path7.sep).join("/")));
+  const reservedFiles = files.filter((file) => isReservedOkfPath(path7.relative(bundleDir, file).split(path7.sep).join("/")));
+  for (const file of reservedFiles) {
+    const rel = path7.relative(bundleDir, file).split(path7.sep).join("/");
+    const raw = await fs4.readFile(file, "utf8");
+    validateReservedFile(raw, rel, issues);
+  }
   for (const file of files) {
-    const rel = path6.relative(bundleDir, file).split(path6.sep).join("/");
-    if (rel.includes("..") || path6.isAbsolute(rel)) {
+    const rel = path7.relative(bundleDir, file).split(path7.sep).join("/");
+    if (!isConceptMarkdownPath(rel)) continue;
+    if (rel.includes("..") || path7.isAbsolute(rel)) {
       issues.push(issue("error", "unsafe_path", "Concept path is unsafe.", rel));
     }
     const raw = await fs4.readFile(file, "utf8");
@@ -783,38 +985,32 @@ async function validateBundle(bundleDir) {
     }
     for (const key of ["title", "description", "resource", "timestamp"]) {
       if (data[key] !== void 0 && typeof data[key] !== "string") {
-        issues.push(issue("error", "bad_field_shape", `${key} must be a string when present.`, rel));
+        issues.push(issue("warning", "bad_field_shape", `${key} should be a string when present.`, rel));
       }
     }
     if (data.tags !== void 0 && (!Array.isArray(data.tags) || data.tags.some((tag) => typeof tag !== "string"))) {
-      issues.push(issue("error", "bad_field_shape", "tags must be an array of strings when present.", rel));
+      issues.push(issue("warning", "bad_field_shape", "tags should be an array of strings when present.", rel));
     }
-    if (parsed.content.trim().length === 0) {
-      issues.push(issue("error", "empty_concept", "Concept body must not be empty.", rel));
-    }
-    const id = rel.replace(/\.md$/i, "");
-    if (seenIds.has(id)) issues.push(issue("error", "duplicate_concept_id", `Duplicate concept id: ${id}`, rel));
-    seenIds.add(id);
   }
   const concepts = await readBundle(bundleDir).catch(() => /* @__PURE__ */ new Map());
   const canonicalIds = new Set([...concepts.values()].map((concept) => concept.id));
   for (const concept of new Map([...concepts.values()].map((concept2) => [concept2.id, concept2])).values()) {
     for (const target of extractInternalLinks(concept)) {
       if (!canonicalIds.has(target)) {
-        issues.push(issue("error", "broken_internal_link", `Broken internal link to ${target}.`, concept.path));
+        issues.push(issue("warning", "broken_internal_link", `Broken internal link to ${target}.`, concept.path));
       }
     }
   }
-  const dirs = new Set(files.map((file) => path6.dirname(file)));
+  const dirs = new Set(conceptFiles.map((file) => path7.dirname(file)));
   for (const dir of dirs) {
-    const index = path6.join(dir, "index.md");
+    const index = path7.join(dir, "index.md");
     if (!files.includes(index)) {
       issues.push(
         issue(
           "warning",
           "missing_folder_index",
           "Folder has concepts but no index.md.",
-          path6.relative(bundleDir, dir).split(path6.sep).join("/") || "."
+          path7.relative(bundleDir, dir).split(path7.sep).join("/") || "."
         )
       );
     }
@@ -822,7 +1018,9 @@ async function validateBundle(bundleDir) {
   return {
     valid: !issues.some((item) => item.severity === "error"),
     issues,
-    conceptCount: files.length
+    conceptCount: conceptFiles.length,
+    reservedFileCount: reservedFiles.length,
+    warningCount: issues.filter((item) => item.severity === "warning").length
   };
 }
 async function inspectBundle(bundleDir) {
@@ -848,8 +1046,10 @@ async function inspectBundle(bundleDir) {
   const linkCount = [...graph.outbound.values()].reduce((sum, links) => sum + links.length, 0);
   const validation = await validateBundle(bundleDir);
   return {
-    title: concepts.find((concept) => concept.id === "index")?.title ?? path6.basename(bundleDir),
+    title: path7.basename(bundleDir),
     conceptCount: concepts.length,
+    reservedFileCount: validation.reservedFileCount,
+    warningCount: validation.warningCount,
     typeDistribution,
     tagDistribution,
     linkCount,
@@ -991,7 +1191,13 @@ async function createMcpServer(options) {
       }
       if (request.params.name === "bundle_summary") {
         const [stats, validation] = await Promise.all([inspectBundle(options.bundleDir), validateBundle(options.bundleDir)]);
-        return json({ ...stats, validationStatus: validation.valid ? "valid" : "invalid", validationIssues: validation.issues });
+        return json({
+          ...stats,
+          reservedFileCount: validation.reservedFileCount,
+          warningCount: validation.warningCount,
+          validationStatus: validation.valid ? "valid" : "invalid",
+          validationIssues: validation.issues
+        });
       }
       return json({ error: { code: "unknown_tool", message: `Unknown tool: ${request.params.name}` } });
     } catch (error) {

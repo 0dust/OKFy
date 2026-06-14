@@ -6,10 +6,14 @@ export function extractInternalLinks(concept: Concept): string[] {
   const links = new Set<string>();
   for (const match of concept.body.matchAll(/\[[^\]]*]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)) {
     const href = match[1] ?? "";
-    if (/^(https?:)?\/\//.test(href) || href.startsWith("mailto:") || href.startsWith("#")) continue;
     const noHash = href.split("#")[0] ?? href;
     if (!noHash) continue;
-    const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(concept.path), noHash));
+    if (/^(https?:)?\/\//i.test(noHash) || /^mailto:/i.test(noHash)) continue;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(noHash)) continue;
+    const resolved = noHash.startsWith("/")
+      ? path.posix.normalize(noHash.slice(1))
+      : path.posix.normalize(path.posix.join(path.posix.dirname(concept.path), noHash));
+    if (!resolved || resolved === ".") continue;
     links.add(stripMdExtension(resolved));
   }
   return [...links].sort();

@@ -21,8 +21,8 @@ describe("public surface", () => {
     for (const expected of [
       "Offline bundle: examples/bundles/okfy-docs",
       "OKF bundle valid",
-      "Concepts: 9",
-      "Links: 15",
+      "Concepts: 6",
+      "Links: 10",
       "Broken links: 0"
     ]) {
       expect(demoOutput).toContain(expected);
@@ -113,10 +113,16 @@ describe("public surface", () => {
     expect(readme).toContain("`okfy-ai` is the npm package name. `okfy` is the installed CLI command.");
     expect(readme).toContain("You do not need global install for MCP configs.");
     expect(readme).toContain("MCP clients start it as a subprocess");
+    expect(readme).toContain("Preflight DNS-resolved private targets");
+    expect(readme).not.toContain("including DNS-resolved hosts and redirects");
     expect(npmReadme).toContain("# okfy-ai");
     expect(npmReadme).toContain("npm install -g okfy-ai");
     expect(npmReadme).toContain("`okfy-ai` is the npm package name. `okfy` is the installed CLI command.");
-    expect(npmReadme).toContain("Turn docs into agent-readable Open Knowledge Format bundles, then serve them to Claude, Codex, Cursor");
+    expect(npmReadme).toContain("Preflight DNS-resolved private targets");
+    expect(npmReadme).not.toContain("including DNS-resolved hosts and redirects");
+    expect(npmReadme).toContain(
+      "Turn docs into agent-readable Open Knowledge Format v0.1-conformant bundles, then serve them to Claude, Codex, Cursor"
+    );
     expect(npmReadme.indexOf("## Use With Agents")).toBeLessThan(npmReadme.indexOf("## Optional CLI Install"));
     expect(npmReadme).toContain("claude mcp add --transport stdio stripe-okf");
     expect(npmReadme).toContain("[mcp_servers.stripe_okf]");

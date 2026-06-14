@@ -1,6 +1,6 @@
 # okfy-ai
 
-Turn docs into agent-readable Open Knowledge Format bundles, then serve them to Claude, Codex, Cursor, or any MCP client.
+Turn docs into agent-readable Open Knowledge Format v0.1-conformant bundles, then serve them to Claude, Codex, Cursor, or any MCP client.
 
 ## Use With Agents
 
@@ -146,14 +146,18 @@ docs site or Markdown folder
   -> source-backed agent answers
 ```
 
-Each source page or Markdown file becomes one OKF concept in v0.1. Generated bundles are plain files, so they can be opened, reviewed, diffed, committed, and served locally.
+Each non-reserved source page or Markdown file becomes one OKF concept in v0.1. `index.md` and `log.md` are reserved files, not concepts, and generated indexes are plain Markdown. Concept counts, search, graph links, types, tags, and `read_concept` exclude reserved files.
+
+Validation errors are limited to OKF conformance: malformed or missing concept frontmatter, missing `type`, or invalid reserved-file structure. Broken internal links and missing indexes are warnings.
 
 ## Security Defaults
 
 - Crawls respect `robots.txt` by default.
 - Crawls stay same-origin by default.
 - Page count, depth, response size, and concurrency are capped.
-- Private network targets are rejected by default for URL crawls.
+- Private network URL literals and redirects to private targets are rejected by default for URL crawls.
+- Preflight DNS-resolved private targets are rejected before fetch; fetch-time DNS is not IP-pinned.
+- `--force` refuses unsafe output directories such as `.`, `/`, the home dir, repo root, input path, input parent, and symlink output dirs unless an explicit dangerous override is provided.
 - HTML and Markdown are treated as text. Scripts are not executed.
 - MCP tools are read-only in v0.1.
 

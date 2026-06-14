@@ -54,10 +54,14 @@ type ValidationReport = {
     valid: boolean;
     issues: ValidationIssue[];
     conceptCount: number;
+    reservedFileCount: number;
+    warningCount: number;
 };
 type BundleStats = {
     title: string;
     conceptCount: number;
+    reservedFileCount: number;
+    warningCount: number;
     typeDistribution: Record<string, number>;
     tagDistribution: Record<string, number>;
     linkCount: number;
@@ -85,6 +89,7 @@ type CrawlOptions = {
     force?: boolean;
     dryRun?: boolean;
     allowPrivateNetwork?: boolean;
+    dangerouslyAllowUnsafeOutput?: boolean;
     timestamp?: string;
     onProgress?: (event: CrawlProgressEvent) => void;
 };
@@ -143,6 +148,7 @@ type ImportOptions = {
     include?: string[];
     exclude?: string[];
     force?: boolean;
+    dangerouslyAllowUnsafeOutput?: boolean;
     timestamp?: string;
 };
 declare function importLocal(options: ImportOptions): Promise<{
@@ -208,6 +214,8 @@ type WriteBundleOptions = {
     title?: string;
     sourceName?: string;
     force?: boolean;
+    inputPath?: string;
+    dangerouslyAllowUnsafeOutput?: boolean;
     timestamp?: string;
 };
 declare function writeOkfBundle(docs: NormalizedDocument[], options: WriteBundleOptions): Promise<string[]>;

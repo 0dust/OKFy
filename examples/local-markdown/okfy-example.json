@@ -1,6 +1,6 @@
 {
   "sourceCommand": "okfy import ./examples/local-markdown --out ./tmp/okfy-docs --force --stable-timestamps",
-  "expectedConceptCount": 9,
+  "expectedConceptCount": 6,
   "expectedValidationStatus": "valid",
   "suggestedAgentQuestions": [
     "Search for import workflow concepts, read the best match, and explain how to convert a local Markdown folder into OKF.",

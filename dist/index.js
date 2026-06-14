@@ -17,7 +17,7 @@ import {
   serveMcpStdio,
   validateBundle,
   writeOkfBundle
-} from "./chunk-6AP7LVJG.js";
+} from "./chunk-QE5W5AJS.js";
 export {
   BundleSearch,
   buildGraph,

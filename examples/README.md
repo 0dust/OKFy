@@ -13,7 +13,7 @@ pnpm okfy import examples/local-markdown --out examples/bundles/okfy-docs --sour
 Expected concept count:
 
 ```text
-9
+6
 ```
 
 Expected validation status:
@@ -35,7 +35,7 @@ Purpose: small curated Stripe Checkout sample for launch demos when live crawlin
 Source command:
 
 ```bash
-pnpm okfy import test-fixtures/stripe-checkout-html --out examples/bundles/stripe-checkout-small --source-name "Stripe Checkout sample" --force --stable-timestamps
+pnpm okfy import test-fixtures/stripe-checkout-html --out examples/bundles/stripe-checkout-small --source-name "Stripe Checkout" --force --stable-timestamps
 ```
 
 Expected concept count:
@@ -69,7 +69,7 @@ okfy import ./examples/local-markdown --out ./tmp/okfy-docs --force --stable-tim
 Expected concept count:
 
 ```text
-9
+6
 ```
 
 Expected validation status:

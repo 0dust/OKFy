@@ -140,7 +140,13 @@ export async function createMcpServer(options: ServeOptions): Promise<Server> {
       }
       if (request.params.name === "bundle_summary") {
         const [stats, validation] = await Promise.all([inspectBundle(options.bundleDir), validateBundle(options.bundleDir)]);
-        return json({ ...stats, validationStatus: validation.valid ? "valid" : "invalid", validationIssues: validation.issues });
+        return json({
+          ...stats,
+          reservedFileCount: validation.reservedFileCount,
+          warningCount: validation.warningCount,
+          validationStatus: validation.valid ? "valid" : "invalid",
+          validationIssues: validation.issues
+        });
       }
       return json({ error: { code: "unknown_tool", message: `Unknown tool: ${request.params.name}` } });
     } catch (error: any) {

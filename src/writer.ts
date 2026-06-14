@@ -1,5 +1,7 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
+import { isReservedOkfPath } from "./okf.js";
 import { canonicalizeUrl } from "./util/url.js";
 import { ensureMarkdownPath, relativeMarkdownLink, toPosixPath, urlToOutputPath } from "./util/path.js";
 import { descriptionFromMarkdown } from "./normalize.js";
@@ -10,7 +12,15 @@ export type WriteBundleOptions = {
   title?: string;
   sourceName?: string;
   force?: boolean;
+  inputPath?: string;
+  dangerouslyAllowUnsafeOutput?: boolean;
   timestamp?: string;
+};
+
+type WrittenConcept = {
+  relPath: string;
+  title: string;
+  description: string;
 };
 
 function yamlScalar(value: string): string {
@@ -48,7 +58,7 @@ function assignOutputPaths(docs: NormalizedDocument[]): Map<string, string> {
   const used = new Set<string>();
   const result = new Map<string, string>();
   for (const doc of docs) {
-    const base = doc.resource ? urlToOutputPath(doc.resource) : ensureMarkdownPath(doc.sourcePath ?? doc.sourceId);
+    const base = safeConceptOutputPath(doc.resource ? urlToOutputPath(doc.resource) : ensureMarkdownPath(doc.sourcePath ?? doc.sourceId));
     let candidate = base;
     let index = 2;
     while (used.has(candidate)) {
@@ -61,6 +71,13 @@ function assignOutputPaths(docs: NormalizedDocument[]): Map<string, string> {
     doc.outputPath = candidate;
   }
   return result;
+}
+
+function safeConceptOutputPath(candidate: string): string {
+  if (!isReservedOkfPath(candidate)) return candidate;
+  const parsed = path.posix.parse(candidate);
+  const safeName = parsed.name.toLowerCase() === "log" ? "change-log" : parsed.dir ? "overview" : "home";
+  return path.posix.join(parsed.dir, `${safeName}.md`);
 }
 
 function rewriteLinks(doc: NormalizedDocument, sourceToOutput: Map<string, string>): string {
@@ -98,11 +115,68 @@ function rewriteLinks(doc: NormalizedDocument, sourceToOutput: Map<string, strin
   });
 }
 
-async function ensureCleanOutDir(outDir: string, force?: boolean): Promise<void> {
+async function pathExists(target: string): Promise<boolean> {
+  try {
+    await fs.lstat(target);
+    return true;
+  } catch (error: any) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function resolveForSafety(target: string): Promise<string> {
+  const resolved = path.resolve(target);
+  if (await pathExists(resolved)) return fs.realpath(resolved);
+  const parent = path.dirname(resolved);
+  const realParent = await fs.realpath(parent);
+  return path.join(realParent, path.basename(resolved));
+}
+
+async function findRepoRoot(start: string): Promise<string | undefined> {
+  let current = path.resolve(start);
+  while (true) {
+    if (await pathExists(path.join(current, ".git"))) return fs.realpath(current);
+    const parent = path.dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+}
+
+async function assertSafeForceOutDir(outDir: string, options: WriteBundleOptions): Promise<void> {
+  if (options.dangerouslyAllowUnsafeOutput) return;
+  if (outDir.trim() === "") throw new Error("Unsafe output directory for --force: empty path.");
+  const rawResolved = path.resolve(outDir);
+  const existing = await pathExists(rawResolved);
+  if (existing) {
+    const stat = await fs.lstat(rawResolved);
+    if (stat.isSymbolicLink()) {
+      throw new Error(`Unsafe output directory for --force: refusing symlink ${outDir}.`);
+    }
+  }
+  const realOutDir = await resolveForSafety(outDir);
+  const forbidden = new Map<string, string>([
+    [path.parse(realOutDir).root, "filesystem root"],
+    [await fs.realpath(os.homedir()), "home directory"],
+    [await fs.realpath(process.cwd()), "current working directory"]
+  ]);
+  const repoRoot = await findRepoRoot(process.cwd());
+  if (repoRoot) forbidden.set(repoRoot, "repository root");
+  if (options.inputPath) {
+    const inputReal = await resolveForSafety(options.inputPath);
+    forbidden.set(inputReal, "input path");
+    forbidden.set(path.dirname(inputReal), "parent of input path");
+  }
+  const reason = forbidden.get(realOutDir);
+  if (reason) throw new Error(`Unsafe output directory for --force: refusing to delete ${reason} (${realOutDir}).`);
+}
+
+async function ensureCleanOutDir(outDir: string, options: WriteBundleOptions): Promise<void> {
+  if (options.force) await assertSafeForceOutDir(outDir, options);
   try {
     const entries = await fs.readdir(outDir);
     if (entries.length > 0) {
-      if (!force) throw new Error(`Output directory is not empty: ${outDir}. Use --force to overwrite.`);
+      if (!options.force) throw new Error(`Output directory is not empty: ${outDir}. Use --force to overwrite.`);
       await fs.rm(outDir, { recursive: true, force: true });
     }
   } catch (error: any) {
@@ -111,12 +185,48 @@ async function ensureCleanOutDir(outDir: string, force?: boolean): Promise<void>
   await fs.mkdir(outDir, { recursive: true });
 }
 
+function titleForPath(relPath: string, fallback: string): string {
+  const basename = path.posix.basename(relPath, ".md");
+  return fallback || basename;
+}
+
+function markdownLink(fromDir: string, toPath: string): string {
+  if (fromDir === ".") return toPath;
+  return path.posix.relative(fromDir, toPath);
+}
+
+function indexTitle(dir: string, options: WriteBundleOptions): string {
+  if (dir === ".") return options.title ?? options.sourceName ?? "OKF Bundle";
+  const leaf = path.posix.basename(dir);
+  return leaf
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((word) => word.slice(0, 1).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+async function writePlainIndex(outDir: string, dir: string, concepts: WrittenConcept[], options: WriteBundleOptions): Promise<string> {
+  const indexPath = dir === "." ? "index.md" : path.posix.join(dir, "index.md");
+  const entries = (dir === "." ? concepts : concepts.filter((concept) => path.posix.dirname(concept.relPath) === dir))
+    .slice()
+    .sort((a, b) => a.relPath.localeCompare(b.relPath));
+  const lines = [
+    `# ${indexTitle(dir, options)}`,
+    "",
+    ...entries.map((concept) => `* [${concept.title}](${markdownLink(dir, concept.relPath)}) - ${concept.description}`)
+  ];
+  await fs.mkdir(path.dirname(path.join(outDir, indexPath)), { recursive: true });
+  await fs.writeFile(path.join(outDir, indexPath), `${lines.join("\n").trimEnd()}\n`, "utf8");
+  return indexPath;
+}
+
 export async function writeOkfBundle(docs: NormalizedDocument[], options: WriteBundleOptions): Promise<string[]> {
   if (docs.length === 0) throw new Error("No documents to write.");
-  await ensureCleanOutDir(options.outDir, options.force);
+  await ensureCleanOutDir(options.outDir, options);
   const timestamp = options.timestamp ?? new Date().toISOString();
   const sourceToOutput = assignOutputPaths(docs);
   const written: string[] = [];
+  const concepts: WrittenConcept[] = [];
 
   for (const doc of docs) {
     const relPath = doc.outputPath ?? "index.md";
@@ -125,66 +235,17 @@ export async function writeOkfBundle(docs: NormalizedDocument[], options: WriteB
     const body = withTitle(doc.title, rewriteLinks(doc, sourceToOutput));
     await fs.writeFile(absolute, `${frontmatter(doc, timestamp)}${body}\n`, "utf8");
     written.push(relPath);
+    concepts.push({
+      relPath,
+      title: titleForPath(relPath, doc.title),
+      description: descriptionFromMarkdown(doc.markdown)
+    });
   }
 
-  if (!written.includes("index.md")) {
-    const title = options.title ?? options.sourceName ?? "OKF Bundle";
-    const list = written
-      .sort()
-      .map((file) => `- [${file.replace(/\.md$/, "")}](./${file})`)
-      .join("\n");
-    const indexDoc = [
-      "---",
-      'type: "Bundle Index"',
-      `title: ${yamlScalar(title)}`,
-      `description: ${yamlScalar(`Index for ${title}.`)}`,
-      `resource: ${yamlScalar(options.sourceName ?? title)}`,
-      "tags:",
-      '  - "index"',
-      `timestamp: ${yamlScalar(timestamp)}`,
-      "---",
-      "",
-      `# ${title}`,
-      "",
-      list,
-      ""
-    ].join("\n");
-    await fs.writeFile(path.join(options.outDir, "index.md"), indexDoc, "utf8");
-    written.unshift("index.md");
-  }
-
-  const dirs = [...new Set(written.map((file) => path.posix.dirname(file)).filter((dir) => dir !== "."))].sort();
+  written.push(await writePlainIndex(options.outDir, ".", concepts, options));
+  const dirs = [...new Set(concepts.map((concept) => path.posix.dirname(concept.relPath)).filter((dir) => dir !== "."))].sort();
   for (const dir of dirs) {
-    const indexPath = path.posix.join(dir, "index.md");
-    if (written.includes(indexPath)) continue;
-    const children = written
-      .filter((file) => path.posix.dirname(file) === dir && path.posix.basename(file) !== "index.md")
-      .sort();
-    if (children.length === 0) continue;
-    const title = `${dir
-      .split("/")
-      .map((segment) => segment.slice(0, 1).toUpperCase() + segment.slice(1))
-      .join(" / ")} Index`;
-    const list = children.map((file) => `- [${path.posix.basename(file, ".md")}](./${path.posix.basename(file)})`).join("\n");
-    const folderIndex = [
-      "---",
-      'type: "Folder Index"',
-      `title: ${yamlScalar(title)}`,
-      `description: ${yamlScalar(`Index for ${dir}.`)}`,
-      `resource: ${yamlScalar(options.sourceName ?? dir)}`,
-      "tags:",
-      '  - "index"',
-      `timestamp: ${yamlScalar(timestamp)}`,
-      "---",
-      "",
-      `# ${title}`,
-      "",
-      list,
-      ""
-    ].join("\n");
-    await fs.mkdir(path.join(options.outDir, dir), { recursive: true });
-    await fs.writeFile(path.join(options.outDir, indexPath), folderIndex, "utf8");
-    written.push(indexPath);
+    written.push(await writePlainIndex(options.outDir, dir, concepts, options));
   }
 
   return written.sort();

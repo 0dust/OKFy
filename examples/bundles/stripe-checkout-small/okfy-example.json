@@ -1,8 +1,7 @@
 {
-  "sourceCommand": "pnpm okfy import test-fixtures/stripe-checkout-html --out examples/bundles/stripe-checkout-small --source-name \"Stripe Checkout sample\" --force --stable-timestamps",
+  "sourceCommand": "pnpm okfy import test-fixtures/stripe-checkout-html --out examples/bundles/stripe-checkout-small --source-name \"Stripe Checkout\" --force --stable-timestamps",
   "expectedConceptCount": 4,
   "expectedValidationStatus": "valid",
-  "sampleNote": "Curated saved-HTML sample used when live crawling is flaky; source URLs are preserved in concept bodies and resource metadata points to the fixture source.",
   "suggestedAgentQuestions": [
     "Search for Checkout Sessions, read the strongest match, and explain required server parameters.",
     "Find webhook-related concepts and summarize fulfillment safety notes.",

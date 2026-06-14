@@ -1,15 +1,4 @@
----
-type: "Bundle Index"
-title: "Okfy Fixture"
-description: "Fixture bundle for okfy tests."
-resource: "fixture"
-tags:
-  - "index"
-timestamp: "2026-06-14T00:00:00.000Z"
----
-
 # Okfy Fixture
 
-- [Quickstart](./guides/quickstart.md)
-- [API Reference](./reference/api.md)
-
+* [Quickstart](guides/quickstart.md) - Install okfy and serve bundle memory over MCP.
+* [API Reference](reference/api.md) - CLI and MCP tool reference for okfy.

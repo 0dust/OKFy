@@ -5,7 +5,7 @@ import {
   inspectBundle,
   serveMcpStdio,
   validateBundle
-} from "./chunk-6AP7LVJG.js";
+} from "./chunk-QE5W5AJS.js";
 
 // src/cli.ts
 import fs from "fs";
@@ -92,7 +92,7 @@ function printCrawlProgress(event) {
   }
 }
 program.name("okfy").description("Turn docs into agent memory with Open Knowledge Format and MCP.").version(readPackageVersion());
-program.command("crawl").argument("<url>", "Docs URL to crawl").requiredOption("--out <dir>", "Output OKF bundle directory").option("--max-pages <n>", "Maximum pages", (value) => Number(value), 100).option("--max-depth <n>", "Maximum crawl depth", (value) => Number(value), 4).option("--include <pattern>", "Include glob or regex", collect, []).option("--exclude <pattern>", "Exclude glob or regex", collect, []).option("--same-origin", "Stay on same origin", true).option("--no-same-origin", "Allow cross-origin links").option("--respect-robots", "Respect robots.txt", true).option("--no-respect-robots", "Ignore robots.txt").option("--concurrency <n>", "Fetch concurrency", (value) => Number(value), 4).option("--title <name>", "Bundle title").option("--force", "Overwrite output directory", false).option("--dry-run", "List pages that would be crawled", false).option("--allow-private-network", "Allow localhost/private IP crawl targets", false).option("--stable-timestamps", "Use a deterministic timestamp in generated frontmatter", false).action(async (url, options) => {
+program.command("crawl").argument("<url>", "Docs URL to crawl").requiredOption("--out <dir>", "Output OKF bundle directory").option("--max-pages <n>", "Maximum pages", (value) => Number(value), 100).option("--max-depth <n>", "Maximum crawl depth", (value) => Number(value), 4).option("--include <pattern>", "Include glob or regex", collect, []).option("--exclude <pattern>", "Exclude glob or regex", collect, []).option("--same-origin", "Stay on same origin", true).option("--no-same-origin", "Allow cross-origin links").option("--respect-robots", "Respect robots.txt", true).option("--no-respect-robots", "Ignore robots.txt").option("--concurrency <n>", "Fetch concurrency", (value) => Number(value), 4).option("--title <name>", "Bundle title").option("--force", "Overwrite output directory", false).option("--dry-run", "List pages that would be crawled", false).option("--allow-private-network", "Allow localhost/private IP crawl targets", false).option("--dangerously-allow-unsafe-output", "Dangerously allow --force to delete otherwise unsafe output paths", false).option("--stable-timestamps", "Use a deterministic timestamp in generated frontmatter", false).action(async (url, options) => {
   try {
     const result = await crawlWebsite({
       seedUrl: url,
@@ -109,7 +109,7 @@ program.command("crawl").argument("<url>", "Docs URL to crawl").requiredOption("
     console.log("okfy crawl");
     console.log(`Seed: ${url}`);
     console.log(`Pages: ${result.pagesFetched} fetched, ${result.skipped} skipped, ${result.failed} failed`);
-    console.log(`Concepts: ${result.written.length} written`);
+    console.log(`Concepts: ${result.documents.length} written`);
     console.log(`Output: ${options.out}`);
     console.log("\nNext:");
     console.log(`  okfy validate ${options.out}`);
@@ -119,7 +119,7 @@ program.command("crawl").argument("<url>", "Docs URL to crawl").requiredOption("
     process.exitCode = 1;
   }
 });
-program.command("import").argument("<path>", "Local docs folder or file").requiredOption("--out <dir>", "Output OKF bundle directory").option("--source-name <name>", "Source name").option("--include <glob>", "Include glob", collect, []).option("--exclude <glob>", "Exclude glob", collect, []).option("--force", "Overwrite output directory", false).option("--stable-timestamps", "Use a deterministic timestamp in generated frontmatter", false).action(async (input, options) => {
+program.command("import").argument("<path>", "Local docs folder or file").requiredOption("--out <dir>", "Output OKF bundle directory").option("--source-name <name>", "Source name").option("--include <glob>", "Include glob", collect, []).option("--exclude <glob>", "Exclude glob", collect, []).option("--force", "Overwrite output directory", false).option("--dangerously-allow-unsafe-output", "Dangerously allow --force to delete otherwise unsafe output paths", false).option("--stable-timestamps", "Use a deterministic timestamp in generated frontmatter", false).action(async (input, options) => {
   try {
     printStatus(`okfy import: reading ${input}`);
     printStatus(`okfy import: writing bundle to ${options.out}`);
@@ -131,9 +131,9 @@ program.command("import").argument("<path>", "Local docs folder or file").requir
     });
     console.log("okfy import");
     console.log(`Source: ${input}`);
-    console.log(`Concepts: ${result.written.length} written`);
+    console.log(`Concepts: ${result.documents.length} written`);
     console.log(`Output: ${options.out}`);
-    printStatus(`okfy import: done, wrote ${result.written.length} concepts`);
+    printStatus(`okfy import: done, wrote ${result.documents.length} concepts`);
   } catch (error) {
     console.error(pc.red(error?.message ?? "Import failed."));
     process.exitCode = 1;

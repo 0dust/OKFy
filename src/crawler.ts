@@ -4,7 +4,7 @@ import * as cheerio from "cheerio";
 import { normalizeDocument } from "./normalize.js";
 import { writeOkfBundle } from "./writer.js";
 import { matchesAnyPattern } from "./util/match.js";
-import { canonicalizeUrl, isHttpUrl, isPrivateNetworkUrl, sameOrigin } from "./util/url.js";
+import { assertPublicNetworkUrl, canonicalizeUrl, isHttpUrl, isPrivateNetworkUrl, resolvesToPrivateNetwork, sameOrigin } from "./util/url.js";
 import type { NormalizedDocument, RawDocument } from "./types.js";
 
 export type CrawlOptions = {
@@ -21,6 +21,7 @@ export type CrawlOptions = {
   force?: boolean;
   dryRun?: boolean;
   allowPrivateNetwork?: boolean;
+  dangerouslyAllowUnsafeOutput?: boolean;
   timestamp?: string;
   onProgress?: (event: CrawlProgressEvent) => void;
 };
@@ -45,18 +46,48 @@ export type CrawlResult = {
 const USER_AGENT = "okfy/0.1 (+https://github.com/0dust/OKFy)";
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 
-async function fetchText(url: string): Promise<{ text: string; contentType: string }> {
+type FetchTextOptions = {
+  allowPrivateNetwork?: boolean;
+  sameOriginSeed?: string;
+};
+
+function isRedirect(status: number): boolean {
+  return status >= 300 && status < 400;
+}
+
+function isSecurityRejection(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : "";
+  return message.includes("Private network crawl target rejected") || message.includes("Cross-origin redirect rejected");
+}
+
+async function fetchWithRedirects(url: string, options: FetchTextOptions, signal: AbortSignal): Promise<Response> {
+  let current = url;
+  for (let redirectCount = 0; redirectCount <= 10; redirectCount += 1) {
+    if (!options.allowPrivateNetwork) await assertPublicNetworkUrl(current);
+    if (options.sameOriginSeed && !sameOrigin(current, options.sameOriginSeed)) {
+      throw new Error(`Cross-origin redirect rejected: ${current}`);
+    }
+    const response = await fetch(current, {
+      signal,
+      headers: { "user-agent": USER_AGENT, accept: "text/html,text/markdown,text/plain,*/*" },
+      redirect: "manual"
+    });
+    if (!isRedirect(response.status)) return response;
+    const location = response.headers.get("location");
+    if (!location) throw new Error(`Redirect missing location for ${current}`);
+    current = canonicalizeUrl(location, current);
+  }
+  throw new Error(`Too many redirects for ${url}`);
+}
+
+async function fetchText(url: string, options: FetchTextOptions = {}): Promise<{ text: string; contentType: string }> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
   try {
     let lastError: Error | undefined;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        const response = await fetch(url, {
-          signal: controller.signal,
-          headers: { "user-agent": USER_AGENT, accept: "text/html,text/markdown,text/plain,*/*" },
-          redirect: "follow"
-        });
+        const response = await fetchWithRedirects(url, options, controller.signal);
         if (!response.ok) {
           if ((response.status >= 500 || response.status === 429) && attempt < 2) {
             await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
@@ -71,6 +102,7 @@ async function fetchText(url: string): Promise<{ text: string; contentType: stri
         return { text, contentType: response.headers.get("content-type") ?? "" };
       } catch (error: any) {
         lastError = error;
+        if (isSecurityRejection(error)) throw error;
         if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
       }
     }
@@ -84,8 +116,8 @@ async function loadRobots(seedUrl: string, enabled: boolean): Promise<ReturnType
   if (!enabled) return undefined;
   const origin = new URL(seedUrl).origin;
   try {
-    const response = await fetch(`${origin}/robots.txt`, { headers: { "user-agent": USER_AGENT } });
-    const text = response.ok ? await response.text() : "";
+    const fetched = await fetchText(`${origin}/robots.txt`, { sameOriginSeed: seedUrl });
+    const text = fetched.text;
     return robotsParser(`${origin}/robots.txt`, text);
   } catch {
     return robotsParser(`${origin}/robots.txt`, "");
@@ -127,6 +159,7 @@ export async function crawlWebsite(options: CrawlOptions): Promise<CrawlResult> 
   if (!options.allowPrivateNetwork && isPrivateNetworkUrl(seed)) {
     throw new Error("Private network crawl target rejected. Use --allow-private-network for trusted local fixtures.");
   }
+  if (!options.allowPrivateNetwork) await assertPublicNetworkUrl(seed);
   const maxPages = options.maxPages ?? 100;
   const maxDepth = options.maxDepth ?? 4;
   const robots = await loadRobots(seed, options.respectRobots ?? true);
@@ -155,7 +188,10 @@ export async function crawlWebsite(options: CrawlOptions): Promise<CrawlResult> 
           planned.push(item.url);
           options.onProgress?.({ type: "fetch", url: item.url, fetched: documents.length, queued: queue.length, maxPages });
           try {
-            const fetched = await fetchText(item.url);
+            const fetched = await fetchText(item.url, {
+              allowPrivateNetwork: options.allowPrivateNetwork,
+              sameOriginSeed: options.sameOrigin ?? true ? seed : undefined
+            });
             const contentType = contentTypeFromHeader(fetched.contentType);
             if (!contentType) {
               skipped += 1;
@@ -176,7 +212,12 @@ export async function crawlWebsite(options: CrawlOptions): Promise<CrawlResult> 
               for (const link of links) {
                 try {
                   const next = canonicalizeUrl(link.href, item.url);
-                  if (!queued.has(next) && shouldVisit(next, seed, options, robots) && queued.size < maxPages * 4) {
+                  if (
+                    !queued.has(next) &&
+                    shouldVisit(next, seed, options, robots) &&
+                    (options.allowPrivateNetwork || !(await resolvesToPrivateNetwork(next))) &&
+                    queued.size < maxPages * 4
+                  ) {
                     queued.add(next);
                     queue.push({ url: next, depth: item.depth + 1 });
                     discovered += 1;
@@ -194,7 +235,8 @@ export async function crawlWebsite(options: CrawlOptions): Promise<CrawlResult> 
               discovered,
               maxPages
             });
-          } catch {
+          } catch (error) {
+            if (isSecurityRejection(error)) throw error;
             failed += 1;
             options.onProgress?.({ type: "failed", url: item.url, fetched: documents.length, queued: queue.length, maxPages });
           }
@@ -214,6 +256,7 @@ export async function crawlWebsite(options: CrawlOptions): Promise<CrawlResult> 
     title: options.title,
     sourceName: seed,
     force: options.force,
+    dangerouslyAllowUnsafeOutput: options.dangerouslyAllowUnsafeOutput,
     timestamp: options.timestamp
   });
   return { pagesFetched: documents.length, skipped, failed, written, documents };

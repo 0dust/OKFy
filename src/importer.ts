@@ -12,6 +12,7 @@ export type ImportOptions = {
   include?: string[];
   exclude?: string[];
   force?: boolean;
+  dangerouslyAllowUnsafeOutput?: boolean;
   timestamp?: string;
 };
 
@@ -67,6 +68,8 @@ export async function importLocal(options: ImportOptions): Promise<{ written: st
     title: options.sourceName,
     sourceName: options.sourceName ?? options.inputPath,
     force: options.force,
+    inputPath: root,
+    dangerouslyAllowUnsafeOutput: options.dangerouslyAllowUnsafeOutput,
     timestamp: options.timestamp
   });
   return { written, documents: docs };

@@ -14,7 +14,7 @@
   </p>
 
   <p>
-    <a href="https://www.npmjs.com/package/okfy-ai"><img alt="npm package okfy-ai 0.1.3" src="https://img.shields.io/badge/npm-okfy--ai%400.1.3-2f7d5b?logo=npm"></a>
+    <a href="https://www.npmjs.com/package/okfy-ai"><img alt="npm package okfy-ai 0.1.4" src="https://img.shields.io/badge/npm-okfy--ai%400.1.4-2f7d5b?logo=npm"></a>
     <a href="https://github.com/0dust/OKFy/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/0dust/OKFy/actions/workflows/ci.yml/badge.svg"></a>
     <a href="https://github.com/0dust/OKFy/blob/main/LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-3f3a36"></a>
     <img alt="Node 20 plus" src="https://img.shields.io/badge/node-20%2B-4b5563">
@@ -34,7 +34,7 @@
 
 Agents are bad at reading docs when the only options are "paste everything" or "trust a hidden vector index".
 
-`okfy` converts documentation websites and local Markdown folders into [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf) bundles: typed Markdown files with frontmatter, source URLs, internal links, backlinks, and a read-only MCP server.
+`okfy` converts documentation websites and local Markdown folders into [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf) v0.1-conformant bundles: typed Markdown concept files with frontmatter, reserved navigation files, source URLs, internal links, backlinks, and a read-only MCP server.
 
 Use it when you want Claude, Codex, Cursor, or another MCP-capable agent to search your docs, read only the relevant pages, traverse neighbors, and cite sources without dumping the whole docs site into context.
 
@@ -162,8 +162,8 @@ Expected shape:
 
 ```text
 OKF bundle valid
-Concepts: 9
-Links: 15
+Concepts: 6
+Links: 10
 Broken links: 0
 MCP config:
 ```
@@ -183,7 +183,7 @@ docs site or Markdown folder
 | OKF frontmatter | Agents get type, title, description, tags, source, and timestamp. |
 | Links and backlinks | Agents can traverse related docs instead of reading everything. |
 | MCP stdio server | Local clients can search and read the bundle with no hosted index. |
-| Deterministic validation | Broken links and malformed bundles fail before agents use them. |
+| Deterministic validation | Malformed concept docs fail; broken links and missing indexes warn. |
 
 ## MCP Tools
 
@@ -217,7 +217,16 @@ timestamp: "2026-06-14T00:00:00.000Z"
 Run `okfy import <path> --out <dir>`.
 ```
 
-Each source page or file becomes one concept in v0.1. Folder indexes are generated so humans and agents can navigate the bundle.
+Each non-reserved source page or file becomes one concept in v0.1. `index.md` and `log.md` are reserved OKF files, not concepts. Generated indexes are plain Markdown directory listings with no concept frontmatter, so concept counts, type counts, tag counts, search results, graph nodes, backlinks, and `read_concept` all exclude reserved files.
+
+Validation follows Google OKF v0.1 conformance rules:
+
+- Error: non-reserved `.md` concept missing parseable YAML frontmatter.
+- Error: concept frontmatter missing non-empty string `type`.
+- Error: present `index.md` or `log.md` does not follow reserved-file structure.
+- Warning: broken internal link, missing folder index, or optional-field shape issue.
+
+Unknown concept types, extra frontmatter keys, missing optional fields, broken links, and missing indexes do not make a bundle invalid.
 
 ## Why OKF
 
@@ -237,7 +246,9 @@ OKF keeps knowledge as typed, linked Markdown files:
 - Crawls respect `robots.txt` by default.
 - Crawls stay same-origin by default.
 - Page count, depth, response size, and concurrency are capped.
-- Private network targets are rejected by default for URL crawls.
+- Private network URL literals and redirects to private targets are rejected by default for URL crawls.
+- Preflight DNS-resolved private targets are rejected before fetch; fetch-time DNS is not IP-pinned.
+- `--force` refuses unsafe output directories such as `.`, `/`, the home dir, repo root, input path, input parent, and symlink output dirs unless an explicit dangerous override is provided.
 - HTML and Markdown are treated as text. Scripts are not executed.
 - MCP tools are read-only in v0.1.
 

@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { crawlWebsite } from "../src/crawler.js";
 import { importLocal } from "../src/importer.js";
 import { matchesPattern } from "../src/util/match.js";
@@ -16,6 +16,7 @@ async function tempOut(): Promise<string> {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
 });
 
@@ -42,6 +43,23 @@ describe("importLocal filters", () => {
 
     expect(result.written).toContain("index.md");
     expect(result.written.length).toBeGreaterThan(1);
+  });
+
+  it("refuses unsafe force output directories before deleting anything", async () => {
+    const root = await tempOut();
+    const input = path.join(root, "docs");
+    await fs.mkdir(input);
+    await fs.writeFile(path.join(input, "guide.md"), "# Guide\n\nHello.", "utf8");
+
+    await expect(
+      importLocal({
+        inputPath: input,
+        outDir: root,
+        force: true,
+        timestamp: "2026-06-14T00:00:00.000Z"
+      })
+    ).rejects.toThrow(/unsafe output directory/i);
+    await expect(fs.readFile(path.join(input, "guide.md"), "utf8")).resolves.toContain("Hello.");
   });
 });
 
@@ -87,5 +105,47 @@ describe("crawl dry run", () => {
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+
+  it("rejects redirects to private network targets before following them", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("", {
+        status: 302,
+        headers: { location: "http://127.0.0.1/private" }
+      })
+    );
+    const outDir = await tempOut();
+
+    await expect(
+      crawlWebsite({
+        seedUrl: "http://93.184.216.34/",
+        outDir,
+        maxPages: 1,
+        respectRobots: false,
+        force: true
+      })
+    ).rejects.toThrow(/private network crawl target rejected/i);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects redirects to IPv4-mapped loopback targets before following them", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("", {
+        status: 302,
+        headers: { location: "http://[::ffff:127.0.0.1]/private" }
+      })
+    );
+    const outDir = await tempOut();
+
+    await expect(
+      crawlWebsite({
+        seedUrl: "http://93.184.216.34/",
+        outDir,
+        maxPages: 1,
+        respectRobots: false,
+        force: true
+      })
+    ).rejects.toThrow(/private network crawl target rejected/i);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 });

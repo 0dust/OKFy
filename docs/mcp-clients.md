@@ -25,7 +25,7 @@ okfy inspect ./tmp/okfy-docs
 Expected output:
 
 ```text
-Concepts: 9
+Concepts: 6
 Validation: valid
 Broken links: 0
 ```

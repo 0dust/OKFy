@@ -110,6 +110,7 @@ program
   .option("--force", "Overwrite output directory", false)
   .option("--dry-run", "List pages that would be crawled", false)
   .option("--allow-private-network", "Allow localhost/private IP crawl targets", false)
+  .option("--dangerously-allow-unsafe-output", "Dangerously allow --force to delete otherwise unsafe output paths", false)
   .option("--stable-timestamps", "Use a deterministic timestamp in generated frontmatter", false)
   .action(async (url, options) => {
     try {
@@ -128,7 +129,7 @@ program
       console.log("okfy crawl");
       console.log(`Seed: ${url}`);
       console.log(`Pages: ${result.pagesFetched} fetched, ${result.skipped} skipped, ${result.failed} failed`);
-      console.log(`Concepts: ${result.written.length} written`);
+      console.log(`Concepts: ${result.documents.length} written`);
       console.log(`Output: ${options.out}`);
       console.log("\nNext:");
       console.log(`  okfy validate ${options.out}`);
@@ -147,6 +148,7 @@ program
   .option("--include <glob>", "Include glob", collect, [])
   .option("--exclude <glob>", "Exclude glob", collect, [])
   .option("--force", "Overwrite output directory", false)
+  .option("--dangerously-allow-unsafe-output", "Dangerously allow --force to delete otherwise unsafe output paths", false)
   .option("--stable-timestamps", "Use a deterministic timestamp in generated frontmatter", false)
   .action(async (input, options) => {
     try {
@@ -160,9 +162,9 @@ program
       });
       console.log("okfy import");
       console.log(`Source: ${input}`);
-      console.log(`Concepts: ${result.written.length} written`);
+      console.log(`Concepts: ${result.documents.length} written`);
       console.log(`Output: ${options.out}`);
-      printStatus(`okfy import: done, wrote ${result.written.length} concepts`);
+      printStatus(`okfy import: done, wrote ${result.documents.length} concepts`);
     } catch (error: any) {
       console.error(pc.red(error?.message ?? "Import failed."));
       process.exitCode = 1;

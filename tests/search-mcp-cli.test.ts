@@ -1,13 +1,25 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { createMcpServer } from "../src/mcp.js";
 import { BundleSearch } from "../src/search.js";
 
 const execFileAsync = promisify(execFile);
 const bundleDir = path.resolve("test-fixtures/okf-valid");
+const tempDirs: string[] = [];
+
+async function tempRoot(): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "okfy-cli-"));
+  tempDirs.push(dir);
+  return dir;
+}
+
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
+});
 
 type McpTextResult = { content: Array<{ type: "text"; text: string }> };
 type Handler = (request: unknown, extra?: unknown) => Promise<McpTextResult>;
@@ -33,8 +45,11 @@ describe("search", () => {
     expect(results[0]?.snippet).toContain("search_concepts");
 
     expect(search.getConcept("guides/quickstart.md")?.id).toBe("guides/quickstart");
+    expect(search.getConcept("index")).toBeUndefined();
+    expect(search.search("Okfy Fixture", { limit: 10 }).map((item) => item.id)).not.toContain("index");
     expect(search.graph.outbound.get("guides/quickstart")).toEqual(["reference/api"]);
-    expect(search.graph.backlinks.get("reference/api")).toEqual(expect.arrayContaining(["guides/quickstart", "index"]));
+    expect(search.graph.backlinks.get("reference/api")).toEqual(["guides/quickstart"]);
+    expect([...search.graph.concepts.keys()].sort()).toEqual(["guides/quickstart", "reference/api"]);
   });
 });
 
@@ -72,7 +87,15 @@ describe("MCP server", () => {
     ) as { markdown_body: string; outbound_links: string[]; backlinks: string[] };
     expect(readResult.markdown_body.length).toBeLessThanOrEqual(40);
     expect(readResult.outbound_links).toEqual(["guides/quickstart"]);
-    expect(readResult.backlinks).toEqual(expect.arrayContaining(["guides/quickstart", "index"]));
+    expect(readResult.backlinks).toEqual(["guides/quickstart"]);
+
+    const reservedRead = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "read_concept", arguments: { id: "index" } }
+      })
+    ) as { error: { code: string } };
+    expect(reservedRead.error.code).toBe("unknown_concept");
 
     const neighbors = parseText(
       await callTool({
@@ -82,6 +105,14 @@ describe("MCP server", () => {
     ) as { root: string; concepts: Array<{ id: string }> };
     expect(neighbors.root).toBe("guides/quickstart");
     expect(neighbors.concepts.map((concept) => concept.id)).toContain("reference/api");
+
+    const summary = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "bundle_summary", arguments: {} }
+      })
+    ) as { conceptCount: number; reservedFileCount: number; warningCount: number; validationStatus: string };
+    expect(summary).toMatchObject({ conceptCount: 2, reservedFileCount: 3, warningCount: 0, validationStatus: "valid" });
   });
 });
 
@@ -96,9 +127,9 @@ describe("CLI smoke", () => {
 
     const { stdout, stderr } = await execFileAsync(process.execPath, [cli, "validate", bundleDir, "--json"]);
     const report = JSON.parse(stdout) as { valid: boolean; conceptCount: number };
-    expect(report).toMatchObject({ valid: true, conceptCount: 5 });
+    expect(report).toMatchObject({ valid: true, conceptCount: 2 });
     expect(stderr).toContain("okfy validate: checking");
-    expect(stderr).toContain("okfy validate: valid, 5 concepts");
+    expect(stderr).toContain("okfy validate: valid, 2 concepts");
   });
 
   it("serves MCP over stdio as JSON-RPC only from built CLI", async () => {
@@ -156,8 +187,12 @@ describe("CLI smoke", () => {
 
       send(3, "tools/call", { name: "bundle_summary", arguments: {} });
       const summaryResponse = (await waitFor(3)) as { result: { content: Array<{ text: string }> } };
-      const summary = JSON.parse(summaryResponse.result.content[0]?.text ?? "{}") as { conceptCount: number };
-      expect(summary.conceptCount).toBe(9);
+      const summary = JSON.parse(summaryResponse.result.content[0]?.text ?? "{}") as {
+        conceptCount: number;
+        reservedFileCount: number;
+        validationStatus: string;
+      };
+      expect(summary).toMatchObject({ conceptCount: 6, reservedFileCount: 4, validationStatus: "valid" });
 
       for (const line of stdoutLines) {
         const parsed = JSON.parse(line) as { jsonrpc?: string };
@@ -168,5 +203,35 @@ describe("CLI smoke", () => {
     } finally {
       child.kill("SIGTERM");
     }
+  });
+
+  it("requires dangerous override for unsafe force output paths", async () => {
+    const cli = path.resolve("dist/cli.js");
+    await fs.access(cli);
+    const root = await tempRoot();
+    const input = path.join(root, "docs");
+    await fs.mkdir(input);
+    const sourceFile = path.join(input, "guide.md");
+    await fs.writeFile(sourceFile, "# Guide\n\nHello.", "utf8");
+
+    await expect(execFileAsync(process.execPath, [cli, "import", input, "--out", root, "--force", "--stable-timestamps"])).rejects.toMatchObject({
+      stderr: expect.stringMatching(/Unsafe output directory for --force/i)
+    });
+    await expect(fs.readFile(sourceFile, "utf8")).resolves.toContain("Hello.");
+
+    const { stdout } = await execFileAsync(process.execPath, [
+      cli,
+      "import",
+      input,
+      "--out",
+      root,
+      "--force",
+      "--dangerously-allow-unsafe-output",
+      "--stable-timestamps"
+    ]);
+
+    expect(stdout).toContain("okfy import");
+    await expect(fs.readFile(path.join(root, "guide.md"), "utf8")).resolves.toContain('type: "Guide"');
+    await expect(fs.access(sourceFile)).rejects.toThrow();
   });
 });

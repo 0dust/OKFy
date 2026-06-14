@@ -33,6 +33,16 @@ describe("URL canonicalization", () => {
     expect(isPrivateNetworkUrl("http://192.168.1.5/docs")).toBe(true);
     expect(isPrivateNetworkUrl("https://docs.example.com")).toBe(false);
   });
+
+  it("rejects private IPv4-mapped IPv6 literals without rejecting public mapped IPv4", () => {
+    expect(isPrivateNetworkUrl("http://[::ffff:127.0.0.1]/")).toBe(true);
+    expect(isPrivateNetworkUrl("http://[::ffff:10.0.0.1]/")).toBe(true);
+    expect(isPrivateNetworkUrl("http://[::ffff:192.168.1.5]/")).toBe(true);
+    expect(isPrivateNetworkUrl("http://[::ffff:172.16.0.1]/")).toBe(true);
+    expect(isPrivateNetworkUrl("http://[::ffff:7f00:1]/")).toBe(true);
+    expect(isPrivateNetworkUrl("http://[::ffff:a00:1]/")).toBe(true);
+    expect(isPrivateNetworkUrl("http://[::ffff:808:808]/")).toBe(false);
+  });
 });
 
 describe("path mapping", () => {

@@ -51,11 +51,15 @@ export type ValidationReport = {
   valid: boolean;
   issues: ValidationIssue[];
   conceptCount: number;
+  reservedFileCount: number;
+  warningCount: number;
 };
 
 export type BundleStats = {
   title: string;
   conceptCount: number;
+  reservedFileCount: number;
+  warningCount: number;
   typeDistribution: Record<string, number>;
   tagDistribution: Record<string, number>;
   linkCount: number;

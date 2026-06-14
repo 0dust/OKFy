@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import matter from "gray-matter";
+import { isConceptMarkdownPath, isReservedOkfPath } from "./okf.js";
 import { stripMdExtension, toPosixPath } from "./util/path.js";
 import type { Concept } from "./types.js";
 
@@ -26,6 +27,7 @@ export async function readConceptFile(bundleDir: string, absolutePath: string): 
   const raw = await fs.readFile(absolutePath, "utf8");
   const parsed = matter(raw);
   const relPath = toPosixPath(path.relative(bundleDir, absolutePath));
+  if (isReservedOkfPath(relPath)) throw new Error(`Reserved OKF file is not a concept: ${relPath}`);
   const id = stripMdExtension(relPath);
   const frontmatter = parsed.data as Record<string, unknown>;
   return {
@@ -45,6 +47,8 @@ export async function readBundle(bundleDir: string): Promise<Map<string, Concept
   const files = await listMarkdownFiles(bundleDir);
   const concepts = new Map<string, Concept>();
   for (const file of files) {
+    const relPath = toPosixPath(path.relative(bundleDir, file));
+    if (!isConceptMarkdownPath(relPath)) continue;
     const concept = await readConceptFile(bundleDir, file);
     concepts.set(concept.id, concept);
     concepts.set(concept.path, concept);

@@ -1,13 +1,3 @@
----
-type: "Folder Index"
-title: "Reference Index"
-description: "Index for reference."
-resource: "okfy docs"
-tags:
-  - "index"
-timestamp: "2026-06-14T00:00:00.000Z"
----
+# Reference
 
-# Reference Index
-
-- [mcp-tools](./mcp-tools.md)
+* [MCP Tools](mcp-tools.md) - okfy exposes these readonly MCP tools: | Tool | Purpose | | | | | searchconcepts | Find concept previews by query, type, or tags. | | readconcept | Read one concept body, frontmatt
