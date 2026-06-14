@@ -1,0 +1,10 @@
+{
+  "sourceCommand": "pnpm okfy import examples/local-markdown --out examples/bundles/okfy-docs --source-name \"okfy docs\" --force --stable-timestamps",
+  "expectedConceptCount": 9,
+  "expectedValidationStatus": "valid",
+  "suggestedAgentQuestions": [
+    "Search okfy docs for crawler security defaults, then cite source concepts.",
+    "Read the MCP setup concept and explain the stdio config.",
+    "Find importer concepts and list supported input formats."
+  ]
+}

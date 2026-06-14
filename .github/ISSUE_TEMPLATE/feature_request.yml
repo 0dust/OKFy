@@ -1,0 +1,70 @@
+name: Feature request
+description: Suggest a new command behavior, validation rule, MCP tool behavior, or integration.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        okfy is focused on deterministic OKF generation and queryable MCP memory. Describe the user workflow and why it belongs in that scope.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user problem does this solve?
+      placeholder: "Agents need to discover related concepts without reading every generated Markdown file."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe CLI flags, MCP inputs/outputs, validation output, or library API shape.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - crawl
+        - import
+        - validate
+        - serve
+        - inspect
+        - demo
+        - MCP tools
+        - search
+        - graph
+        - package distribution
+        - documentation
+        - CI or release
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Explain current workaround or smaller version of the feature.
+    validations:
+      required: false
+  - type: textarea
+    id: examples
+    attributes:
+      label: Example usage
+      description: Show expected command, config, API call, or MCP request.
+      render: shell
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: This request keeps OKF bundles portable.
+          required: true
+        - label: This request can work without a mandatory LLM API key.
+          required: true
+        - label: I searched existing issues for a matching request.
+          required: true

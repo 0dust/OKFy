@@ -1,0 +1,79 @@
+name: Importer request
+description: Request support for a docs platform, file format, folder layout, or knowledge source.
+title: "[Importer]: "
+labels:
+  - importer
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Importers should produce deterministic, valid OKF bundles while preserving source links and respecting access rules.
+  - type: input
+    id: source_type
+    attributes:
+      label: Source type
+      description: Name the platform, generator, file format, or folder layout.
+      placeholder: "Docusaurus site"
+    validations:
+      required: true
+  - type: input
+    id: public_sample
+    attributes:
+      label: Public sample
+      description: Link to a public docs site, sample folder, or fixture that maintainers can crawl or import.
+      placeholder: "https://docs.example.com or examples/local-markdown-style fixture"
+    validations:
+      required: true
+  - type: dropdown
+    id: input_kind
+    attributes:
+      label: Input kind
+      options:
+        - public website
+        - Local folder layout
+        - local Markdown folder
+        - MDX folder
+        - HTML export
+        - plain text folder
+        - mixed source
+    validations:
+      required: true
+  - type: textarea
+    id: structure
+    attributes:
+      label: Source structure
+      description: Describe paths, navigation files, sidebars, frontmatter, link patterns, or generated HTML shape.
+      placeholder: |
+        docs/
+          intro.md
+          guides/
+          api/
+        sidebars.ts controls navigation order.
+    validations:
+      required: true
+  - type: textarea
+    id: expected_okf
+    attributes:
+      label: Expected OKF output
+      description: Describe concept types, tags, resource URLs, link handling, or folder layout.
+    validations:
+      required: true
+  - type: textarea
+    id: edge_cases
+    attributes:
+      label: Edge cases
+      description: Auth, generated routes, duplicate pages, localized docs, API reference pages, or unusual links.
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: The sample source is public and safe for maintainers to access.
+          required: true
+        - label: The importer can respect robots.txt, rate limits, and source licenses.
+          required: true
+        - label: I searched existing importer requests.
+          required: true

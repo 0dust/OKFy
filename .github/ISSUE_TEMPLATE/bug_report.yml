@@ -1,0 +1,94 @@
+name: Bug report
+description: Report incorrect behavior, broken output, failed validation, or MCP issues.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping make okfy reliable. Include enough detail for maintainers to reproduce the issue from a clean checkout.
+  - type: input
+    id: version
+    attributes:
+      label: okfy version
+      description: Use the npm version, commit SHA, or branch name.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: node
+    attributes:
+      label: Node.js version
+      description: Run `node --version`.
+      placeholder: "v20.19.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: command
+    attributes:
+      label: Command or surface
+      options:
+        - crawl
+        - import
+        - validate
+        - serve
+        - inspect
+        - demo
+        - MCP tool
+        - library API
+        - package install
+        - documentation
+    validations:
+      required: true
+  - type: textarea
+    id: source
+    attributes:
+      label: Source input
+      description: URL, local fixture shape, or bundle path involved. Remove secrets and private data.
+      placeholder: "https://docs.example.com"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Commands and files needed to reproduce.
+      placeholder: |
+        1. Run `pnpm okfy crawl https://docs.example.com --out ./example-okf`
+        2. Run `pnpm okfy validate ./example-okf`
+        3. See error
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include error output, invalid frontmatter, broken links, or MCP response snippets.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: bundle
+    attributes:
+      label: Minimal OKF output or fixture
+      description: Paste the smallest generated concept or fixture that shows the issue, if available.
+      render: markdown
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I removed credentials, cookies, private docs, and tokens from this report.
+          required: true
+        - label: I searched existing issues for a matching report.
+          required: true

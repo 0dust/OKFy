@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Checkout quickstart</title>
+  </head>
+  <body>
+    <main>
+      <h1>Checkout quickstart</h1>
+      <p>Create a server endpoint that creates a Checkout Session, then redirect the customer to the session URL.</p>
+      <pre><code>const session = await stripe.checkout.sessions.create({
+  mode: "payment",
+  line_items: [{ price: "price_123", quantity: 1 }],
+  success_url: "https://example.com/success",
+  cancel_url: "https://example.com/cancel"
+});</code></pre>
+      <p>See <a href="./sessions.html">Checkout Sessions API</a> and <a href="./webhooks.html">Checkout webhooks</a>.</p>
+      <p>Original source: <a href="https://docs.stripe.com/checkout/quickstart">https://docs.stripe.com/checkout/quickstart</a></p>
+    </main>
+  </body>
+</html>

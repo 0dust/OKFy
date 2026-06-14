@@ -1,0 +1,72 @@
+{
+  "name": "okfy-ai",
+  "version": "0.1.2",
+  "description": "Convert docs into Open Knowledge Format bundles and serve them to MCP agents.",
+  "type": "module",
+  "bin": {
+    "okfy": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "assets/logo-dark.png",
+    "assets/logo-light.png",
+    "assets/demo.gif",
+    "docs/mcp-clients.md",
+    "examples"
+  ],
+  "keywords": [
+    "okf",
+    "open-knowledge-format",
+    "mcp",
+    "agent-memory",
+    "llm",
+    "docs",
+    "rag",
+    "markdown"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsup src/cli.ts src/index.ts --format esm --dts --clean",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "okfy": "node dist/cli.js",
+    "demo": "node dist/cli.js demo",
+    "publish:npm": "node scripts/publish-npm-readme.mjs",
+    "prepublishOnly": "pnpm build && pnpm test && pnpm typecheck"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.13.3",
+    "cheerio": "^1.0.0",
+    "commander": "^12.1.0",
+    "gray-matter": "^4.0.3",
+    "minimatch": "^10.0.1",
+    "minisearch": "^7.1.2",
+    "p-limit": "^6.2.0",
+    "picocolors": "^1.1.1",
+    "robots-parser": "^3.0.1",
+    "turndown": "^7.2.0",
+    "zod": "^3.25.64"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.29.0",
+    "@types/node": "^20.19.1",
+    "@types/turndown": "^5.0.5",
+    "eslint": "^9.29.0",
+    "prettier": "^3.5.3",
+    "tsup": "^8.5.0",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.34.1",
+    "vitest": "^3.2.4"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/0dust/OKFy.git"
+  },
+  "license": "MIT"
+}

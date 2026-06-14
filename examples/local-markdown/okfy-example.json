@@ -1,0 +1,10 @@
+{
+  "sourceCommand": "npx -y okfy-ai import ./examples/local-markdown --out ./tmp/okfy-docs --force --stable-timestamps",
+  "expectedConceptCount": 9,
+  "expectedValidationStatus": "valid",
+  "suggestedAgentQuestions": [
+    "Search for import workflow concepts, read the best match, and explain how to convert a local Markdown folder into OKF.",
+    "Find concepts tagged mcp, read the MCP tools concept, and describe the expected tool-call sequence.",
+    "Read the bundle summary, then identify which concepts are most useful for a first-time okfy user."
+  ]
+}
