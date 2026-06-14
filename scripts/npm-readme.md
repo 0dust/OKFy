@@ -1,16 +1,78 @@
 # okfy-ai
 
-Turn docs into agent-readable Open Knowledge Format bundles.
+Turn docs into agent-readable Open Knowledge Format bundles, then serve them to Claude, Codex, Cursor, or any MCP client.
 
-## Install
+## Use With Agents
 
-Run without installing:
+Create a bundle:
 
 ```bash
-npx -y okfy-ai demo
+npx -y okfy-ai crawl https://docs.stripe.com/checkout --out ./stripe-checkout-okf --max-pages 25
+npx -y okfy-ai validate ./stripe-checkout-okf
 ```
 
-Or install globally:
+Add it to an MCP client:
+
+```json
+{
+  "mcpServers": {
+    "stripe-okf": {
+      "command": "npx",
+      "args": ["-y", "okfy-ai", "serve", "./stripe-checkout-okf", "--mcp"]
+    }
+  }
+}
+```
+
+Ask your agent:
+
+```text
+Use the stripe-okf MCP server. Search for Checkout Sessions, read the most relevant concepts, inspect neighbors if needed, and explain the minimum backend flow with source URLs.
+```
+
+## Client Setup
+
+Claude Code:
+
+```bash
+claude mcp add --transport stdio stripe-okf -- npx -y okfy-ai serve ./stripe-checkout-okf --mcp
+```
+
+Codex:
+
+```toml
+[mcp_servers.stripe_okf]
+command = "npx"
+args = ["-y", "okfy-ai", "serve", "./stripe-checkout-okf", "--mcp"]
+startup_timeout_sec = 20
+tool_timeout_sec = 60
+enabled = true
+```
+
+Claude Desktop, Cursor, and other `mcpServers` clients can use the JSON config above. More setup: https://github.com/0dust/OKFy/blob/main/docs/mcp-clients.md
+
+## Create Bundles
+
+Docs website:
+
+```bash
+npx -y okfy-ai crawl https://docs.stripe.com/checkout --out ./stripe-checkout-okf --max-pages 25
+npx -y okfy-ai validate ./stripe-checkout-okf
+npx -y okfy-ai inspect ./stripe-checkout-okf
+```
+
+Local Markdown:
+
+```bash
+npx -y okfy-ai import ./docs --out ./docs-okf --source-name "Project docs" --force
+npx -y okfy-ai validate ./docs-okf
+```
+
+## Optional CLI Install
+
+You do not need global install for MCP configs. `npx -y okfy-ai ...` is usually better because the MCP client can launch okfy directly.
+
+Install only if you want shorter local commands:
 
 ```bash
 npm install -g okfy-ai
@@ -21,46 +83,7 @@ okfy demo
 
 Requires Node.js 20+.
 
-## Quick Start
-
-Convert a docs site into an OKF bundle:
-
-```bash
-okfy crawl https://docs.stripe.com/checkout --out ./stripe-checkout-okf --max-pages 25
-okfy validate ./stripe-checkout-okf
-okfy inspect ./stripe-checkout-okf
-```
-
-Without installing, replace `okfy` with `npx -y okfy-ai`.
-
-Serve it to an MCP client:
-
-```bash
-okfy serve ./stripe-checkout-okf --mcp
-```
-
-## Local Markdown
-
-```bash
-okfy import ./docs --out ./docs-okf --source-name "Project docs" --force
-okfy validate ./docs-okf
-okfy serve ./docs-okf --mcp
-```
-
-## MCP Config
-
-```json
-{
-  "mcpServers": {
-    "docs-okf": {
-      "command": "npx",
-      "args": ["-y", "okfy-ai", "serve", "./docs-okf", "--mcp"]
-    }
-  }
-}
-```
-
-This `npx -y okfy-ai` form is normal for MCP configs because the client can launch okfy without a global install. If you installed globally, this equivalent config also works:
+After installing, this MCP config is equivalent:
 
 ```json
 {
@@ -73,10 +96,23 @@ This `npx -y okfy-ai` form is normal for MCP configs because the client can laun
 }
 ```
 
-Ask your agent:
+## Demo
 
-```text
-Use the docs-okf MCP server. Search for the relevant topic, read the best matching concepts, inspect neighbors if needed, and answer with source URLs.
+```bash
+npx -y okfy-ai demo
+```
+
+## No-Install MCP Config
+
+```json
+{
+  "mcpServers": {
+    "docs-okf": {
+      "command": "npx",
+      "args": ["-y", "okfy-ai", "serve", "./docs-okf", "--mcp"]
+    }
+  }
+}
 ```
 
 ## CLI Commands

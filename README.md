@@ -22,12 +22,11 @@
   </p>
 
   <p>
-    <a href="#install">Install</a> |
-    <a href="#demo">Demo</a> |
-    <a href="#convert-docs">Convert docs</a> |
-    <a href="#mcp">MCP</a> |
+    <a href="#use-with-agents">Use with agents</a> |
+    <a href="#create-a-bundle">Create a bundle</a> |
+    <a href="#optional-cli-install">CLI install</a> |
     <a href="#why-okf">Why OKF</a> |
-    <a href="docs/mcp-clients.md">Client setup</a>
+    <a href="docs/mcp-clients.md">More clients</a>
   </p>
 </div>
 
@@ -41,15 +40,91 @@ Use it when you want Claude, Codex, Cursor, or another MCP-capable agent to sear
 
 ![okfy terminal demo](assets/demo.gif)
 
-## Install
+## Use With Agents
 
-Run without installing:
+okfy is meant to sit behind your coding agent as a local MCP server. You create an OKF bundle once, then Claude, Codex, Cursor, or any MCP client can search and read that bundle on demand.
+
+Create a bundle from a docs site:
 
 ```bash
-npx -y okfy-ai demo
+npx -y okfy-ai crawl https://docs.stripe.com/checkout --out ./stripe-checkout-okf --max-pages 25
+npx -y okfy-ai validate ./stripe-checkout-okf
 ```
 
-Or install the CLI:
+Then connect it to your agent.
+
+### Claude Code
+
+```bash
+claude mcp add --transport stdio stripe-okf -- npx -y okfy-ai serve ./stripe-checkout-okf --mcp
+```
+
+### Claude Desktop Or Cursor
+
+Add this to `claude_desktop_config.json`, `.cursor/mcp.json`, or any client that accepts `mcpServers` JSON:
+
+```json
+{
+  "mcpServers": {
+    "stripe-okf": {
+      "command": "npx",
+      "args": ["-y", "okfy-ai", "serve", "./stripe-checkout-okf", "--mcp"]
+    }
+  }
+}
+```
+
+### Codex
+
+Add this to `~/.codex/config.toml` or a trusted project config:
+
+```toml
+[mcp_servers.stripe_okf]
+command = "npx"
+args = ["-y", "okfy-ai", "serve", "./stripe-checkout-okf", "--mcp"]
+startup_timeout_sec = 20
+tool_timeout_sec = 60
+enabled = true
+```
+
+Now ask:
+
+```text
+Use the stripe-okf MCP server. Search for Checkout Sessions, read the most relevant concepts, inspect neighbors if needed, and explain the minimum backend flow with source URLs.
+```
+
+More setup details: [docs/mcp-clients.md](docs/mcp-clients.md).
+
+## Create A Bundle
+
+Docs website:
+
+```bash
+npx -y okfy-ai crawl https://docs.stripe.com/checkout --out ./stripe-checkout-okf --max-pages 25
+npx -y okfy-ai validate ./stripe-checkout-okf
+npx -y okfy-ai inspect ./stripe-checkout-okf
+```
+
+Local Markdown:
+
+```bash
+npx -y okfy-ai import ./docs --out ./docs-okf --source-name "Project docs" --force
+npx -y okfy-ai validate ./docs-okf
+```
+
+The MCP command always serves an existing bundle:
+
+```bash
+npx -y okfy-ai serve ./docs-okf --mcp
+```
+
+Do not run `serve --mcp` as a normal interactive terminal session. MCP clients start it as a subprocess and communicate over stdin/stdout.
+
+## Optional CLI Install
+
+You do not need global install for MCP configs. `npx -y okfy-ai ...` is usually better because the MCP client can launch okfy directly.
+
+Install only if you want shorter local commands:
 
 ```bash
 npm install -g okfy-ai
@@ -62,10 +137,23 @@ Package: [okfy-ai on npm](https://www.npmjs.com/package/okfy-ai)
 
 Requires Node.js 20+.
 
+After installing, this MCP config is equivalent:
+
+```json
+{
+  "mcpServers": {
+    "docs-okf": {
+      "command": "okfy",
+      "args": ["serve", "./docs-okf", "--mcp"]
+    }
+  }
+}
+```
+
 ## Demo
 
 ```bash
-okfy demo
+npx -y okfy-ai demo
 ```
 
 The offline demo validates the bundled OKF fixture and prints a ready MCP config.
@@ -79,63 +167,6 @@ Links: 15
 Broken links: 0
 MCP config:
 ```
-
-## Convert Docs
-
-Docs website:
-
-```bash
-okfy crawl https://docs.stripe.com/checkout --out ./stripe-checkout-okf --max-pages 25
-okfy validate ./stripe-checkout-okf
-okfy inspect ./stripe-checkout-okf
-okfy serve ./stripe-checkout-okf --mcp
-```
-
-Without installing, replace `okfy` with `npx -y okfy-ai`.
-
-Local Markdown:
-
-```bash
-okfy import ./docs --out ./docs-okf --source-name "Project docs" --force
-okfy validate ./docs-okf
-okfy serve ./docs-okf --mcp
-```
-
-## MCP
-
-Add a generated bundle to any stdio MCP client:
-
-```json
-{
-  "mcpServers": {
-    "stripe-okf": {
-      "command": "npx",
-      "args": ["-y", "okfy-ai", "serve", "./stripe-checkout-okf", "--mcp"]
-    }
-  }
-}
-```
-
-This `npx -y okfy-ai` form is intentional for MCP configs: the client can launch okfy without requiring a global install. If you installed globally, this equivalent config also works:
-
-```json
-{
-  "mcpServers": {
-    "stripe-okf": {
-      "command": "okfy",
-      "args": ["serve", "./stripe-checkout-okf", "--mcp"]
-    }
-  }
-}
-```
-
-Useful prompt:
-
-```text
-Use the stripe-okf MCP server. Search for Checkout Sessions, read the most relevant concepts, inspect neighbors if needed, and explain the minimum backend flow with source URLs.
-```
-
-Client-specific setup: [docs/mcp-clients.md](docs/mcp-clients.md).
 
 ## What You Get
 

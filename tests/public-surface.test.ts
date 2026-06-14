@@ -41,6 +41,11 @@ describe("public surface", () => {
     expect(readme).toContain("node-20%2B");
     expect(readme).not.toContain("Node.js >=20");
     expect(readme).toContain("[docs/mcp-clients.md](docs/mcp-clients.md)");
+    expect(readme.indexOf("## Use With Agents")).toBeGreaterThan(-1);
+    expect(readme.indexOf("## Use With Agents")).toBeLessThan(readme.indexOf("## Optional CLI Install"));
+    expect(readme).toContain("claude mcp add --transport stdio stripe-okf");
+    expect(readme).toContain(".cursor/mcp.json");
+    expect(readme).toContain("[mcp_servers.stripe_okf]");
   });
 
   it("ships public README assets", async () => {
@@ -106,12 +111,15 @@ describe("public surface", () => {
     expect(parsed.bin?.okfy).toBe("dist/cli.js");
     expect(parsed.bin?.["okfy-ai"]).toBe("dist/cli.js");
     expect(readme).toContain("`okfy-ai` is the npm package name. `okfy` is the installed CLI command.");
-    expect(readme).toContain("This `npx -y okfy-ai` form is intentional for MCP configs");
-    expect(readme).toContain("Without installing, replace `okfy` with `npx -y okfy-ai`.");
+    expect(readme).toContain("You do not need global install for MCP configs.");
+    expect(readme).toContain("MCP clients start it as a subprocess");
     expect(npmReadme).toContain("# okfy-ai");
     expect(npmReadme).toContain("npm install -g okfy-ai");
     expect(npmReadme).toContain("`okfy-ai` is the npm package name. `okfy` is the installed CLI command.");
-    expect(npmReadme).toContain("This `npx -y okfy-ai` form is normal for MCP configs");
+    expect(npmReadme).toContain("Turn docs into agent-readable Open Knowledge Format bundles, then serve them to Claude, Codex, Cursor");
+    expect(npmReadme.indexOf("## Use With Agents")).toBeLessThan(npmReadme.indexOf("## Optional CLI Install"));
+    expect(npmReadme).toContain("claude mcp add --transport stdio stripe-okf");
+    expect(npmReadme).toContain("[mcp_servers.stripe_okf]");
     expect(npmReadme).not.toContain("assets/logo.svg");
     expect(mcpDocs).toContain("Shell examples assume `npm install -g okfy-ai`");
     expect(mcpDocs).toContain("MCP config examples use `npx -y okfy-ai` by default.");
