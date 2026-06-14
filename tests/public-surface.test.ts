@@ -37,7 +37,7 @@ describe("public surface", () => {
     expect(readme).not.toContain("assets/logo.png");
     expect(readme).not.toContain("assets/logo.svg");
     expect(readme).toContain("https://www.npmjs.com/package/okfy-ai");
-    expect(readme).toContain("npm-okfy--ai%400.1.2");
+    expect(readme).toContain(`npm-okfy--ai%40${parsedPackage.version}`);
     expect(readme).toContain("node-20%2B");
     expect(readme).not.toContain("Node.js >=20");
     expect(readme).toContain("[docs/mcp-clients.md](docs/mcp-clients.md)");
