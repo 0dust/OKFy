@@ -5,8 +5,26 @@ import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import pc from "picocolors";
 import { crawlWebsite, type CrawlProgressEvent } from "./crawler.js";
+import { parseDurationSeconds } from "./duration.js";
+import { hashBundleContents } from "./hash.js";
 import { importLocal } from "./importer.js";
 import { serveMcpStdio } from "./mcp.js";
+import { evaluateFreshness, refreshSource } from "./refresh.js";
+import {
+  listSources,
+  readRefreshState,
+  readSourceManifest,
+  removeSource,
+  resolveBundleDir,
+  resolveSourceDir,
+  validateSourceName,
+  writeRefreshState,
+  writeSourceManifest,
+  type RefreshMode,
+  type RefreshState,
+  type SourceManifest,
+  type SourceRecord
+} from "./source-store.js";
 import { inspectBundle, validateBundle } from "./validate.js";
 
 const program = new Command();
@@ -26,6 +44,187 @@ function readPackageVersion(): string {
 function collect(value: string, previous: string[]): string[] {
   previous.push(value);
   return previous;
+}
+
+function duration(value: string): number {
+  return parseDurationSeconds(value);
+}
+
+function numberOption(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) throw new Error(`Expected a non-negative integer, received "${value}".`);
+  return parsed;
+}
+
+function printJson(value: unknown): void {
+  console.log(JSON.stringify(value, null, 2));
+}
+
+async function pathExists(target: string): Promise<boolean> {
+  try {
+    await fs.promises.access(target);
+    return true;
+  } catch (error: any) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function readStateIfExists(name: string): Promise<RefreshState | undefined> {
+  try {
+    return await readRefreshState(name);
+  } catch (error: any) {
+    if (error?.code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+function emptyState(status: RefreshState["status"], checkedAt: string): RefreshState {
+  return {
+    schemaVersion: 1,
+    status,
+    lastCheckedAt: checkedAt,
+    lastRefreshStartedAt: null,
+    lastRefreshCompletedAt: null,
+    lastSuccessfulRefreshAt: null,
+    nextRefreshAllowedAt: null,
+    refreshInProgress: false,
+    lastError: null,
+    bundle: null
+  };
+}
+
+async function summarizeState(record: SourceRecord, maxAgeSeconds?: number): Promise<RefreshState> {
+  const state = record.state;
+  const now = new Date();
+  const decision = await evaluateFreshness({
+    manifest: record.manifest,
+    state,
+    bundleDir: record.bundleDir,
+    now,
+    maxAgeSeconds
+  });
+  return {
+    schemaVersion: 1,
+    status: decision.status,
+    lastCheckedAt: now.toISOString(),
+    lastRefreshStartedAt: state?.lastRefreshStartedAt ?? null,
+    lastRefreshCompletedAt: state?.lastRefreshCompletedAt ?? null,
+    lastSuccessfulRefreshAt: state?.lastSuccessfulRefreshAt ?? null,
+    nextRefreshAllowedAt: state?.nextRefreshAllowedAt ?? null,
+    refreshInProgress: decision.status === "refreshing",
+    lastError: state?.lastError ?? null,
+    bundle:
+      state?.bundle ??
+      (decision.validation
+        ? {
+            conceptCount: decision.validation.conceptCount,
+            warningCount: decision.validation.warningCount,
+            valid: decision.validation.valid,
+            contentHash: ""
+          }
+        : null)
+  };
+}
+
+function sourceRow(record: SourceRecord, state: RefreshState | undefined): Record<string, unknown> {
+  return {
+    name: record.name,
+    kind: record.manifest.kind,
+    seedUrl: record.manifest.source.seedUrl,
+    status: state?.status ?? "missing",
+    lastSuccessfulRefreshAt: state?.lastSuccessfulRefreshAt ?? null,
+    conceptCount: state?.bundle?.conceptCount ?? null,
+    warningCount: state?.bundle?.warningCount ?? null,
+    valid: state?.bundle?.valid ?? false,
+    lastError: state?.lastError ?? null,
+    refreshInProgress: state?.refreshInProgress ?? false,
+    nextRefreshAllowedAt: state?.nextRefreshAllowedAt ?? null,
+    bundlePath: record.bundleDir
+  };
+}
+
+function printSourceRows(rows: Array<Record<string, unknown>>): void {
+  if (!rows.length) {
+    console.log("No registered sources.");
+    return;
+  }
+  for (const row of rows) {
+    console.log(`${row.name} (${row.kind})`);
+    console.log(`  URL: ${row.seedUrl}`);
+    console.log(`  Status: ${row.status}`);
+    console.log(`  Last success: ${row.lastSuccessfulRefreshAt ?? "never"}`);
+    console.log(`  Concepts: ${row.conceptCount ?? "unknown"}`);
+    console.log(`  Bundle: ${row.bundlePath}`);
+  }
+}
+
+function refreshMode(value: string): RefreshMode {
+  if (value === "off" || value === "stale-while-refresh" || value === "blocking") return value;
+  throw new Error(`Invalid refresh mode "${value}". Use off, stale-while-refresh, or blocking.`);
+}
+
+function manifestFromOptions(name: string, seedUrl: string, options: any): SourceManifest {
+  const now = new Date().toISOString();
+  return {
+    schemaVersion: 1,
+    okfyVersion: readPackageVersion(),
+    name: validateSourceName(name),
+    kind: "website",
+    createdAt: now,
+    updatedAt: now,
+    source: {
+      seedUrl: new URL(seedUrl).toString()
+    },
+    crawl: {
+      maxPages: options.maxPages,
+      maxDepth: options.maxDepth,
+      include: options.include ?? [],
+      exclude: options.exclude ?? [],
+      sameOrigin: options.sameOrigin,
+      respectRobots: options.respectRobots,
+      concurrency: options.concurrency,
+      allowPrivateNetwork: Boolean(options.allowPrivateNetwork)
+    },
+    refresh: {
+      mode: options.refreshMode,
+      maxAgeSeconds: options.maxAge,
+      minIntervalSeconds: options.minRefreshInterval
+    },
+    bundle: {
+      dir: options.out ? path.resolve(options.out) : "bundle"
+    }
+  };
+}
+
+async function runSourceRefresh(manifest: SourceManifest, options: { force?: boolean; dryRun?: boolean } = {}) {
+  const state = await readStateIfExists(manifest.name);
+  const sourceDir = resolveSourceDir(manifest.name);
+  const bundleDir = resolveBundleDir(manifest);
+  return refreshSource({
+    manifest,
+    state,
+    sourceDir,
+    bundleDir,
+    force: options.force,
+    dryRun: options.dryRun,
+    inspectBundle,
+    hashBundleContent: hashBundleContents,
+    crawlRunner: (crawlOptions) => crawlWebsite({ ...crawlOptions, onProgress: printCrawlProgress }),
+    writeState: (next) => writeRefreshState(manifest.name, next)
+  });
+}
+
+async function registeredRecord(name: string): Promise<SourceRecord> {
+  const manifest = await readSourceManifest(name);
+  const state = await readStateIfExists(name);
+  return {
+    name,
+    dir: resolveSourceDir(name),
+    manifest,
+    state,
+    bundleDir: resolveBundleDir(manifest)
+  };
 }
 
 function printValidation(report: Awaited<ReturnType<typeof validateBundle>>, json: boolean): void {
@@ -92,6 +291,189 @@ program
   .name("okfy")
   .description("Turn docs into agent memory with Open Knowledge Format and MCP.")
   .version(readPackageVersion());
+
+program
+  .command("add")
+  .argument("<name>", "Local source name")
+  .argument("<url>", "Docs URL to crawl")
+  .option("--max-pages <n>", "Maximum pages", numberOption, 100)
+  .option("--max-depth <n>", "Maximum crawl depth", numberOption, 4)
+  .option("--include <pattern>", "Include glob or regex", collect, [])
+  .option("--exclude <pattern>", "Exclude glob or regex", collect, [])
+  .option("--same-origin", "Stay on same origin", true)
+  .option("--no-same-origin", "Allow cross-origin links")
+  .option("--respect-robots", "Respect robots.txt", true)
+  .option("--no-respect-robots", "Ignore robots.txt")
+  .option("--concurrency <n>", "Fetch concurrency", numberOption, 4)
+  .option("--allow-private-network", "Allow localhost/private IP crawl targets", false)
+  .option("--refresh-mode <mode>", "Refresh mode: off, stale-while-refresh, or blocking", refreshMode, "stale-while-refresh")
+  .option("--max-age <duration>", "Freshness max age", duration, 24 * 60 * 60)
+  .option("--min-refresh-interval <duration>", "Minimum interval between refresh attempts", duration, 15 * 60)
+  .option("--out <dir>", "Explicit active bundle directory")
+  .option("--force", "Overwrite an existing source registration", false)
+  .option("--json", "Print JSON output", false)
+  .action(async (name, url, options) => {
+    try {
+      const sourceDir = resolveSourceDir(name);
+      if ((await pathExists(sourceDir)) && !options.force) {
+        throw new Error(`Source "${name}" already exists. Use --force to overwrite it.`);
+      }
+      if (options.force) await removeSource(name);
+
+      const manifest = manifestFromOptions(name, url, options);
+      await writeSourceManifest(manifest);
+      const result = await runSourceRefresh(manifest, { force: true });
+      const bundlePath = resolveBundleDir(manifest);
+      const payload = {
+        name: manifest.name,
+        status: result.state?.status ?? result.status,
+        bundlePath,
+        conceptCount: result.state?.bundle?.conceptCount ?? 0,
+        warningCount: result.state?.bundle?.warningCount ?? 0,
+        valid: result.state?.bundle?.valid ?? false,
+        nextCommand: `okfy serve ${manifest.name} --mcp --auto-refresh`,
+        error: result.error ?? null
+      };
+      if (options.json) printJson(payload);
+      else {
+        console.log(`Registered source: ${manifest.name}`);
+        console.log(`Status: ${payload.status}`);
+        console.log(`Concepts: ${payload.conceptCount}`);
+        console.log(`Bundle: ${bundlePath}`);
+        console.log("\nNext:");
+        console.log(`  okfy sources`);
+        console.log(`  ${payload.nextCommand}`);
+      }
+      if (result.status !== "fresh") process.exitCode = 1;
+    } catch (error: any) {
+      if (options.json) printJson({ status: "failed", error: { message: error?.message ?? "Add failed." } });
+      else console.error(pc.red(error?.message ?? "Add failed."));
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("sources")
+  .option("--json", "Print JSON output", false)
+  .action(async (options) => {
+    try {
+      const records = await listSources();
+      const rows = await Promise.all(records.map(async (record) => sourceRow(record, await summarizeState(record))));
+      if (options.json) printJson(rows);
+      else printSourceRows(rows);
+    } catch (error: any) {
+      if (options.json) printJson({ error: { message: error?.message ?? "Sources failed." } });
+      else console.error(pc.red(error?.message ?? "Sources failed."));
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("check")
+  .argument("<name-or-bundle>", "Registered source name or OKF bundle directory")
+  .option("--max-age <duration>", "Override freshness max age", duration)
+  .option("--json", "Print JSON output", false)
+  .action(async (target, options) => {
+    try {
+      if (await pathExists(target)) {
+        const [validation, stats] = await Promise.all([validateBundle(target), inspectBundle(target).catch(() => undefined)]);
+        const payload = {
+          target,
+          registeredSource: false,
+          status: validation.valid ? "fresh" : "failed",
+          valid: validation.valid,
+          conceptCount: validation.conceptCount,
+          warningCount: validation.warningCount,
+          stats
+        };
+        if (options.json) printJson(payload);
+        else {
+          console.log(`Bundle: ${target}`);
+          console.log(`Status: ${payload.status}`);
+          console.log(`Valid: ${payload.valid}`);
+          console.log(`Concepts: ${payload.conceptCount}`);
+        }
+        if (!validation.valid) process.exitCode = 1;
+        return;
+      }
+
+      const record = await registeredRecord(target);
+      const nextState = await summarizeState(record, options.maxAge);
+      await writeRefreshState(record.name, nextState);
+      const payload = sourceRow(record, nextState);
+      if (options.json) printJson(payload);
+      else printSourceRows([payload]);
+      if (nextState.status !== "fresh" || nextState.bundle?.valid !== true) process.exitCode = 1;
+    } catch (error: any) {
+      if (options.json) printJson({ status: "failed", error: { message: error?.message ?? "Check failed." } });
+      else console.error(pc.red(error?.message ?? "Check failed."));
+      process.exitCode = 2;
+    }
+  });
+
+program
+  .command("update")
+  .argument("<name>", "Registered source name")
+  .option("--json", "Print JSON output", false)
+  .option("--dry-run", "Report what would be refreshed without replacing the active bundle", false)
+  .action(async (name, options) => {
+    try {
+      const manifest = await readSourceManifest(name);
+      const oldState = await readStateIfExists(name);
+      const result = await runSourceRefresh(manifest, { force: true, dryRun: options.dryRun });
+      const bundlePath = resolveBundleDir(manifest);
+      const payload = {
+        name: manifest.name,
+        status: result.state?.status ?? result.status,
+        skipped: result.skipped,
+        reason: result.reason ?? null,
+        dryRun: Boolean(result.dryRun),
+        oldConceptCount: oldState?.bundle?.conceptCount ?? null,
+        newConceptCount: result.state?.bundle?.conceptCount ?? oldState?.bundle?.conceptCount ?? null,
+        warningCount: result.state?.bundle?.warningCount ?? oldState?.bundle?.warningCount ?? null,
+        bundlePath,
+        dryRunPages: result.crawlResult?.dryRunPages,
+        error: result.error ?? null
+      };
+      if (options.json) printJson(payload);
+      else {
+        console.log(`Updated source: ${manifest.name}`);
+        console.log(`Status: ${payload.status}`);
+        console.log(`Old concepts: ${payload.oldConceptCount ?? "unknown"}`);
+        console.log(`New concepts: ${payload.newConceptCount ?? "unknown"}`);
+        console.log(`Bundle: ${bundlePath}`);
+        if (payload.error) console.log(`Error: ${payload.error.message}`);
+      }
+      if (result.status === "failed") process.exitCode = 1;
+    } catch (error: any) {
+      if (options.json) printJson({ status: "failed", error: { message: error?.message ?? "Update failed." } });
+      else console.error(pc.red(error?.message ?? "Update failed."));
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("remove")
+  .argument("<name>", "Registered source name")
+  .option("-y, --yes", "Skip confirmation", false)
+  .option("--keep-bundle", "Preserve explicit external bundle paths", false)
+  .option("--json", "Print JSON output", false)
+  .action(async (name, options) => {
+    try {
+      validateSourceName(name);
+      if (!options.yes && !options.json) {
+        throw new Error(`Refusing to remove "${name}" without --yes in non-interactive mode.`);
+      }
+      await removeSource(name);
+      const payload = { removed: true, name };
+      if (options.json) printJson(payload);
+      else console.log(`Removed source: ${name}`);
+    } catch (error: any) {
+      if (options.json) printJson({ removed: false, name, error: { message: error?.message ?? "Remove failed." } });
+      else console.error(pc.red(error?.message ?? "Remove failed."));
+      process.exitCode = 1;
+    }
+  });
 
 program
   .command("crawl")
@@ -200,12 +582,15 @@ program
 
 program
   .command("serve")
-  .argument("<bundle>", "OKF bundle directory")
+  .argument("<name-or-bundle>", "Registered source name or OKF bundle directory")
   .option("--mcp", "Start MCP server", false)
   .option("--transport <transport>", "Transport: stdio", "stdio")
   .option("--name <server-name>", "MCP server name", "okfy")
   .option("--max-result-chars <n>", "Maximum characters per tool result", (value) => Number(value), 12000)
-  .action(async (bundle, options) => {
+  .option("--auto-refresh", "Enable registered source refresh behavior", false)
+  .option("--refresh-mode <mode>", "Refresh mode override: off, stale-while-refresh, or blocking", refreshMode)
+  .option("--max-age <duration>", "Override freshness max age", duration)
+  .action(async (target, options) => {
     if (!options.mcp) {
       console.error(pc.red("Only --mcp mode is supported in v0.1."));
       process.exitCode = 1;
@@ -216,11 +601,55 @@ program
       process.exitCode = 1;
       return;
     }
-    printStatus(`okfy serve: loading ${bundle}`);
-    printStatus(`okfy serve: starting MCP stdio server "${options.name}"`);
-    await serveMcpStdio({ bundleDir: bundle, name: options.name, maxResultChars: options.maxResultChars });
-    printStatus("okfy serve: ready on stdio (stdout is reserved for MCP JSON-RPC)");
-    printStatus("okfy serve: tools bundle_summary, search_concepts, read_concept, get_neighbors, list_types, list_tags");
+    if (await pathExists(target)) {
+      printStatus(`okfy serve: loading ${target}`);
+      printStatus(`okfy serve: starting MCP stdio server "${options.name}"`);
+      await serveMcpStdio({ bundleDir: target, name: options.name, maxResultChars: options.maxResultChars });
+      printStatus("okfy serve: ready on stdio (stdout is reserved for MCP JSON-RPC)");
+      printStatus("okfy serve: tools bundle_summary, search_concepts, read_concept, get_neighbors, list_types, list_tags");
+      return;
+    }
+
+    try {
+      const manifest = await readSourceManifest(target);
+      const bundleDir = resolveBundleDir(manifest);
+      const mode = options.autoRefresh ? (options.refreshMode ?? manifest.refresh.mode) : "off";
+      const maxAgeSeconds = options.maxAge;
+
+      printStatus(`okfy serve: loading source ${manifest.name} from ${bundleDir}`);
+      printStatus(`okfy serve: starting MCP stdio server "${options.name}"`);
+      await serveMcpStdio({
+        bundleDir,
+        name: options.name,
+        maxResultChars: options.maxResultChars,
+        source: {
+          name: manifest.name,
+          kind: manifest.kind,
+          seedUrl: manifest.source.seedUrl
+        },
+        refresh: {
+          mode,
+          getFreshness: async () => {
+            const record = await registeredRecord(manifest.name);
+            const nextState = await summarizeState(record, maxAgeSeconds);
+            await writeRefreshState(manifest.name, nextState);
+            return nextState;
+          },
+          refreshIfNeeded: async () => {
+            const result = await runSourceRefresh(manifest, { force: false });
+            return {
+              bundleDir,
+              freshness: result.state ?? (await readStateIfExists(manifest.name)) ?? emptyState(result.status, new Date().toISOString())
+            };
+          }
+        }
+      });
+      printStatus("okfy serve: ready on stdio (stdout is reserved for MCP JSON-RPC)");
+      printStatus("okfy serve: tools bundle_summary, search_concepts, read_concept, get_neighbors, list_types, list_tags");
+    } catch (error: any) {
+      console.error(pc.red(error?.message ?? "Serve failed."));
+      process.exitCode = 1;
+    }
   });
 
 function resolveDemoBundle(): string {

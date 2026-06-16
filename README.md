@@ -23,6 +23,7 @@
 
   <p>
     <a href="#use-with-agents">Use with agents</a> |
+    <a href="#keep-sources-fresh">Keep sources fresh</a> |
     <a href="#create-a-bundle">Create a bundle</a> |
     <a href="#optional-cli-install">CLI install</a> |
     <a href="#why-okf">Why OKF</a> |
@@ -34,7 +35,7 @@
 
 Agents are bad at reading docs when the only options are "paste everything" or "trust a hidden vector index".
 
-`okfy` converts documentation websites and local Markdown folders into [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf) v0.1-conformant bundles: typed Markdown concept files with frontmatter, reserved navigation files, source URLs, internal links, backlinks, and a read-only MCP server.
+`okfy` converts documentation websites and local Markdown folders into [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf) v0.1-conformant bundles: typed Markdown concept files with frontmatter, reserved navigation files, source URLs, internal links, backlinks, and a read-only MCP server. It can also remember third-party docs sources locally and refresh their bundles when they go stale.
 
 Use it when you want Claude, Codex, Cursor, or another MCP-capable agent to search your docs, read only the relevant pages, traverse neighbors, and cite sources without dumping the whole docs site into context.
 
@@ -42,21 +43,21 @@ Use it when you want Claude, Codex, Cursor, or another MCP-capable agent to sear
 
 ## Use With Agents
 
-okfy is meant to sit behind your coding agent as a local MCP server. You create an OKF bundle once, then Claude, Codex, Cursor, or any MCP client can search and read that bundle on demand.
+okfy is meant to sit behind your coding agent as a local MCP server. Register a docs source once, then Claude, Codex, Cursor, or any MCP client can search and read the local OKF bundle on demand.
 
-Create a bundle from a docs site:
+Register a third-party docs source and serve it by name:
 
 ```bash
-npx -y okfy-ai crawl https://docs.stripe.com/checkout --out ./stripe-checkout-okf --max-pages 25
-npx -y okfy-ai validate ./stripe-checkout-okf
+npx -y okfy-ai add stripe https://docs.stripe.com/checkout --max-pages 100 --max-depth 4
+npx -y okfy-ai serve stripe --mcp --auto-refresh
 ```
 
-Then connect it to your agent.
+The MCP server uses the cached local bundle immediately. When the source is stale, `--auto-refresh` refreshes it according to the source policy while keeping freshness metadata visible through `bundle_summary`.
 
 ### Claude Code
 
 ```bash
-claude mcp add --transport stdio stripe-okf -- npx -y okfy-ai serve ./stripe-checkout-okf --mcp
+claude mcp add --transport stdio stripe-okf -- npx -y okfy-ai serve stripe --mcp --auto-refresh
 ```
 
 ### Claude Desktop Or Cursor
@@ -68,7 +69,7 @@ Add this to `claude_desktop_config.json`, `.cursor/mcp.json`, or any client that
   "mcpServers": {
     "stripe-okf": {
       "command": "npx",
-      "args": ["-y", "okfy-ai", "serve", "./stripe-checkout-okf", "--mcp"]
+      "args": ["-y", "okfy-ai", "serve", "stripe", "--mcp", "--auto-refresh"]
     }
   }
 }
@@ -81,7 +82,7 @@ Add this to `~/.codex/config.toml` or a trusted project config:
 ```toml
 [mcp_servers.stripe_okf]
 command = "npx"
-args = ["-y", "okfy-ai", "serve", "./stripe-checkout-okf", "--mcp"]
+args = ["-y", "okfy-ai", "serve", "stripe", "--mcp", "--auto-refresh"]
 startup_timeout_sec = 20
 tool_timeout_sec = 60
 enabled = true
@@ -95,9 +96,49 @@ Use the stripe-okf MCP server. Search for Checkout Sessions, read the most relev
 
 More setup details: [docs/mcp-clients.md](docs/mcp-clients.md).
 
+## Keep Sources Fresh
+
+Registered sources are the local-first workflow for third-party docs sites that change over time:
+
+```bash
+npx -y okfy-ai add stripe https://docs.stripe.com/checkout --max-pages 100 --max-depth 4
+npx -y okfy-ai sources
+npx -y okfy-ai check stripe
+npx -y okfy-ai update stripe
+npx -y okfy-ai remove stripe
+npx -y okfy-ai serve stripe --mcp --auto-refresh
+```
+
+By default, okfy stores registered sources under `~/.okfy`. Set `OKFY_HOME` to use a different local cache for CI, tests, or per-project isolation:
+
+```text
+$OKFY_HOME/
+  sources/
+    stripe/
+      source.json
+      state.json
+      bundle/
+        index.md
+        ...
+```
+
+`source.json` records the seed URL, crawl options, refresh policy, and bundle location. `state.json` records freshness, the last successful refresh, refresh failures, validation summary, and whether a refresh is in progress.
+
+There is no OKFY cloud registry, account, hosted ranking, or cloud refresh worker. Refresh runs on your machine, using the stored source manifest and the same crawler safety defaults as `crawl`.
+
+Freshness is age-based. A registered bundle is fresh when it exists, validates, and was successfully refreshed within its configured max age. The default mode is `stale-while-refresh`: if the bundle is stale, MCP search and read tools keep serving the current cached bundle while a background refresh runs. Use blocking mode when you want the server to refresh before answering tool calls:
+
+```bash
+npx -y okfy-ai serve stripe --mcp --auto-refresh --refresh-mode blocking
+```
+
+Use `--refresh-mode off` when MCP serving should never trigger network fetches; you can still run `npx -y okfy-ai update stripe` manually.
+
 ## Create A Bundle
 
-Docs website:
+The original crawl/import path still works for one-off snapshots and project-local bundles.
+
+Docs website snapshot:
 
 ```bash
 npx -y okfy-ai crawl https://docs.stripe.com/checkout --out ./stripe-checkout-okf --max-pages 25
@@ -112,13 +153,13 @@ npx -y okfy-ai import ./docs --out ./docs-okf --source-name "Project docs" --for
 npx -y okfy-ai validate ./docs-okf
 ```
 
-The MCP command always serves an existing bundle:
+Serve an existing bundle path when you already manage the bundle yourself:
 
 ```bash
 npx -y okfy-ai serve ./docs-okf --mcp
 ```
 
-Do not run `serve --mcp` as a normal interactive terminal session. MCP clients start it as a subprocess and communicate over stdin/stdout.
+Direct bundle paths do not use source auto-refresh. Do not run `serve --mcp` as a normal interactive terminal session. MCP clients start it as a subprocess and communicate over stdin/stdout.
 
 ## Optional CLI Install
 
@@ -142,9 +183,9 @@ After installing, this MCP config is equivalent:
 ```json
 {
   "mcpServers": {
-    "docs-okf": {
+    "stripe-okf": {
       "command": "okfy",
-      "args": ["serve", "./docs-okf", "--mcp"]
+      "args": ["serve", "stripe", "--mcp", "--auto-refresh"]
     }
   }
 }
@@ -171,8 +212,8 @@ MCP config:
 ## What You Get
 
 ```text
-docs site or Markdown folder
-  -> OKF bundle: Markdown files + YAML frontmatter + links
+registered docs source or Markdown folder
+  -> local OKF bundle: Markdown files + YAML frontmatter + links
   -> MCP server: search_concepts, read_concept, get_neighbors
   -> source-backed agent answers
 ```
@@ -189,14 +230,14 @@ docs site or Markdown folder
 
 | Tool | Purpose |
 | --- | --- |
-| `bundle_summary` | Show bundle stats and validation status. |
+| `bundle_summary` | Show bundle stats, validation status, and source freshness when available. |
 | `search_concepts` | Search concept previews by query, type, or tags. |
 | `read_concept` | Read one concept body, frontmatter, links, backlinks, and source. |
 | `get_neighbors` | Traverse outbound links and backlinks around a concept. |
 | `list_types` | List concept types and counts. |
 | `list_tags` | List tags and counts. |
 
-The server is read-only in v0.1. `okfy serve --mcp` writes MCP JSON-RPC to stdout, so launch it through an MCP client rather than as a normal terminal command.
+The server is read-only in v0.1. Auto-refresh is server-side maintenance for registered sources, not an agent-callable write tool. `okfy serve --mcp` writes MCP JSON-RPC to stdout, so launch it through an MCP client rather than as a normal terminal command.
 
 ## Bundle Format
 
@@ -255,17 +296,26 @@ OKF keeps knowledge as typed, linked Markdown files:
 ## Commands
 
 ```bash
+okfy add <name> <url>
+okfy sources
+okfy check <name-or-bundle>
+okfy update <name>
+okfy remove <name>
 okfy crawl <url> --out <dir>
 okfy import <path> --out <dir>
 okfy validate <bundle>
 okfy inspect <bundle>
-okfy serve <bundle> --mcp
+okfy serve <name-or-bundle> --mcp
 okfy demo
 ```
 
 Common options:
 
 ```bash
+okfy add stripe https://docs.stripe.com/checkout --max-pages 100 --max-depth 4 --max-age 24h
+okfy serve stripe --mcp --auto-refresh --refresh-mode stale-while-refresh
+okfy check stripe --json
+okfy update stripe --json
 okfy crawl https://docs.example.com --out ./docs-okf --max-pages 100 --max-depth 4
 okfy import ./docs --out ./docs-okf --source-name "Project docs" --force
 okfy validate ./docs-okf --json
@@ -306,6 +356,8 @@ Keep generated OKF output deterministic so bundle diffs stay reviewable.
 ## Current Limits
 
 - No GitHub repo URL importer yet. Use a local checkout or docs folder.
+- No hosted OKFY registry or cloud refresh worker.
+- Local file imports are explicit snapshots; website source registration is the auto-refresh path.
 - One source page or file becomes one concept.
 - HTML cleanup quality varies by docs site.
 - MCP support is stdio-first.

@@ -1,56 +1,78 @@
 # MCP Client Setup
 
-okfy exposes OKF bundles through a local stdio MCP server:
+okfy is meant to be launched by your agent as a local stdio MCP server. The default setup uses `npx -y okfy-ai`, so Claude, Codex, Cursor, or another MCP client can run okfy without a global install:
 
 ```bash
-okfy serve ./tmp/okfy-docs --mcp
+npx -y okfy-ai add stripe https://docs.stripe.com/checkout --max-pages 100 --max-depth 4
+npx -y okfy-ai serve stripe --mcp --auto-refresh
 ```
 
-Shell examples assume `npm install -g okfy-ai`, then the `okfy` CLI command.
+MCP stdio means the client starts okfy as a local subprocess, sends JSON-RPC on stdin, and reads JSON-RPC responses on stdout. okfy logs and refresh progress belong on stderr so the MCP protocol stays clean.
 
-MCP config examples use `npx -y okfy-ai` by default. That is normal for stdio MCP servers because the MCP client can launch the npm package without requiring a global install.
+## Registered Source Workflow
 
-Use stdio for local bundles. MCP stdio means the client launches a local command as a subprocess, sends JSON-RPC messages on stdin, and reads JSON-RPC responses on stdout. okfy logs should go to stderr.
-
-## Prepare a Bundle
-
-Offline fixture:
+Use registered sources for third-party docs sites that should stay fresh over time:
 
 ```bash
-okfy import ./examples/local-markdown --out ./tmp/okfy-docs --force
-okfy validate ./tmp/okfy-docs
-okfy inspect ./tmp/okfy-docs
+npx -y okfy-ai add stripe https://docs.stripe.com/checkout --max-pages 100 --max-depth 4
+npx -y okfy-ai sources
+npx -y okfy-ai check stripe
+npx -y okfy-ai update stripe
+npx -y okfy-ai remove stripe
+npx -y okfy-ai serve stripe --mcp --auto-refresh
 ```
 
-Expected output:
+By default, okfy stores sources in `~/.okfy`. Override that with `OKFY_HOME` when you want CI isolation, a project-local cache, or a disposable test home:
 
 ```text
-Concepts: 6
-Validation: valid
-Broken links: 0
+$OKFY_HOME/
+  sources/
+    stripe/
+      source.json
+      state.json
+      bundle/
+        index.md
+        ...
 ```
 
-Docs-site crawl:
+`source.json` stores the seed URL, crawl options, refresh policy, and bundle location. `state.json` stores freshness status, last successful refresh time, validation summary, refresh-in-progress state, and the latest refresh error if one exists.
+
+This is local-first. There is no OKFY cloud registry, account, central cache, hosted ranking, or cloud refresh worker. Refreshes run on your machine by rerunning the stored crawl configuration.
+
+Default refresh mode is `stale-while-refresh`: if the cached bundle is stale, MCP tools keep serving the current bundle while okfy refreshes in the background. Use blocking mode when you want stale sources refreshed before search/read/list tool calls answer:
 
 ```bash
-okfy crawl https://docs.stripe.com/checkout --out ./stripe-checkout-okf --max-pages 25
-okfy validate ./stripe-checkout-okf
-okfy serve ./stripe-checkout-okf --mcp
+npx -y okfy-ai serve stripe --mcp --auto-refresh --refresh-mode blocking
 ```
+
+Use `--refresh-mode off` when MCP serving should never trigger network fetches. You can still refresh explicitly with `npx -y okfy-ai update stripe`.
+
+## Existing Bundle Paths
+
+The existing crawl/import workflow still works for one-off snapshots and project-local bundles:
+
+```bash
+npx -y okfy-ai crawl https://docs.stripe.com/checkout --out ./stripe-checkout-okf --max-pages 25
+npx -y okfy-ai validate ./stripe-checkout-okf
+npx -y okfy-ai serve ./stripe-checkout-okf --mcp
+```
+
+Local Markdown import still works too:
+
+```bash
+npx -y okfy-ai import ./docs --out ./docs-okf --source-name "Project docs" --force
+npx -y okfy-ai validate ./docs-okf
+npx -y okfy-ai serve ./docs-okf --mcp
+```
+
+Direct bundle paths do not use source auto-refresh. Use `add` plus `serve <source> --mcp --auto-refresh` when you want okfy to track freshness for a website source.
 
 ## Claude Code
 
-Add okfy as a local stdio server:
+Add a registered source as a local stdio server:
 
 ```bash
-claude mcp add --transport stdio okfy-docs -- okfy serve ./tmp/okfy-docs --mcp
-claude mcp list
-```
-
-No-install equivalent:
-
-```bash
-claude mcp add --transport stdio okfy-docs -- npx -y okfy-ai serve ./tmp/okfy-docs --mcp
+claude mcp add --transport stdio stripe-okf -- npx -y okfy-ai serve stripe --mcp --auto-refresh
 claude mcp list
 ```
 
@@ -65,10 +87,27 @@ Project-scoped config, saved as `.mcp.json` at project root:
 ```json
 {
   "mcpServers": {
-    "okfy-docs": {
+    "stripe-okf": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "okfy-ai", "serve", "./tmp/okfy-docs", "--mcp"]
+      "args": ["-y", "okfy-ai", "serve", "stripe", "--mcp", "--auto-refresh"]
+    }
+  }
+}
+```
+
+Use `OKFY_HOME` in the server env when the source cache is not in the default `~/.okfy`:
+
+```json
+{
+  "mcpServers": {
+    "stripe-okf": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "okfy-ai", "serve", "stripe", "--mcp", "--auto-refresh"],
+      "env": {
+        "OKFY_HOME": "/absolute/path/to/.okfy"
+      }
     }
   }
 }
@@ -77,7 +116,7 @@ Project-scoped config, saved as `.mcp.json` at project root:
 Example prompt:
 
 ```text
-Use the okfy-docs MCP server. Search for local Markdown import, read the best matching concept, inspect its neighbors, then explain the workflow with citations.
+Use the stripe-okf MCP server. Search for Checkout Sessions, read the most relevant concepts, inspect neighbors if needed, and explain the minimum backend flow with source URLs.
 ```
 
 Expected tool-call sequence:
@@ -85,10 +124,9 @@ Expected tool-call sequence:
 ```text
 ToolSearch or MCP server discovery
 bundle_summary
-search_concepts({ "query": "local Markdown import", "limit": 5 })
+search_concepts({ "query": "Checkout Sessions", "limit": 5 })
 read_concept({ "id": "<best-result-id>" })
 get_neighbors({ "id": "<best-result-id>", "depth": 1 })
-read_concept({ "id": "<neighbor-id>", "max_chars": 4000 })
 final answer with cited resource fields
 ```
 
@@ -96,21 +134,21 @@ Troubleshooting:
 
 - `spawn npx ENOENT`: install Node.js >=20 and ensure `npx` is on `PATH`.
 - Server pending: run `/mcp`; approve project-scoped `.mcp.json` if prompted.
-- Empty tools: run `okfy validate ./tmp/okfy-docs`; invalid bundles should fail before serving.
+- Unknown source name: run `npx -y okfy-ai sources` and confirm the source exists in the same `OKFY_HOME`.
+- Stale source: run `npx -y okfy-ai check stripe`; use `update stripe` for an immediate refresh.
 - Output too large: lower `--max-result-chars`, or ask the agent to search before reading concepts.
-- Wrong bundle path: use an absolute path in config if client starts from another working directory.
-- Already installed globally: use `"command": "okfy"` and args `["serve", "./tmp/okfy-docs", "--mcp"]`.
+- Already installed globally: use `"command": "okfy"` and args `["serve", "stripe", "--mcp", "--auto-refresh"]`.
 
-## Claude Desktop
+## Claude Desktop Or Cursor
 
-Claude Desktop uses MCP server JSON. Add this entry to `claude_desktop_config.json`:
+Claude Desktop and Cursor use MCP server JSON. Add this entry to `claude_desktop_config.json`, `.cursor/mcp.json`, or any client that accepts `mcpServers` JSON:
 
 ```json
 {
   "mcpServers": {
-    "okfy-docs": {
+    "stripe-okf": {
       "command": "npx",
-      "args": ["-y", "okfy-ai", "serve", "/absolute/path/to/okfy/tmp/okfy-docs", "--mcp"]
+      "args": ["-y", "okfy-ai", "serve", "stripe", "--mcp", "--auto-refresh"]
     }
   }
 }
@@ -119,33 +157,37 @@ Claude Desktop uses MCP server JSON. Add this entry to `claude_desktop_config.js
 Exact command represented by the config:
 
 ```bash
-npx -y okfy-ai serve /absolute/path/to/okfy/tmp/okfy-docs --mcp
+npx -y okfy-ai serve stripe --mcp --auto-refresh
 ```
 
-Restart Claude Desktop after editing config.
+Blocking refresh variant:
+
+```json
+{
+  "mcpServers": {
+    "stripe-okf": {
+      "command": "npx",
+      "args": ["-y", "okfy-ai", "serve", "stripe", "--mcp", "--auto-refresh", "--refresh-mode", "blocking"]
+    }
+  }
+}
+```
+
+Restart the client after editing config.
 
 Example prompt:
 
 ```text
-Use okfy-docs. Find concepts about MCP tools, read the relevant concept, then tell me which tool to call first when answering a docs question.
-```
-
-Expected tool-call sequence:
-
-```text
-bundle_summary
-search_concepts({ "query": "MCP tools" })
-read_concept({ "id": "<mcp-tools-id>" })
-answer with cited resource fields
+Use stripe-okf. Find concepts about MCP tools, read the relevant concept, then tell me which source URL supports the answer.
 ```
 
 Troubleshooting:
 
-- Desktop cannot find `npx`: replace `"command": "npx"` with full path from `which npx`.
-- Server exits immediately: run exact command in terminal and fix bundle validation errors.
-- No okfy tools visible: restart Claude Desktop after config changes.
-- Relative path fails: use absolute bundle path.
-- Already installed globally: use `"command": "okfy"` and args `["serve", "/absolute/path/to/okfy/tmp/okfy-docs", "--mcp"]`.
+- Desktop cannot find `npx`: replace `"command": "npx"` with the full path from `which npx`.
+- Server exits immediately: run the exact command in a terminal and fix source or bundle validation errors.
+- No okfy tools visible: restart the client after config changes.
+- Source cache elsewhere: add `"env": { "OKFY_HOME": "/absolute/path/to/.okfy" }`.
+- Already installed globally: use `"command": "okfy"` and args `["serve", "stripe", "--mcp", "--auto-refresh"]`.
 
 ## Codex
 
@@ -166,9 +208,21 @@ Trusted project config path:
 Add:
 
 ```toml
-[mcp_servers.okfy_docs]
+[mcp_servers.stripe_okf]
 command = "npx"
-args = ["-y", "okfy-ai", "serve", "./tmp/okfy-docs", "--mcp"]
+args = ["-y", "okfy-ai", "serve", "stripe", "--mcp", "--auto-refresh"]
+startup_timeout_sec = 20
+tool_timeout_sec = 60
+enabled = true
+```
+
+If you need a non-default source cache:
+
+```toml
+[mcp_servers.stripe_okf]
+command = "npx"
+args = ["-y", "okfy-ai", "serve", "stripe", "--mcp", "--auto-refresh"]
+env = { OKFY_HOME = "/absolute/path/to/.okfy" }
 startup_timeout_sec = 20
 tool_timeout_sec = 60
 enabled = true
@@ -177,20 +231,13 @@ enabled = true
 Exact command represented by the config:
 
 ```bash
-npx -y okfy-ai serve ./tmp/okfy-docs --mcp
+npx -y okfy-ai serve stripe --mcp --auto-refresh
 ```
 
 CLI alternative:
 
 ```bash
-codex mcp add okfy_docs -- okfy serve ./tmp/okfy-docs --mcp
-codex mcp --help
-```
-
-No-install CLI alternative:
-
-```bash
-codex mcp add okfy_docs -- npx -y okfy-ai serve ./tmp/okfy-docs --mcp
+codex mcp add stripe_okf -- npx -y okfy-ai serve stripe --mcp --auto-refresh
 codex mcp --help
 ```
 
@@ -203,7 +250,7 @@ In Codex TUI, inspect active servers:
 Example prompt:
 
 ```text
-Use the okfy_docs MCP server. Search for the concept about progressive disclosure, read it, then explain how okfy keeps agent context small.
+Use the stripe_okf MCP server. Search for the concept about progressive disclosure, read it, then explain how okfy keeps agent context small.
 ```
 
 Expected tool-call sequence:
@@ -220,22 +267,22 @@ final answer with citations
 Troubleshooting:
 
 - Config ignored: project `.codex/config.toml` loads only for trusted projects; use user config if unsure.
-- Server startup timeout: increase `startup_timeout_sec` if first `npx` install is slow.
-- Tool timeout: increase `tool_timeout_sec` for large bundles.
-- Relative path wrong: set `cwd` or use absolute bundle path.
+- Server startup timeout: increase `startup_timeout_sec` if first `npx` install or first source load is slow.
+- Tool timeout: increase `tool_timeout_sec` for large bundles or blocking refresh mode.
+- Source not found: check `OKFY_HOME` and run `npx -y okfy-ai sources`.
 - Need current server list: run `/mcp` in TUI.
-- Already installed globally: use `command = "okfy"` and `args = ["serve", "./tmp/okfy-docs", "--mcp"]`.
+- Already installed globally: use `command = "okfy"` and `args = ["serve", "stripe", "--mcp", "--auto-refresh"]`.
 
-## Generic MCP stdio
+## Generic MCP Stdio
 
 Use this JSON for clients that accept Claude-style `mcpServers` config:
 
 ```json
 {
   "mcpServers": {
-    "okfy-docs": {
+    "stripe-okf": {
       "command": "npx",
-      "args": ["-y", "okfy-ai", "serve", "./tmp/okfy-docs", "--mcp"],
+      "args": ["-y", "okfy-ai", "serve", "stripe", "--mcp", "--auto-refresh"],
       "env": {}
     }
   }
@@ -245,7 +292,21 @@ Use this JSON for clients that accept Claude-style `mcpServers` config:
 Exact command:
 
 ```bash
-npx -y okfy-ai serve ./tmp/okfy-docs --mcp
+npx -y okfy-ai serve stripe --mcp --auto-refresh
+```
+
+For a direct bundle path instead of a registered source:
+
+```json
+{
+  "mcpServers": {
+    "docs-okf": {
+      "command": "npx",
+      "args": ["-y", "okfy-ai", "serve", "./docs-okf", "--mcp"],
+      "env": {}
+    }
+  }
+}
 ```
 
 Expected protocol flow:
@@ -266,17 +327,17 @@ agent answers with resource citations
 Example prompt:
 
 ```text
-Use okfy-docs. Search for OKF bundle structure, read the most relevant concepts, and explain the generated files.
+Use stripe-okf. Search for OKF bundle structure, read the most relevant concepts, and explain the generated files.
 ```
 
 Troubleshooting:
 
 - stdout has logs: okfy must write only MCP JSON-RPC messages to stdout; logs belong on stderr.
-- Client cannot start process: use absolute `command` path and absolute bundle path.
+- Client cannot start process: use absolute `command` path, and set `OKFY_HOME` when using a non-default source cache.
 - `tools/list` empty: confirm `okfy serve` was started with `--mcp`.
-- Search returns weak matches: run `okfy inspect` and verify titles, descriptions, and tags were generated.
+- Search returns weak matches: run `npx -y okfy-ai inspect <bundle>` for bundle paths or `npx -y okfy-ai check <source>` for registered sources.
 - Agent reads too much: ask it to call `search_concepts` first and `read_concept` with `max_chars`.
-- Already installed globally: use `"command": "okfy"` and args `["serve", "./tmp/okfy-docs", "--mcp"]`.
+- Already installed globally: use `"command": "okfy"` and args `["serve", "stripe", "--mcp", "--auto-refresh"]`.
 
 ## Available okfy MCP Tools
 
@@ -292,7 +353,7 @@ bundle_summary()
 Recommended answering pattern:
 
 ```text
-1. Start with bundle_summary for scope.
+1. Start with bundle_summary for scope, validation, and freshness metadata.
 2. Use search_concepts for discovery.
 3. Read only top matching concepts.
 4. Use get_neighbors when relationship context matters.

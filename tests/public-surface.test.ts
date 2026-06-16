@@ -127,9 +127,11 @@ describe("public surface", () => {
     expect(npmReadme).toContain("claude mcp add --transport stdio stripe-okf");
     expect(npmReadme).toContain("[mcp_servers.stripe_okf]");
     expect(npmReadme).not.toContain("assets/logo.svg");
-    expect(mcpDocs).toContain("Shell examples assume `npm install -g okfy-ai`");
-    expect(mcpDocs).toContain("MCP config examples use `npx -y okfy-ai` by default.");
-    expect(mcpDocs).toContain("okfy serve ./tmp/okfy-docs --mcp");
+    expect(mcpDocs).toContain("The default setup uses `npx -y okfy-ai`");
+    expect(mcpDocs).toContain("npx -y okfy-ai add stripe https://docs.stripe.com/checkout");
+    expect(mcpDocs).toContain("npx -y okfy-ai serve stripe --mcp --auto-refresh");
+    expect(mcpDocs).toContain("Direct bundle paths do not use source auto-refresh.");
+    expect(mcpDocs).toContain('args": ["-y", "okfy-ai", "serve", "./docs-okf", "--mcp"]');
     expect(`${readme}\n${npmReadme}\n${mcpDocs}`).not.toMatch(/npx -y okfy(?:@|\s)/);
   });
 });
