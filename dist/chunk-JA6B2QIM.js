@@ -667,11 +667,68 @@ async function crawlWebsite(options) {
   return { pagesFetched: documents.length, skipped, failed, written, documents };
 }
 
-// src/importer.ts
+// src/duration.ts
+var DURATION_UNITS = {
+  s: 1,
+  m: 60,
+  h: 60 * 60,
+  d: 24 * 60 * 60
+};
+function parseDurationSeconds(input) {
+  const value = input.trim();
+  const match = /^(\d+)([smhd])$/.exec(value);
+  if (!match) {
+    throw new Error(`Invalid duration "${input}". Use a number followed by s, m, h, or d.`);
+  }
+  const amount = Number(match[1]);
+  const unit = match[2] ?? "";
+  const multiplier = DURATION_UNITS[unit];
+  const seconds = amount * multiplier;
+  if (!Number.isSafeInteger(seconds)) {
+    throw new Error(`Invalid duration "${input}". Duration is too large.`);
+  }
+  return seconds;
+}
+
+// src/hash.ts
+import crypto from "crypto";
 import fs2 from "fs/promises";
 import path4 from "path";
+async function listBundleFiles(bundleDir) {
+  const files = [];
+  async function walk(current) {
+    for (const entry of await fs2.readdir(current, { withFileTypes: true })) {
+      const absolutePath = path4.join(current, entry.name);
+      if (entry.isDirectory()) {
+        await walk(absolutePath);
+      } else if (entry.isFile()) {
+        files.push({
+          absolutePath,
+          relativePath: toPosixPath(path4.relative(bundleDir, absolutePath))
+        });
+      }
+    }
+  }
+  await walk(bundleDir);
+  return files.sort((first, second) => first.relativePath.localeCompare(second.relativePath));
+}
+async function hashBundleContents(bundleDir) {
+  const hash = crypto.createHash("sha256");
+  const files = await listBundleFiles(bundleDir);
+  for (const file of files) {
+    const contents = await fs2.readFile(file.absolutePath);
+    hash.update(`${file.relativePath.length}:${file.relativePath}\0${contents.byteLength}:`);
+    hash.update(contents);
+    hash.update("\0");
+  }
+  return `sha256:${hash.digest("hex")}`;
+}
+
+// src/importer.ts
+import fs3 from "fs/promises";
+import path5 from "path";
 function contentTypeFor(file) {
-  const ext = path4.extname(file).toLowerCase();
+  const ext = path5.extname(file).toLowerCase();
   if (ext === ".md") return "markdown";
   if (ext === ".mdx") return "mdx";
   if (ext === ".html" || ext === ".htm") return "html";
@@ -679,12 +736,12 @@ function contentTypeFor(file) {
   return void 0;
 }
 async function listFiles(root) {
-  const stat = await fs2.stat(root);
+  const stat = await fs3.stat(root);
   if (stat.isFile()) return [root];
   const files = [];
   async function walk(dir) {
-    for (const entry of await fs2.readdir(dir, { withFileTypes: true })) {
-      const absolute = path4.join(dir, entry.name);
+    for (const entry of await fs3.readdir(dir, { withFileTypes: true })) {
+      const absolute = path5.join(dir, entry.name);
       if (entry.isDirectory()) {
         if (![".git", "node_modules", "dist"].includes(entry.name)) await walk(absolute);
       } else if (entry.isFile()) {
@@ -696,11 +753,11 @@ async function listFiles(root) {
   return files.sort();
 }
 async function importLocal(options) {
-  const root = path4.resolve(options.inputPath);
+  const root = path5.resolve(options.inputPath);
   const files = await listFiles(root);
   const docs = [];
   for (const file of files) {
-    const rel = path4.relative(root, file).split(path4.sep).join("/");
+    const rel = path5.relative(root, file).split(path5.sep).join("/");
     if (options.include?.length && !matchesAnyPattern(rel, options.include)) continue;
     if (matchesAnyPattern(rel, options.exclude)) continue;
     const contentType = contentTypeFor(file);
@@ -709,7 +766,7 @@ async function importLocal(options) {
       sourceId: rel,
       filePath: rel,
       contentType,
-      raw: await fs2.readFile(file, "utf8"),
+      raw: await fs3.readFile(file, "utf8"),
       discoveredAt: options.timestamp ?? (/* @__PURE__ */ new Date()).toISOString()
     };
     docs.push(normalizeDocument(raw));
@@ -728,7 +785,7 @@ async function importLocal(options) {
 }
 
 // src/graph.ts
-import path5 from "path";
+import path6 from "path";
 function extractInternalLinks(concept) {
   const links = /* @__PURE__ */ new Set();
   for (const match of concept.body.matchAll(/\[[^\]]*]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)) {
@@ -737,7 +794,7 @@ function extractInternalLinks(concept) {
     if (!noHash) continue;
     if (/^(https?:)?\/\//i.test(noHash) || /^mailto:/i.test(noHash)) continue;
     if (/^[a-z][a-z0-9+.-]*:/i.test(noHash)) continue;
-    const resolved = noHash.startsWith("/") ? path5.posix.normalize(noHash.slice(1)) : path5.posix.normalize(path5.posix.join(path5.posix.dirname(concept.path), noHash));
+    const resolved = noHash.startsWith("/") ? path6.posix.normalize(noHash.slice(1)) : path6.posix.normalize(path6.posix.join(path6.posix.dirname(concept.path), noHash));
     if (!resolved || resolved === ".") continue;
     links.add(stripMdExtension(resolved));
   }
@@ -763,14 +820,14 @@ function buildGraph(conceptsByAnyKey) {
 }
 
 // src/reader.ts
-import fs3 from "fs/promises";
-import path6 from "path";
+import fs4 from "fs/promises";
+import path7 from "path";
 import matter from "gray-matter";
 async function listMarkdownFiles(dir) {
   const result = [];
   async function walk(current) {
-    for (const entry of await fs3.readdir(current, { withFileTypes: true })) {
-      const absolute = path6.join(current, entry.name);
+    for (const entry of await fs4.readdir(current, { withFileTypes: true })) {
+      const absolute = path7.join(current, entry.name);
       if (entry.isDirectory()) await walk(absolute);
       else if (entry.isFile() && entry.name.endsWith(".md")) result.push(absolute);
     }
@@ -783,9 +840,9 @@ function stringArray(value) {
   return value.filter((item) => typeof item === "string");
 }
 async function readConceptFile(bundleDir, absolutePath) {
-  const raw = await fs3.readFile(absolutePath, "utf8");
+  const raw = await fs4.readFile(absolutePath, "utf8");
   const parsed = matter(raw);
-  const relPath = toPosixPath(path6.relative(bundleDir, absolutePath));
+  const relPath = toPosixPath(path7.relative(bundleDir, absolutePath));
   if (isReservedOkfPath(relPath)) throw new Error(`Reserved OKF file is not a concept: ${relPath}`);
   const id = stripMdExtension(relPath);
   const frontmatter2 = parsed.data;
@@ -805,7 +862,7 @@ async function readBundle(bundleDir) {
   const files = await listMarkdownFiles(bundleDir);
   const concepts = /* @__PURE__ */ new Map();
   for (const file of files) {
-    const relPath = toPosixPath(path6.relative(bundleDir, file));
+    const relPath = toPosixPath(path7.relative(bundleDir, file));
     if (!isConceptMarkdownPath(relPath)) continue;
     const concept = await readConceptFile(bundleDir, file);
     concepts.set(concept.id, concept);
@@ -869,14 +926,14 @@ var BundleSearch = class _BundleSearch {
 };
 
 // src/validate.ts
-import fs4 from "fs/promises";
-import path7 from "path";
+import fs5 from "fs/promises";
+import path8 from "path";
 import matter2 from "gray-matter";
 async function listMarkdownFiles2(dir) {
   const result = [];
   async function walk(current) {
-    for (const entry of await fs4.readdir(current, { withFileTypes: true })) {
-      const absolute = path7.join(current, entry.name);
+    for (const entry of await fs5.readdir(current, { withFileTypes: true })) {
+      const absolute = path8.join(current, entry.name);
       if (entry.isDirectory()) await walk(absolute);
       else if (entry.isFile() && entry.name.endsWith(".md")) result.push(absolute);
     }
@@ -936,7 +993,7 @@ function validateLogFile(raw, rel, issues) {
   }
 }
 function validateReservedFile(raw, rel, issues) {
-  const name = path7.posix.basename(rel).toLowerCase();
+  const name = path8.posix.basename(rel).toLowerCase();
   if (name === "index.md") validateIndexFile(raw, rel, issues);
   if (name === "log.md") validateLogFile(raw, rel, issues);
 }
@@ -954,20 +1011,20 @@ async function validateBundle(bundleDir) {
       warningCount: 0
     };
   }
-  const conceptFiles = files.filter((file) => isConceptMarkdownPath(path7.relative(bundleDir, file).split(path7.sep).join("/")));
-  const reservedFiles = files.filter((file) => isReservedOkfPath(path7.relative(bundleDir, file).split(path7.sep).join("/")));
+  const conceptFiles = files.filter((file) => isConceptMarkdownPath(path8.relative(bundleDir, file).split(path8.sep).join("/")));
+  const reservedFiles = files.filter((file) => isReservedOkfPath(path8.relative(bundleDir, file).split(path8.sep).join("/")));
   for (const file of reservedFiles) {
-    const rel = path7.relative(bundleDir, file).split(path7.sep).join("/");
-    const raw = await fs4.readFile(file, "utf8");
+    const rel = path8.relative(bundleDir, file).split(path8.sep).join("/");
+    const raw = await fs5.readFile(file, "utf8");
     validateReservedFile(raw, rel, issues);
   }
   for (const file of files) {
-    const rel = path7.relative(bundleDir, file).split(path7.sep).join("/");
+    const rel = path8.relative(bundleDir, file).split(path8.sep).join("/");
     if (!isConceptMarkdownPath(rel)) continue;
-    if (rel.includes("..") || path7.isAbsolute(rel)) {
+    if (rel.includes("..") || path8.isAbsolute(rel)) {
       issues.push(issue("error", "unsafe_path", "Concept path is unsafe.", rel));
     }
-    const raw = await fs4.readFile(file, "utf8");
+    const raw = await fs5.readFile(file, "utf8");
     if (!raw.startsWith("---")) {
       issues.push(issue("error", "missing_frontmatter", "Concept file must start with YAML frontmatter.", rel));
       continue;
@@ -1001,16 +1058,16 @@ async function validateBundle(bundleDir) {
       }
     }
   }
-  const dirs = new Set(conceptFiles.map((file) => path7.dirname(file)));
+  const dirs = new Set(conceptFiles.map((file) => path8.dirname(file)));
   for (const dir of dirs) {
-    const index = path7.join(dir, "index.md");
+    const index = path8.join(dir, "index.md");
     if (!files.includes(index)) {
       issues.push(
         issue(
           "warning",
           "missing_folder_index",
           "Folder has concepts but no index.md.",
-          path7.relative(bundleDir, dir).split(path7.sep).join("/") || "."
+          path8.relative(bundleDir, dir).split(path8.sep).join("/") || "."
         )
       );
     }
@@ -1046,7 +1103,7 @@ async function inspectBundle(bundleDir) {
   const linkCount = [...graph.outbound.values()].reduce((sum, links) => sum + links.length, 0);
   const validation = await validateBundle(bundleDir);
   return {
-    title: path7.basename(bundleDir),
+    title: path8.basename(bundleDir),
     conceptCount: concepts.length,
     reservedFileCount: validation.reservedFileCount,
     warningCount: validation.warningCount,
@@ -1079,13 +1136,132 @@ var searchSchema = z.object({
 });
 var readSchema = z.object({ id: z.string(), max_chars: z.number().int().positive().optional() });
 var neighborsSchema = z.object({ id: z.string(), depth: z.number().int().min(1).max(2).optional() });
+function errorDetails(error) {
+  if (error instanceof Error) return { message: error.message };
+  if (typeof error === "string") return { message: error };
+  if (error && typeof error === "object") {
+    const record = error;
+    return {
+      ...record,
+      message: typeof record.message === "string" ? record.message : "Refresh failed."
+    };
+  }
+  return { message: "Refresh failed." };
+}
+function nullableErrorDetails(error) {
+  if (error === void 0 || error === null) return null;
+  return errorDetails(error);
+}
+function normalizeFreshness(state) {
+  return {
+    freshnessStatus: state?.freshnessStatus ?? state?.status,
+    lastSuccessfulRefreshAt: state?.lastSuccessfulRefreshAt ?? null,
+    refreshInProgress: Boolean(state?.refreshInProgress),
+    lastRefreshError: nullableErrorDetails(state?.lastRefreshError ?? state?.lastError),
+    nextRefreshAllowedAt: state?.nextRefreshAllowedAt ?? null
+  };
+}
+function shouldRefresh(status, hasSearch) {
+  if (!hasSearch) return status !== "fresh";
+  return status === "stale" || status === "missing" || status === "failed";
+}
+function refreshableTool(name) {
+  return name === "search_concepts" || name === "read_concept" || name === "get_neighbors" || name === "list_types" || name === "list_tags";
+}
 async function createMcpServer(options) {
-  const search = await BundleSearch.fromBundle(options.bundleDir);
+  let activeBundleDir = options.bundleDir;
+  let search = options.search;
+  let observedFreshness;
+  let lastRefreshError = null;
+  let inFlightRefresh;
+  if (!search) {
+    try {
+      search = await BundleSearch.fromBundle(activeBundleDir);
+    } catch (error) {
+      if (!options.source) throw error;
+      lastRefreshError = errorDetails(error);
+    }
+  }
   const server = new Server(
     { name: options.name ?? "okfy", version: "0.1.0" },
     { capabilities: { tools: {} } }
   );
   const maxResultChars = options.maxResultChars ?? 12e3;
+  const refreshMode = () => options.refresh?.mode ?? (options.source ? "stale-while-refresh" : "off");
+  async function getFreshness() {
+    if (options.refresh?.getFreshness) {
+      observedFreshness = await options.refresh.getFreshness();
+      return observedFreshness;
+    }
+    observedFreshness ??= { freshnessStatus: search ? "fresh" : "missing", refreshInProgress: false, lastRefreshError: null };
+    return observedFreshness;
+  }
+  function sourceSummaryFields() {
+    if (!options.source) return {};
+    const normalized = normalizeFreshness(observedFreshness);
+    const lastError = lastRefreshError ?? normalized.lastRefreshError;
+    const status = lastError ? "failed" : normalized.freshnessStatus ?? (search ? "fresh" : "missing");
+    return {
+      sourceName: options.source.name,
+      sourceKind: options.source.kind,
+      seedUrl: options.source.seedUrl,
+      freshnessStatus: status,
+      lastSuccessfulRefreshAt: normalized.lastSuccessfulRefreshAt,
+      refreshInProgress: Boolean(inFlightRefresh) || normalized.refreshInProgress,
+      lastRefreshError: lastError,
+      nextRefreshAllowedAt: normalized.nextRefreshAllowedAt
+    };
+  }
+  function bundleUnavailable() {
+    const details = lastRefreshError ?? errorDetails("No OKF bundle is available.");
+    return json(
+      {
+        error: {
+          code: "bundle_unavailable",
+          message: details.message,
+          sourceName: options.source?.name,
+          seedUrl: options.source?.seedUrl,
+          lastRefreshError: details
+        }
+      },
+      maxResultChars
+    );
+  }
+  function startRefresh(mode, freshness) {
+    if (!options.refresh?.refreshIfNeeded) return void 0;
+    if (inFlightRefresh) return inFlightRefresh;
+    inFlightRefresh = (async () => {
+      try {
+        const result = await options.refresh?.refreshIfNeeded?.({
+          mode,
+          bundleDir: activeBundleDir,
+          source: options.source,
+          freshness
+        });
+        if (result?.freshness) observedFreshness = result.freshness;
+        const nextBundleDir = result?.bundleDir ?? activeBundleDir;
+        const nextSearch = await BundleSearch.fromBundle(nextBundleDir);
+        activeBundleDir = nextBundleDir;
+        search = nextSearch;
+        lastRefreshError = null;
+      } catch (error) {
+        lastRefreshError = errorDetails(error);
+      } finally {
+        inFlightRefresh = void 0;
+      }
+    })();
+    return inFlightRefresh;
+  }
+  async function prepareBundleForTool(toolName) {
+    const mode = refreshMode();
+    if (mode === "off" || !refreshableTool(toolName)) return;
+    const freshness = await getFreshness();
+    const normalized = normalizeFreshness(freshness);
+    if (!shouldRefresh(normalized.freshnessStatus, Boolean(search))) return;
+    const refresh = startRefresh(mode, freshness);
+    if (!refresh) return;
+    if (mode === "blocking" || !search) await refresh;
+  }
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       {
@@ -1128,11 +1304,15 @@ async function createMcpServer(options) {
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const args = request.params.arguments ?? {};
     try {
+      if (request.params.name === "bundle_summary" && options.source) await getFreshness();
+      await prepareBundleForTool(request.params.name);
       if (request.params.name === "search_concepts") {
+        if (!search) return bundleUnavailable();
         const parsed = searchSchema.parse(args);
         return json(search.search(parsed.query, parsed), maxResultChars);
       }
       if (request.params.name === "read_concept") {
+        if (!search) return bundleUnavailable();
         const parsed = readSchema.parse(args);
         const concept = search.getConcept(parsed.id);
         if (!concept) return json({ error: { code: "unknown_concept", message: `No concept found for ${parsed.id}` } });
@@ -1149,8 +1329,10 @@ async function createMcpServer(options) {
         );
       }
       if (request.params.name === "get_neighbors") {
+        if (!search) return bundleUnavailable();
+        const currentSearch = search;
         const parsed = neighborsSchema.parse(args);
-        const root = search.getConcept(parsed.id);
+        const root = currentSearch.getConcept(parsed.id);
         if (!root) return json({ error: { code: "unknown_concept", message: `No concept found for ${parsed.id}` } });
         const depth = parsed.depth ?? 1;
         const seen = /* @__PURE__ */ new Set([root.id]);
@@ -1159,12 +1341,12 @@ async function createMcpServer(options) {
         for (let level = 0; level < depth; level += 1) {
           const next = [];
           for (const id of frontier) {
-            for (const to of search.graph.outbound.get(id) ?? []) {
+            for (const to of currentSearch.graph.outbound.get(id) ?? []) {
               edges.push({ from: id, to, direction: "outbound", relationship_text: "Markdown link" });
               if (!seen.has(to)) next.push(to);
               seen.add(to);
             }
-            for (const from of search.graph.backlinks.get(id) ?? []) {
+            for (const from of currentSearch.graph.backlinks.get(id) ?? []) {
               edges.push({ from, to: id, direction: "backlink", relationship_text: "Backlink" });
               if (!seen.has(from)) next.push(from);
               seen.add(from);
@@ -1175,28 +1357,32 @@ async function createMcpServer(options) {
         return json({
           root: root.id,
           concepts: [...seen].map((id) => {
-            const concept = search.graph.concepts.get(id);
+            const concept = currentSearch.graph.concepts.get(id);
             return { id, title: concept?.title, type: concept?.type, resource: concept?.resource };
           }),
           edges
         });
       }
       if (request.params.name === "list_types") {
-        const stats = await inspectBundle(options.bundleDir);
+        if (!search) return bundleUnavailable();
+        const stats = await inspectBundle(activeBundleDir);
         return json(stats.typeDistribution);
       }
       if (request.params.name === "list_tags") {
-        const stats = await inspectBundle(options.bundleDir);
+        if (!search) return bundleUnavailable();
+        const stats = await inspectBundle(activeBundleDir);
         return json(stats.tagDistribution);
       }
       if (request.params.name === "bundle_summary") {
-        const [stats, validation] = await Promise.all([inspectBundle(options.bundleDir), validateBundle(options.bundleDir)]);
+        if (!search) return bundleUnavailable();
+        const [stats, validation] = await Promise.all([inspectBundle(activeBundleDir), validateBundle(activeBundleDir)]);
         return json({
           ...stats,
           reservedFileCount: validation.reservedFileCount,
           warningCount: validation.warningCount,
           validationStatus: validation.valid ? "valid" : "invalid",
-          validationIssues: validation.issues
+          validationIssues: validation.issues,
+          ...sourceSummaryFields()
         });
       }
       return json({ error: { code: "unknown_tool", message: `Unknown tool: ${request.params.name}` } });
@@ -1212,6 +1398,471 @@ async function serveMcpStdio(options) {
   await server.connect(transport);
 }
 
+// src/refresh.ts
+import fs6 from "fs/promises";
+import path9 from "path";
+import { randomUUID } from "crypto";
+var DEFAULT_STALE_LOCK_TIMEOUT_MS = 30 * 60 * 1e3;
+async function pathExists2(target) {
+  try {
+    await fs6.access(target);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+}
+function secondsBetween(startIso, end) {
+  return (end.getTime() - new Date(startIso).getTime()) / 1e3;
+}
+function iso(date) {
+  return date.toISOString();
+}
+function addSeconds(date, seconds) {
+  return new Date(date.getTime() + seconds * 1e3).toISOString();
+}
+function isBeforeNextRefreshAllowed(state, now) {
+  if (!state?.nextRefreshAllowedAt) return false;
+  return new Date(state.nextRefreshAllowedAt).getTime() > now.getTime();
+}
+function tempBundleDir(sourceDir) {
+  return path9.join(sourceDir, `bundle.tmp-${process.pid}-${randomUUID()}`);
+}
+function lockfilePath(sourceDir) {
+  return path9.join(sourceDir, ".refresh.lock");
+}
+async function isLockStale(lockPath, now, staleLockTimeoutMs) {
+  try {
+    const raw = await fs6.readFile(lockPath, "utf8");
+    const parsed = JSON.parse(raw);
+    const createdAt = parsed.createdAt ? Date.parse(parsed.createdAt) : Number.NaN;
+    if (Number.isFinite(createdAt)) return now.getTime() - createdAt > staleLockTimeoutMs;
+  } catch {
+  }
+  const stat = await fs6.stat(lockPath);
+  return now.getTime() - stat.mtimeMs > staleLockTimeoutMs;
+}
+async function acquireRefreshLock(sourceDir, now, staleLockTimeoutMs) {
+  const lockPath = lockfilePath(sourceDir);
+  await fs6.mkdir(sourceDir, { recursive: true });
+  try {
+    const handle = await fs6.open(lockPath, "wx");
+    await handle.writeFile(JSON.stringify({ pid: process.pid, createdAt: iso(now) }, null, 2));
+    await handle.close();
+    return {
+      acquired: true,
+      release: async () => {
+        await fs6.rm(lockPath, { force: true });
+      }
+    };
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+  }
+  if (await isLockStale(lockPath, now, staleLockTimeoutMs)) {
+    await fs6.rm(lockPath, { force: true });
+    return acquireRefreshLock(sourceDir, now, staleLockTimeoutMs);
+  }
+  return { acquired: false };
+}
+function stateForRefreshStart(state, freshness, startedAt) {
+  return {
+    schemaVersion: 1,
+    status: "refreshing",
+    lastCheckedAt: iso(startedAt),
+    lastRefreshStartedAt: iso(startedAt),
+    lastRefreshCompletedAt: state?.lastRefreshCompletedAt ?? null,
+    lastSuccessfulRefreshAt: state?.lastSuccessfulRefreshAt ?? null,
+    nextRefreshAllowedAt: state?.nextRefreshAllowedAt ?? null,
+    refreshInProgress: true,
+    lastError: state?.lastError ?? null,
+    bundle: state?.bundle ?? (freshness.validation ? bundleStateFromValidation(freshness.validation, state?.bundle?.contentHash ?? "") : null)
+  };
+}
+function stateForLockedRefresh(state, checkedAt) {
+  return {
+    schemaVersion: 1,
+    status: "refreshing",
+    lastCheckedAt: iso(checkedAt),
+    lastRefreshStartedAt: state?.lastRefreshStartedAt ?? null,
+    lastRefreshCompletedAt: state?.lastRefreshCompletedAt ?? null,
+    lastSuccessfulRefreshAt: state?.lastSuccessfulRefreshAt ?? null,
+    nextRefreshAllowedAt: state?.nextRefreshAllowedAt ?? null,
+    refreshInProgress: true,
+    lastError: state?.lastError ?? null,
+    bundle: state?.bundle ?? null
+  };
+}
+function stateForCheckedRefresh(state, status, checkedAt) {
+  return {
+    schemaVersion: 1,
+    status,
+    lastCheckedAt: iso(checkedAt),
+    lastRefreshStartedAt: state?.lastRefreshStartedAt ?? null,
+    lastRefreshCompletedAt: state?.lastRefreshCompletedAt ?? null,
+    lastSuccessfulRefreshAt: state?.lastSuccessfulRefreshAt ?? null,
+    nextRefreshAllowedAt: state?.nextRefreshAllowedAt ?? null,
+    refreshInProgress: false,
+    lastError: state?.lastError ?? null,
+    bundle: state?.bundle ?? null
+  };
+}
+function messageFromError(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+function errorState(manifest, error, occurredAt) {
+  return {
+    message: messageFromError(error),
+    sourceName: manifest.name,
+    seedUrl: manifest.source.seedUrl,
+    occurredAt: iso(occurredAt)
+  };
+}
+function stateForRefreshFailure(state, manifest, error, startedAt) {
+  return {
+    schemaVersion: 1,
+    status: "failed",
+    lastCheckedAt: iso(startedAt),
+    lastRefreshStartedAt: iso(startedAt),
+    lastRefreshCompletedAt: iso(startedAt),
+    lastSuccessfulRefreshAt: state?.lastSuccessfulRefreshAt ?? null,
+    nextRefreshAllowedAt: addSeconds(startedAt, manifest.refresh.minIntervalSeconds),
+    refreshInProgress: false,
+    lastError: errorState(manifest, error, startedAt),
+    bundle: state?.bundle ?? null
+  };
+}
+function bundleStateFromValidation(validation, contentHash) {
+  return {
+    conceptCount: validation.conceptCount,
+    warningCount: validation.warningCount,
+    valid: validation.valid,
+    contentHash
+  };
+}
+async function replaceActiveBundle(tempDir, bundleDir) {
+  await assertSafeForceOutDir(bundleDir, { outDir: bundleDir, force: true });
+  const backupDir = `${bundleDir}.backup-${process.pid}-${randomUUID()}`;
+  let movedActiveToBackup = false;
+  try {
+    await fs6.mkdir(path9.dirname(bundleDir), { recursive: true });
+    if (await pathExists2(bundleDir)) {
+      await fs6.rename(bundleDir, backupDir);
+      movedActiveToBackup = true;
+    }
+    await fs6.rename(tempDir, bundleDir);
+    if (movedActiveToBackup) await fs6.rm(backupDir, { recursive: true, force: true });
+  } catch (error) {
+    if (movedActiveToBackup && !await pathExists2(bundleDir) && await pathExists2(backupDir)) {
+      await fs6.rename(backupDir, bundleDir);
+    }
+    throw error;
+  }
+}
+async function evaluateFreshness(options) {
+  const now = options.now ?? /* @__PURE__ */ new Date();
+  const validateBundle2 = options.validateBundle ?? validateBundle;
+  if (!await pathExists2(options.bundleDir)) {
+    return { status: "missing", reason: "bundle_missing" };
+  }
+  if (options.state?.refreshInProgress) {
+    return { status: "refreshing", reason: "refresh_in_progress" };
+  }
+  if ((options.state?.status === "failed" || options.state?.lastError) && isBeforeNextRefreshAllowed(options.state, now)) {
+    return { status: "failed", reason: "latest_refresh_failed" };
+  }
+  const validation = await validateBundle2(options.bundleDir);
+  if (!validation.valid) {
+    return { status: "failed", reason: "bundle_invalid", validation };
+  }
+  if (options.state?.status === "failed" || options.state?.lastError) {
+    return {
+      status: isBeforeNextRefreshAllowed(options.state, now) ? "failed" : "stale",
+      reason: "latest_refresh_failed",
+      validation
+    };
+  }
+  const lastSuccessfulRefreshAt = options.state?.lastSuccessfulRefreshAt;
+  if (!lastSuccessfulRefreshAt) {
+    return { status: "stale", reason: "never_refreshed", validation };
+  }
+  const maxAgeSeconds = options.maxAgeSeconds ?? options.manifest.refresh.maxAgeSeconds;
+  if (secondsBetween(lastSuccessfulRefreshAt, now) > maxAgeSeconds) {
+    return { status: "stale", reason: "exceeded_max_age", validation };
+  }
+  return { status: "fresh", reason: "within_max_age", validation };
+}
+async function refreshSource(options) {
+  const now = options.now ?? /* @__PURE__ */ new Date();
+  const crawlRunner = options.crawlRunner ?? crawlWebsite;
+  const inspectBundle2 = options.inspectBundle ?? inspectBundle;
+  const hashBundleContent = options.hashBundleContent ?? hashBundleContents;
+  const freshness = await evaluateFreshness({
+    manifest: options.manifest,
+    state: options.state,
+    bundleDir: options.bundleDir,
+    now,
+    validateBundle: options.validateBundle
+  });
+  if (!options.force && freshness.status === "fresh") {
+    const nextState = stateForCheckedRefresh(options.state, "fresh", now);
+    await options.writeState(nextState);
+    return { status: "fresh", reason: "fresh", skipped: true, state: nextState };
+  }
+  if (!options.force && isBeforeNextRefreshAllowed(options.state, now)) {
+    const nextState = stateForCheckedRefresh(options.state, freshness.status, now);
+    await options.writeState(nextState);
+    return { status: freshness.status, reason: "min_interval", skipped: true, state: nextState };
+  }
+  const tempDir = tempBundleDir(options.sourceDir);
+  if (options.dryRun) {
+    try {
+      const crawlResult = await crawlRunner({
+        ...options.manifest.crawl,
+        seedUrl: options.manifest.source.seedUrl,
+        outDir: tempDir,
+        dryRun: true,
+        timestamp: iso(now)
+      });
+      return { status: freshness.status, skipped: false, dryRun: true, crawlResult };
+    } finally {
+      await fs6.rm(tempDir, { recursive: true, force: true });
+    }
+  }
+  const lock = await acquireRefreshLock(options.sourceDir, now, options.staleLockTimeoutMs ?? DEFAULT_STALE_LOCK_TIMEOUT_MS);
+  if (!lock.acquired) {
+    const lockedState = stateForLockedRefresh(options.state, now);
+    await options.writeState(lockedState);
+    return { status: "refreshing", reason: "locked", skipped: true, state: lockedState };
+  }
+  const startedState = stateForRefreshStart(options.state, freshness, now);
+  await options.writeState(startedState);
+  try {
+    const crawlResult = await crawlRunner({
+      ...options.manifest.crawl,
+      seedUrl: options.manifest.source.seedUrl,
+      outDir: tempDir,
+      force: true,
+      dryRun: false,
+      timestamp: iso(now)
+    });
+    const validation = await (options.validateBundle ?? validateBundle)(tempDir);
+    if (!validation.valid) {
+      throw new Error(`Refresh generated invalid bundle for ${options.manifest.name}.`);
+    }
+    const inspection = await inspectBundle2(tempDir);
+    const contentHash = await hashBundleContent(tempDir);
+    await replaceActiveBundle(tempDir, options.bundleDir);
+    const nextState = {
+      schemaVersion: 1,
+      status: "fresh",
+      lastCheckedAt: iso(now),
+      lastRefreshStartedAt: iso(now),
+      lastRefreshCompletedAt: iso(now),
+      lastSuccessfulRefreshAt: iso(now),
+      nextRefreshAllowedAt: addSeconds(now, options.manifest.refresh.minIntervalSeconds),
+      refreshInProgress: false,
+      lastError: null,
+      bundle: {
+        conceptCount: inspection.conceptCount,
+        warningCount: inspection.warningCount,
+        valid: validation.valid,
+        contentHash
+      }
+    };
+    await options.writeState(nextState);
+    return { status: "fresh", skipped: false, state: nextState, crawlResult };
+  } catch (error) {
+    await fs6.rm(tempDir, { recursive: true, force: true });
+    const failedState = stateForRefreshFailure(options.state, options.manifest, error, now);
+    await options.writeState(failedState);
+    return { status: "failed", skipped: false, state: failedState, error: failedState.lastError ?? void 0 };
+  } finally {
+    await lock.release();
+  }
+}
+
+// src/source-store.ts
+import fs7 from "fs/promises";
+import os2 from "os";
+import path10 from "path";
+var SOURCE_NAME_PATTERN = /^[a-z0-9._-]+$/;
+var MANIFEST_KEYS = [
+  "schemaVersion",
+  "okfyVersion",
+  "name",
+  "kind",
+  "createdAt",
+  "updatedAt",
+  "source",
+  "crawl",
+  "refresh",
+  "bundle"
+];
+var CRAWL_KEYS = ["maxPages", "maxDepth", "include", "exclude", "sameOrigin", "respectRobots", "concurrency", "allowPrivateNetwork"];
+var REFRESH_KEYS = ["mode", "maxAgeSeconds", "minIntervalSeconds"];
+var STATE_KEYS = [
+  "schemaVersion",
+  "status",
+  "lastCheckedAt",
+  "lastRefreshStartedAt",
+  "lastRefreshCompletedAt",
+  "lastSuccessfulRefreshAt",
+  "nextRefreshAllowedAt",
+  "refreshInProgress",
+  "lastError",
+  "bundle"
+];
+var STATE_BUNDLE_KEYS = ["conceptCount", "warningCount", "valid", "contentHash"];
+function resolveOkfyHome(options = {}) {
+  const configured = options.okfyHome ?? options.env?.OKFY_HOME ?? process.env.OKFY_HOME;
+  if (configured && configured.trim() !== "") return path10.resolve(configured);
+  return path10.join(os2.homedir(), ".okfy");
+}
+function validateSourceName(name) {
+  if (!name || name === "." || name === ".." || !SOURCE_NAME_PATTERN.test(name)) {
+    throw new Error(
+      `Invalid source name "${name}". Use lowercase letters, numbers, dash, underscore, or dot without path separators.`
+    );
+  }
+  return name;
+}
+function resolveSourceDir(name, options = {}) {
+  const safeName = validateSourceName(name);
+  const sourcesRoot = resolveSourcesRoot(options);
+  const sourceDir = path10.resolve(sourcesRoot, safeName);
+  if (!isInsideOrEqual(sourcesRoot, sourceDir)) {
+    throw new Error(`Invalid source name "${name}". Source directory escapes OKFY_HOME.`);
+  }
+  return sourceDir;
+}
+function resolveBundleDir(manifest, options = {}) {
+  const sourceDir = resolveSourceDir(manifest.name, options);
+  const bundleDir = manifest.bundle.dir;
+  if (!bundleDir || bundleDir.trim() === "") {
+    throw new Error(`Invalid bundle directory for source "${manifest.name}".`);
+  }
+  if (path10.isAbsolute(bundleDir)) return path10.normalize(bundleDir);
+  const resolved = path10.resolve(sourceDir, bundleDir);
+  if (resolved === sourceDir || !isInsideOrEqual(sourceDir, resolved)) {
+    throw new Error(`Invalid bundle directory for source "${manifest.name}". Relative bundle paths must stay inside the source directory.`);
+  }
+  return resolved;
+}
+async function writeSourceManifest(manifest, options = {}) {
+  const sourceDir = resolveSourceDir(manifest.name, options);
+  await writeStableJson(path10.join(sourceDir, "source.json"), manifest);
+}
+async function readSourceManifest(name, options = {}) {
+  const sourceDir = resolveSourceDir(name, options);
+  const manifest = await readJson(path10.join(sourceDir, "source.json"));
+  if (manifest.name !== name) {
+    throw new Error(`Source manifest name mismatch: expected "${name}", found "${manifest.name}".`);
+  }
+  validateSourceName(manifest.name);
+  return manifest;
+}
+async function writeRefreshState(name, state, options = {}) {
+  const sourceDir = resolveSourceDir(name, options);
+  await writeStableJson(path10.join(sourceDir, "state.json"), state);
+}
+async function readRefreshState(name, options = {}) {
+  const sourceDir = resolveSourceDir(name, options);
+  return readJson(path10.join(sourceDir, "state.json"));
+}
+async function listSources(options = {}) {
+  const sourcesRoot = resolveSourcesRoot(options);
+  let entries;
+  try {
+    entries = await fs7.readdir(sourcesRoot, { withFileTypes: true });
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return [];
+    throw error;
+  }
+  const records = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    try {
+      const manifest = await readSourceManifest(entry.name, options);
+      const state = await readRefreshStateIfExists(entry.name, options);
+      records.push({
+        name: manifest.name,
+        dir: resolveSourceDir(manifest.name, options),
+        manifest,
+        state,
+        bundleDir: resolveBundleDir(manifest, options)
+      });
+    } catch {
+      continue;
+    }
+  }
+  return records.sort((first, second) => first.name.localeCompare(second.name));
+}
+async function removeSource(name, options = {}) {
+  const sourceDir = resolveSourceDir(name, options);
+  await fs7.rm(sourceDir, { recursive: true, force: true });
+}
+function resolveSourcesRoot(options) {
+  return path10.join(resolveOkfyHome(options), "sources");
+}
+async function readRefreshStateIfExists(name, options) {
+  try {
+    return await readRefreshState(name, options);
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return void 0;
+    throw error;
+  }
+}
+async function readJson(filePath) {
+  return JSON.parse(await fs7.readFile(filePath, "utf8"));
+}
+async function writeStableJson(filePath, value) {
+  await fs7.mkdir(path10.dirname(filePath), { recursive: true });
+  await fs7.writeFile(filePath, `${JSON.stringify(orderJson(value), null, 2)}
+`, "utf8");
+}
+function orderJson(value) {
+  if (Array.isArray(value)) return value.map(orderJson);
+  if (!isPlainObject(value)) return value;
+  const ordered = {};
+  for (const key of orderKeys(value)) {
+    ordered[key] = orderJson(value[key]);
+  }
+  return ordered;
+}
+function orderKeys(value) {
+  if ("status" in value) return sortByPreferredOrder(Object.keys(value), STATE_KEYS);
+  if ("okfyVersion" in value) return sortByPreferredOrder(Object.keys(value), MANIFEST_KEYS);
+  if (hasKeys(value, CRAWL_KEYS)) return sortByPreferredOrder(Object.keys(value), CRAWL_KEYS);
+  if (hasKeys(value, REFRESH_KEYS)) return sortByPreferredOrder(Object.keys(value), REFRESH_KEYS);
+  if (hasKeys(value, STATE_BUNDLE_KEYS)) return sortByPreferredOrder(Object.keys(value), STATE_BUNDLE_KEYS);
+  if ("seedUrl" in value) return sortByPreferredOrder(Object.keys(value), ["seedUrl"]);
+  if ("dir" in value) return sortByPreferredOrder(Object.keys(value), ["dir"]);
+  return Object.keys(value).sort((first, second) => first.localeCompare(second));
+}
+function hasKeys(value, keys) {
+  return keys.some((key) => key in value);
+}
+function sortByPreferredOrder(keys, preferredOrder) {
+  return keys.sort((first, second) => {
+    const firstIndex = preferredOrder.indexOf(first);
+    const secondIndex = preferredOrder.indexOf(second);
+    if (firstIndex === -1 && secondIndex === -1) return first.localeCompare(second);
+    if (firstIndex === -1) return 1;
+    if (secondIndex === -1) return -1;
+    return firstIndex - secondIndex;
+  });
+}
+function isPlainObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isInsideOrEqual(parent, child) {
+  const relative = path10.relative(parent, child);
+  return relative === "" || !relative.startsWith("..") && !path10.isAbsolute(relative);
+}
+function isNodeError(error) {
+  return error instanceof Error && "code" in error;
+}
+
 export {
   extractHeadings,
   extractMarkdownLinks,
@@ -1219,8 +1870,11 @@ export {
   inferTags,
   normalizeDocument,
   descriptionFromMarkdown,
+  assertSafeForceOutDir,
   writeOkfBundle,
   crawlWebsite,
+  parseDurationSeconds,
+  hashBundleContents,
   importLocal,
   extractInternalLinks,
   buildGraph,
@@ -1230,5 +1884,17 @@ export {
   validateBundle,
   inspectBundle,
   createMcpServer,
-  serveMcpStdio
+  serveMcpStdio,
+  evaluateFreshness,
+  refreshSource,
+  resolveOkfyHome,
+  validateSourceName,
+  resolveSourceDir,
+  resolveBundleDir,
+  writeSourceManifest,
+  readSourceManifest,
+  writeRefreshState,
+  readRefreshState,
+  listSources,
+  removeSource
 };

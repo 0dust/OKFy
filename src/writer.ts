@@ -143,7 +143,7 @@ async function findRepoRoot(start: string): Promise<string | undefined> {
   }
 }
 
-async function assertSafeForceOutDir(outDir: string, options: WriteBundleOptions): Promise<void> {
+export async function assertSafeForceOutDir(outDir: string, options: WriteBundleOptions): Promise<void> {
   if (options.dangerouslyAllowUnsafeOutput) return;
   if (outDir.trim() === "") throw new Error("Unsafe output directory for --force: empty path.");
   const rawResolved = path.resolve(outDir);

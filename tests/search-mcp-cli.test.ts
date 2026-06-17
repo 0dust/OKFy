@@ -35,6 +35,25 @@ function parseText(result: McpTextResult): unknown {
   return JSON.parse(result.content[0]?.text ?? "null");
 }
 
+async function writeSingleConceptBundle(
+  dir: string,
+  concept: { title: string; type: string; body: string; description?: string; tags?: string[] }
+): Promise<void> {
+  await fs.rm(dir, { recursive: true, force: true });
+  await fs.mkdir(dir, { recursive: true });
+  const tags = concept.tags ?? ["mcp"];
+  await fs.writeFile(
+    path.join(dir, "index.md"),
+    `# Fixture\n\n* [${concept.title}](concept.md) - ${concept.description ?? concept.body.slice(0, 80)}\n`,
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(dir, "concept.md"),
+    `---\ntype: "${concept.type}"\ntitle: "${concept.title}"\ndescription: "${concept.description ?? concept.body}"\nresource: "https://docs.example.com/concept"\ntags:\n${tags.map((tag) => `  - "${tag}"`).join("\n")}\ntimestamp: "2026-06-14T00:00:00.000Z"\n---\n\n# ${concept.title}\n\n${concept.body}\n`,
+    "utf8"
+  );
+}
+
 describe("search", () => {
   it("searches concepts with type/tag filters and path lookup", async () => {
     const search = await BundleSearch.fromBundle(bundleDir);
@@ -113,6 +132,305 @@ describe("MCP server", () => {
       })
     ) as { conceptCount: number; reservedFileCount: number; warningCount: number; validationStatus: string };
     expect(summary).toMatchObject({ conceptCount: 2, reservedFileCount: 3, warningCount: 0, validationStatus: "valid" });
+  });
+
+  it("adds registered source freshness fields to bundle_summary without changing tools", async () => {
+    const server = await createMcpServer({
+      bundleDir,
+      maxResultChars: 2000,
+      source: {
+        name: "stripe",
+        kind: "website",
+        seedUrl: "https://docs.stripe.com/checkout"
+      },
+      refresh: {
+        mode: "off",
+        getFreshness: async () => ({
+          freshnessStatus: "stale",
+          lastSuccessfulRefreshAt: "2026-06-16T00:01:10.000Z",
+          refreshInProgress: false,
+          lastRefreshError: null,
+          nextRefreshAllowedAt: "2026-06-16T00:16:10.000Z"
+        })
+      }
+    });
+    const listTools = handler(server, "tools/list");
+    const callTool = handler(server, "tools/call");
+
+    const listed = (await listTools({ method: "tools/list" })) as unknown as {
+      tools: Array<{ name: string }>;
+    };
+    expect(listed.tools.map((tool) => tool.name)).toEqual([
+      "search_concepts",
+      "read_concept",
+      "get_neighbors",
+      "list_types",
+      "list_tags",
+      "bundle_summary"
+    ]);
+
+    const summary = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "bundle_summary", arguments: {} }
+      })
+    ) as {
+      conceptCount: number;
+      sourceName: string;
+      sourceKind: string;
+      seedUrl: string;
+      freshnessStatus: string;
+      lastSuccessfulRefreshAt: string;
+      refreshInProgress: boolean;
+      lastRefreshError: unknown;
+      nextRefreshAllowedAt: string;
+    };
+    expect(summary).toMatchObject({
+      conceptCount: 2,
+      sourceName: "stripe",
+      sourceKind: "website",
+      seedUrl: "https://docs.stripe.com/checkout",
+      freshnessStatus: "stale",
+      lastSuccessfulRefreshAt: "2026-06-16T00:01:10.000Z",
+      refreshInProgress: false,
+      lastRefreshError: null,
+      nextRefreshAllowedAt: "2026-06-16T00:16:10.000Z"
+    });
+  });
+
+  it("serves stale results while a background refresh reloads search for later calls", async () => {
+    const root = await tempRoot();
+    const reloadedBundle = path.join(root, "bundle");
+    await writeSingleConceptBundle(reloadedBundle, {
+      title: "Old Concept",
+      type: "OldType",
+      body: "old-only-token"
+    });
+
+    let freshnessStatus: "stale" | "refreshing" | "fresh" = "stale";
+    let releaseRefresh!: () => void;
+    const refreshCanFinish = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    let refreshStarted!: () => void;
+    const refreshDidStart = new Promise<void>((resolve) => {
+      refreshStarted = resolve;
+    });
+
+    const server = await createMcpServer({
+      bundleDir: reloadedBundle,
+      maxResultChars: 2000,
+      source: { name: "stripe", kind: "website", seedUrl: "https://docs.stripe.com/checkout" },
+      refresh: {
+        mode: "stale-while-refresh",
+        getFreshness: async () => ({
+          freshnessStatus,
+          refreshInProgress: freshnessStatus === "refreshing",
+          lastRefreshError: null
+        }),
+        refreshIfNeeded: async () => {
+          freshnessStatus = "refreshing";
+          refreshStarted();
+          await refreshCanFinish;
+          await writeSingleConceptBundle(reloadedBundle, {
+            title: "New Concept",
+            type: "NewType",
+            body: "new-only-token"
+          });
+          freshnessStatus = "fresh";
+          return { bundleDir: reloadedBundle };
+        }
+      }
+    });
+    const callTool = handler(server, "tools/call");
+
+    const staleSearch = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "search_concepts", arguments: { query: "old-only-token", limit: 5 } }
+      })
+    ) as Array<{ title: string }>;
+    expect(staleSearch.map((item) => item.title)).toEqual(["Old Concept"]);
+    await refreshDidStart;
+
+    releaseRefresh();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    const refreshedSearch = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "search_concepts", arguments: { query: "new-only-token", limit: 5 } }
+      })
+    ) as Array<{ title: string }>;
+    expect(refreshedSearch.map((item) => item.title)).toEqual(["New Concept"]);
+  });
+
+  it("blocks before searchable/listable tools when a registered source is stale", async () => {
+    const root = await tempRoot();
+    const reloadedBundle = path.join(root, "bundle");
+    await writeSingleConceptBundle(reloadedBundle, {
+      title: "Old Concept",
+      type: "OldType",
+      body: "old-only-token"
+    });
+
+    let freshnessStatus: "stale" | "fresh" = "stale";
+    const server = await createMcpServer({
+      bundleDir: reloadedBundle,
+      maxResultChars: 2000,
+      source: { name: "stripe", kind: "website", seedUrl: "https://docs.stripe.com/checkout" },
+      refresh: {
+        mode: "blocking",
+        getFreshness: async () => ({ freshnessStatus, refreshInProgress: false, lastRefreshError: null }),
+        refreshIfNeeded: async () => {
+          await writeSingleConceptBundle(reloadedBundle, {
+            title: "New Concept",
+            type: "NewType",
+            body: "new-only-token"
+          });
+          freshnessStatus = "fresh";
+          return { bundleDir: reloadedBundle };
+        }
+      }
+    });
+    const callTool = handler(server, "tools/call");
+
+    const types = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "list_types", arguments: {} }
+      })
+    ) as Record<string, number>;
+    expect(types).toEqual({ NewType: 1 });
+
+    const searchResult = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "search_concepts", arguments: { query: "new-only-token", limit: 5 } }
+      })
+    ) as Array<{ title: string }>;
+    expect(searchResult.map((item) => item.title)).toEqual(["New Concept"]);
+  });
+
+  it("retries a failed cached source once the next refresh time has passed", async () => {
+    const root = await tempRoot();
+    const reloadedBundle = path.join(root, "bundle");
+    await writeSingleConceptBundle(reloadedBundle, {
+      title: "Cached Concept",
+      type: "CachedType",
+      body: "cached-only-token"
+    });
+
+    let refreshCount = 0;
+    let freshnessStatus: "failed" | "fresh" = "failed";
+    const server = await createMcpServer({
+      bundleDir: reloadedBundle,
+      maxResultChars: 2000,
+      source: { name: "stripe", kind: "website", seedUrl: "https://docs.stripe.com/checkout" },
+      refresh: {
+        mode: "blocking",
+        getFreshness: async () => ({
+          freshnessStatus,
+          refreshInProgress: false,
+          lastRefreshError: freshnessStatus === "failed" ? { message: "network offline" } : null,
+          nextRefreshAllowedAt: "2026-06-16T00:01:00.000Z"
+        }),
+        refreshIfNeeded: async () => {
+          refreshCount += 1;
+          await writeSingleConceptBundle(reloadedBundle, {
+            title: "Recovered Concept",
+            type: "RecoveredType",
+            body: "recovered-only-token"
+          });
+          freshnessStatus = "fresh";
+          return { bundleDir: reloadedBundle };
+        }
+      }
+    });
+    const callTool = handler(server, "tools/call");
+
+    const searchResult = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "search_concepts", arguments: { query: "recovered-only-token", limit: 5 } }
+      })
+    ) as Array<{ title: string }>;
+
+    expect(refreshCount).toBe(1);
+    expect(searchResult.map((item) => item.title)).toEqual(["Recovered Concept"]);
+  });
+
+  it("keeps serving the previous bundle when refresh fails and reports no-bundle failures as structured errors", async () => {
+    const root = await tempRoot();
+    const usableBundle = path.join(root, "usable-bundle");
+    await writeSingleConceptBundle(usableBundle, {
+      title: "Cached Concept",
+      type: "CachedType",
+      body: "cached-only-token"
+    });
+
+    const failingServer = await createMcpServer({
+      bundleDir: usableBundle,
+      maxResultChars: 2000,
+      source: { name: "stripe", kind: "website", seedUrl: "https://docs.stripe.com/checkout" },
+      refresh: {
+        mode: "blocking",
+        getFreshness: async () => ({
+          freshnessStatus: "stale",
+          refreshInProgress: false,
+          lastRefreshError: null
+        }),
+        refreshIfNeeded: async () => {
+          throw new Error("network offline");
+        }
+      }
+    });
+    const failingCallTool = handler(failingServer, "tools/call");
+    const cachedSearch = parseText(
+      await failingCallTool({
+        method: "tools/call",
+        params: { name: "search_concepts", arguments: { query: "cached-only-token", limit: 5 } }
+      })
+    ) as Array<{ title: string }>;
+    expect(cachedSearch.map((item) => item.title)).toEqual(["Cached Concept"]);
+
+    const failureSummary = parseText(
+      await failingCallTool({
+        method: "tools/call",
+        params: { name: "bundle_summary", arguments: {} }
+      })
+    ) as { lastRefreshError: { message: string }; freshnessStatus: string };
+    expect(failureSummary.freshnessStatus).toBe("failed");
+    expect(failureSummary.lastRefreshError.message).toBe("network offline");
+
+    const missingServer = await createMcpServer({
+      bundleDir: path.join(root, "missing-bundle"),
+      maxResultChars: 2000,
+      source: { name: "missing", kind: "website", seedUrl: "https://docs.example.com" },
+      refresh: {
+        mode: "blocking",
+        getFreshness: async () => ({
+          freshnessStatus: "missing",
+          refreshInProgress: false,
+          lastRefreshError: null
+        }),
+        refreshIfNeeded: async () => {
+          throw new Error("first crawl failed");
+        }
+      }
+    });
+    const missingCallTool = handler(missingServer, "tools/call");
+    const missingSearch = parseText(
+      await missingCallTool({
+        method: "tools/call",
+        params: { name: "search_concepts", arguments: { query: "anything" } }
+      })
+    ) as { error: { code: string; message: string; sourceName: string } };
+    expect(missingSearch.error).toMatchObject({
+      code: "bundle_unavailable",
+      sourceName: "missing"
+    });
+    expect(missingSearch.error.message).toContain("first crawl failed");
   });
 });
 
