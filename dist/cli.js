@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import {
+  MCP_TOOL_NAMES,
   crawlWebsite,
   evaluateFreshness,
   hashBundleContents,
@@ -12,26 +13,334 @@ import {
   refreshSource,
   removeSource,
   resolveBundleDir,
+  resolveOkfyHome,
   resolveSourceDir,
   serveMcpStdio,
   validateBundle,
   validateSourceName,
   writeRefreshState,
   writeSourceManifest
-} from "./chunk-JA6B2QIM.js";
+} from "./chunk-7V2ZN6IS.js";
 
 // src/cli.ts
-import fs from "fs";
-import path from "path";
+import fs2 from "fs";
+import path2 from "path";
+import { execFile } from "child_process";
 import { fileURLToPath } from "url";
 import { Command } from "commander";
 import pc from "picocolors";
+
+// src/setup.ts
+import fs from "fs/promises";
+import path from "path";
+import { spawn } from "child_process";
+var EXPECTED_MCP_TOOLS = [...MCP_TOOL_NAMES];
+var MAX_CAPTURE_CHARS = 64e3;
+var MAX_DIAGNOSTIC_CHARS = 1e3;
+var MAX_MESSAGES = 100;
+function parseSetupClient(value) {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "claude-code" || normalized === "claude") return "claude-code";
+  if (normalized === "claude-desktop" || normalized === "cursor" || normalized === "mcp-json" || normalized === "desktop") {
+    return "mcp-json";
+  }
+  if (normalized === "codex") return "codex";
+  if (normalized === "generic" || normalized === "json") return "generic";
+  throw new Error(`Invalid setup client "${value}". Use claude-code, claude-desktop, cursor, codex, or generic.`);
+}
+function defaultOkfyHome() {
+  return resolveOkfyHome({ env: { OKFY_HOME: "" } });
+}
+function setupStatus(checks) {
+  if (checks.some((check) => check.severity === "fail")) return "failed";
+  if (checks.some((check) => check.severity === "warn")) return "warning";
+  return "ready";
+}
+function createSetupReport(input) {
+  const okfyHome = path.resolve(input.okfyHome ?? resolveOkfyHome());
+  const defaultHome = defaultOkfyHome();
+  const serverName = mcpServerName(input.sourceName);
+  const codexServerName = codexMcpServerName(input.sourceName);
+  const command = serveCommand(input.sourceName, okfyHome, defaultHome);
+  return {
+    sourceName: input.sourceName,
+    client: input.client,
+    serverName,
+    codexServerName,
+    okfyHome,
+    defaultOkfyHome: defaultHome,
+    command,
+    artifacts: renderClientArtifacts({ client: input.client, sourceName: input.sourceName, okfyHome, defaultOkfyHome: defaultHome }),
+    firstPrompt: firstAgentPrompt(input.client === "codex" ? codexServerName : serverName),
+    checks: input.checks,
+    status: setupStatus(input.checks)
+  };
+}
+function renderClientArtifacts(input) {
+  const okfyHome = path.resolve(input.okfyHome ?? resolveOkfyHome());
+  const defaultHome = input.defaultOkfyHome ?? defaultOkfyHome();
+  const serverName = mcpServerName(input.sourceName);
+  const codexName = codexMcpServerName(input.sourceName);
+  const command = serveCommand(input.sourceName, okfyHome, defaultHome);
+  const env = Object.keys(command.env).length ? command.env : void 0;
+  if (input.client === "claude-code") {
+    return [
+      {
+        client: input.client,
+        label: "Claude Code",
+        format: "shell",
+        body: `claude mcp add --transport stdio${shellEnvArgs(command.env, "-e")} ${serverName} -- ${command.display}`
+      }
+    ];
+  }
+  if (input.client === "codex") {
+    return [
+      {
+        client: input.client,
+        label: "Codex config.toml",
+        format: "toml",
+        body: codexToml(codexName, command, env)
+      },
+      {
+        client: input.client,
+        label: "Codex CLI",
+        format: "shell",
+        body: `codex mcp add${shellEnvArgs(command.env, "--env")} ${codexName} -- ${command.display}`
+      }
+    ];
+  }
+  const label = input.client === "mcp-json" ? "Claude Desktop / Cursor mcpServers JSON" : "Generic mcpServers JSON";
+  return [
+    {
+      client: input.client,
+      label,
+      format: "json",
+      body: JSON.stringify(
+        {
+          mcpServers: {
+            [serverName]: {
+              command: command.command,
+              args: command.args,
+              ...env ? { env } : {}
+            }
+          }
+        },
+        null,
+        2
+      )
+    }
+  ];
+}
+function firstAgentPrompt(serverName) {
+  return `Use the ${serverName} MCP server. Start with bundle_summary to understand the bundle and freshness. Search before reading concepts, read only the most relevant concepts, inspect neighbors when relationships matter, and cite source_resource URLs in the final answer.`;
+}
+function serveCommand(sourceName, okfyHome, defaultHome = defaultOkfyHome()) {
+  const args = sourceName.startsWith("-") ? ["-y", "okfy-ai", "serve", "--mcp", "--auto-refresh", "--", sourceName] : ["-y", "okfy-ai", "serve", sourceName, "--mcp", "--auto-refresh"];
+  const env = needsOkfyHomeEnv(okfyHome, defaultHome) ? { OKFY_HOME: path.resolve(okfyHome) } : {};
+  return {
+    command: "npx",
+    args,
+    env,
+    display: ["npx", ...args].join(" ")
+  };
+}
+function setupCheck(id, label, severity, message, fix) {
+  return { id, label, severity, message, ...fix ? { fix } : {} };
+}
+async function executableOnPath(command, env = process.env) {
+  const searchPath = env.PATH ?? "";
+  const extensions = process.platform === "win32" ? (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";") : [""];
+  for (const directory of searchPath.split(path.delimiter)) {
+    if (!directory) continue;
+    for (const extension of extensions) {
+      const candidate = path.join(directory, `${command}${extension}`);
+      try {
+        await fs.access(candidate, fs.constants.X_OK);
+        return true;
+      } catch {
+      }
+    }
+  }
+  return false;
+}
+function evaluateMcpProbeMessages(messages) {
+  const toolsResponse = messages.find((message) => message.id === 2);
+  const tools = toolsResponse?.result?.tools?.map((tool) => tool.name).filter((name) => Boolean(name)) ?? [];
+  const missingTools = EXPECTED_MCP_TOOLS.filter((tool) => !tools.includes(tool));
+  return { ok: missingTools.length === 0, tools, missingTools };
+}
+async function probeMcpStdio(options) {
+  const child = spawn(options.command, options.args, {
+    env: options.env,
+    stdio: ["pipe", "pipe", "pipe"]
+  });
+  return probeChildProcess(child, options.timeoutMs ?? 5e3);
+}
+async function probeChildProcess(child, timeoutMs) {
+  const messages = [];
+  let stdoutBuffer = "";
+  let stderr = "";
+  let contamination;
+  let spawnError;
+  let exit;
+  const closed = new Promise((resolve) => {
+    child.once("close", (code, signal) => {
+      exit = { code, signal };
+      resolve(exit);
+    });
+  });
+  child.on("error", (error) => {
+    spawnError = error;
+  });
+  child.stdin.on("error", (error) => {
+    spawnError ??= error;
+  });
+  child.stdout.on("data", (chunk) => {
+    stdoutBuffer = appendBounded(stdoutBuffer, chunk.toString("utf8"));
+    let newlineIndex = stdoutBuffer.indexOf("\n");
+    while (newlineIndex >= 0) {
+      const line = stdoutBuffer.slice(0, newlineIndex).trim();
+      stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
+      if (line) {
+        try {
+          if (messages.length >= MAX_MESSAGES) contamination = `MCP stdout exceeded ${MAX_MESSAGES} JSON-RPC messages.`;
+          else messages.push(JSON.parse(line));
+        } catch {
+          contamination = line;
+        }
+      }
+      newlineIndex = stdoutBuffer.indexOf("\n");
+    }
+    if (stdoutBuffer.length >= MAX_CAPTURE_CHARS) contamination = `MCP stdout line exceeded ${MAX_CAPTURE_CHARS} characters.`;
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr = appendBounded(stderr, chunk.toString("utf8"));
+  });
+  const send = (id, method, params = {}) => {
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}
+`);
+  };
+  try {
+    send(1, "initialize", {
+      protocolVersion: "2025-06-18",
+      capabilities: {},
+      clientInfo: { name: "okfy-doctor", version: "0.1.0" }
+    });
+    await waitForMessage(1, messages, () => contamination, () => spawnError, () => exit, () => stderr, timeoutMs);
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} })}
+`);
+    send(2, "tools/list");
+    await waitForMessage(2, messages, () => contamination, () => spawnError, () => exit, () => stderr, timeoutMs);
+    const result = evaluateMcpProbeMessages(messages);
+    if (!result.ok) {
+      return {
+        ok: false,
+        tools: result.tools,
+        stderr,
+        error: {
+          code: "missing_tools",
+          message: `MCP server did not expose expected tools: ${result.missingTools.join(", ")}.`
+        }
+      };
+    }
+    return { ok: true, tools: result.tools, stderr };
+  } catch (error) {
+    if (error instanceof ProbeFailure) {
+      return { ok: false, tools: [], stderr, error: { code: error.code, message: error.message } };
+    }
+    return { ok: false, tools: [], stderr, error: { code: "protocol_error", message: error instanceof Error ? error.message : String(error) } };
+  } finally {
+    await stopChild(child, closed, () => exit);
+  }
+}
+var ProbeFailure = class extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+  code;
+};
+async function waitForMessage(id, messages, contamination, spawnError, childExit, capturedStderr, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const badLine = contamination();
+    if (badLine) throw new ProbeFailure("stdout_contamination", `MCP stdout contained non-JSON output: ${badLine}`);
+    const error = spawnError();
+    if (error) throw new ProbeFailure("startup_failed", error.message);
+    const message = messages.find((candidate) => candidate.id === id);
+    if (message) return message;
+    const exit = childExit();
+    if (exit) {
+      const details = capturedStderr() ? ` stderr: ${truncate(capturedStderr())}` : "";
+      throw new ProbeFailure("startup_failed", `MCP subprocess exited before response ${id} (${formatExit(exit)}).${details}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new ProbeFailure("timeout", `Timed out waiting for MCP response ${id}.`);
+}
+async function stopChild(child, closed, childExit) {
+  try {
+    if (!child.stdin.destroyed) child.stdin.end();
+  } catch {
+  }
+  if (childExit()) return;
+  child.kill("SIGTERM");
+  const exited = await Promise.race([closed.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 500))]);
+  if (!exited && !childExit()) child.kill("SIGKILL");
+}
+function appendBounded(current, addition) {
+  const next = current + addition;
+  if (next.length <= MAX_CAPTURE_CHARS) return next;
+  return next.slice(next.length - MAX_CAPTURE_CHARS);
+}
+function truncate(value) {
+  const normalized = value.trim();
+  if (normalized.length <= MAX_DIAGNOSTIC_CHARS) return normalized;
+  return `${normalized.slice(0, MAX_DIAGNOSTIC_CHARS)}...truncated`;
+}
+function formatExit(exit) {
+  if (exit.signal) return `signal ${exit.signal}`;
+  return `exit code ${exit.code ?? "unknown"}`;
+}
+function needsOkfyHomeEnv(okfyHome, defaultHome) {
+  return path.resolve(okfyHome) !== path.resolve(defaultHome);
+}
+function mcpServerName(sourceName) {
+  const safeName = sourceName.replace(/[._]+/g, "-").replace(/^-+/, "");
+  return `${safeName || "source"}-okf`;
+}
+function codexMcpServerName(sourceName) {
+  const safeName = sourceName.replace(/[^a-z0-9]+/g, "_").replace(/^_+/, "");
+  return `${safeName || "source"}_okf`;
+}
+function shellEnvArgs(env, flag) {
+  const entries = Object.entries(env);
+  if (!entries.length) return "";
+  return entries.map(([key, value]) => ` ${flag} ${shellQuote(`${key}=${value}`)}`).join("");
+}
+function shellQuote(value) {
+  if (/^[A-Za-z0-9_./:=@+-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+function codexToml(serverName, command, env) {
+  const lines = [
+    `[mcp_servers.${serverName}]`,
+    `command = ${JSON.stringify(command.command)}`,
+    `args = [${command.args.map((arg) => JSON.stringify(arg)).join(", ")}]`
+  ];
+  if (env?.OKFY_HOME) lines.push(`env = { OKFY_HOME = ${JSON.stringify(env.OKFY_HOME)} }`);
+  lines.push("startup_timeout_sec = 20", "tool_timeout_sec = 60", "enabled = true");
+  return lines.join("\n");
+}
+
+// src/cli.ts
 var program = new Command();
-var packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+var cliPath = fileURLToPath(import.meta.url);
+var packageRoot = path2.resolve(path2.dirname(cliPath), "..");
 var isTty = Boolean(process.stderr.isTTY);
 function readPackageVersion() {
   try {
-    const raw = fs.readFileSync(path.join(packageRoot, "package.json"), "utf8");
+    const raw = fs2.readFileSync(path2.join(packageRoot, "package.json"), "utf8");
     const parsed = JSON.parse(raw);
     return parsed.version ?? "0.0.0";
   } catch {
@@ -55,7 +364,7 @@ function printJson(value) {
 }
 async function pathExists(target) {
   try {
-    await fs.promises.access(target);
+    await fs2.promises.access(target);
     return true;
   } catch (error) {
     if (error?.code === "ENOENT") return false;
@@ -104,12 +413,12 @@ async function summarizeState(record, maxAgeSeconds) {
     nextRefreshAllowedAt: state?.nextRefreshAllowedAt ?? null,
     refreshInProgress: decision.status === "refreshing",
     lastError: state?.lastError ?? null,
-    bundle: state?.bundle ?? (decision.validation ? {
+    bundle: decision.validation ? {
       conceptCount: decision.validation.conceptCount,
       warningCount: decision.validation.warningCount,
       valid: decision.validation.valid,
-      contentHash: ""
-    } : null)
+      contentHash: await hashBundleContents(record.bundleDir)
+    } : decision.status === "missing" ? null : state?.bundle ?? null
   };
 }
 function sourceRow(record, state) {
@@ -146,6 +455,9 @@ function refreshMode(value) {
   if (value === "off" || value === "stale-while-refresh" || value === "blocking") return value;
   throw new Error(`Invalid refresh mode "${value}". Use off, stale-while-refresh, or blocking.`);
 }
+function setupClient(value) {
+  return parseSetupClient(value);
+}
 function manifestFromOptions(name, seedUrl, options) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
   return {
@@ -174,9 +486,44 @@ function manifestFromOptions(name, seedUrl, options) {
       minIntervalSeconds: options.minRefreshInterval
     },
     bundle: {
-      dir: options.out ? path.resolve(options.out) : "bundle"
+      dir: options.out ? path2.resolve(options.out) : "bundle"
     }
   };
+}
+function addSourceRegistrationOptions(command) {
+  return command.option("--max-pages <n>", "Maximum pages", numberOption, 100).option("--max-depth <n>", "Maximum crawl depth", numberOption, 4).option("--include <pattern>", "Include glob or regex", collect, []).option("--exclude <pattern>", "Exclude glob or regex", collect, []).option("--same-origin", "Stay on same origin", true).option("--no-same-origin", "Allow cross-origin links").option("--respect-robots", "Respect robots.txt", true).option("--no-respect-robots", "Ignore robots.txt").option("--concurrency <n>", "Fetch concurrency", numberOption, 4).option("--allow-private-network", "Allow localhost/private IP crawl targets", false).option("--refresh-mode <mode>", "Refresh mode: off, stale-while-refresh, or blocking", refreshMode, "stale-while-refresh").option("--max-age <duration>", "Freshness max age", duration, 24 * 60 * 60).option("--min-refresh-interval <duration>", "Minimum interval between refresh attempts", duration, 15 * 60).option("--out <dir>", "Explicit active bundle directory").option("--force", "Overwrite an existing source registration", false);
+}
+async function registerWebsiteSource(name, url, options) {
+  const manifest = manifestFromOptions(name, url, options);
+  const sourceDir = resolveSourceDir(manifest.name);
+  if (await pathExists(sourceDir) && !options.force) {
+    throw new Error(`Source "${manifest.name}" already exists. Use --force to overwrite it.`);
+  }
+  let backupDir;
+  if (options.force && await pathExists(sourceDir)) {
+    backupDir = `${sourceDir}.backup-${process.pid}-${Date.now()}`;
+    await fs2.promises.rename(sourceDir, backupDir);
+  }
+  try {
+    await writeSourceManifest(manifest);
+    const result = await runSourceRefresh(manifest, { force: true });
+    if (result.status === "fresh") {
+      if (backupDir) await fs2.promises.rm(backupDir, { recursive: true, force: true });
+      return { manifest, result };
+    }
+    if (backupDir) {
+      await restoreSourceBackup(sourceDir, backupDir);
+      throw new Error(result.error?.message ?? `Refresh failed for source "${manifest.name}".`);
+    }
+    return { manifest, result };
+  } catch (error) {
+    if (backupDir) await restoreSourceBackup(sourceDir, backupDir);
+    throw error;
+  }
+}
+async function restoreSourceBackup(sourceDir, backupDir) {
+  await fs2.promises.rm(sourceDir, { recursive: true, force: true });
+  if (await pathExists(backupDir)) await fs2.promises.rename(backupDir, sourceDir);
 }
 async function runSourceRefresh(manifest, options = {}) {
   const state = await readStateIfExists(manifest.name);
@@ -237,6 +584,208 @@ function printStatus(message) {
   process.stderr.write(`${message}
 `);
 }
+function setupHomeCheck(okfyHome) {
+  const defaultHome = defaultOkfyHome();
+  if (path2.resolve(okfyHome) === path2.resolve(defaultHome)) {
+    return setupCheck("source_home", "Source store", "pass", `Using default OKFY_HOME ${okfyHome}.`);
+  }
+  return setupCheck(
+    "source_home",
+    "Source store",
+    "pass",
+    `Using non-default OKFY_HOME ${okfyHome}; generated configs include this environment override.`
+  );
+}
+function setupFreshnessCheck(record, state) {
+  if (state.status === "fresh" && state.bundle?.valid === true) {
+    return setupCheck(
+      "freshness",
+      "Freshness",
+      "pass",
+      `Source "${record.name}" is fresh with ${state.bundle.conceptCount} concepts.`
+    );
+  }
+  if (state.status === "stale") {
+    return setupCheck(
+      "freshness",
+      "Freshness",
+      "warn",
+      `Source "${record.name}" is stale.`,
+      `Run npx -y okfy-ai update ${record.name}, or keep --auto-refresh enabled in the MCP config.`
+    );
+  }
+  if (state.status === "refreshing") {
+    return setupCheck(
+      "freshness",
+      "Freshness",
+      "warn",
+      `Source "${record.name}" is already refreshing.`,
+      `Wait for the current refresh to finish, then run npx -y okfy-ai doctor ${record.name}.`
+    );
+  }
+  return setupCheck(
+    "freshness",
+    "Freshness",
+    "fail",
+    state.lastError?.message ?? `Source "${record.name}" is ${state.status}.`,
+    `Run npx -y okfy-ai update ${record.name}.`
+  );
+}
+async function setupBundleCheck(bundleDir) {
+  try {
+    const validation = await validateBundle(bundleDir);
+    if (validation.valid) {
+      return setupCheck("bundle", "Bundle validation", "pass", `Bundle is valid with ${validation.conceptCount} concepts.`);
+    }
+    const firstIssue = validation.issues[0];
+    return setupCheck(
+      "bundle",
+      "Bundle validation",
+      "fail",
+      firstIssue ? `${firstIssue.code}: ${firstIssue.message}` : "Bundle validation failed.",
+      "Run npx -y okfy-ai check <source> --json for validation details."
+    );
+  } catch (error) {
+    return setupCheck(
+      "bundle",
+      "Bundle validation",
+      "fail",
+      error?.message ?? "Bundle validation failed.",
+      "Run npx -y okfy-ai update <source> to rebuild the bundle."
+    );
+  }
+}
+async function setupNpxCheck() {
+  const fix = "Install Node.js >=20 with npm/npx, use an absolute npx path, or switch the config to an installed okfy command.";
+  if (!await executableOnPath("npx")) {
+    return setupCheck("npx", "npx availability", "fail", "`npx` was not found on PATH, but generated MCP configs use npx by default.", fix);
+  }
+  const health = await commandHealth("npx", ["--version"], process.env);
+  if (!health.ok) {
+    return setupCheck("npx", "npx availability", "fail", `\`npx\` was found but failed to run: ${health.message}`, fix);
+  }
+  return setupCheck("npx", "npx availability", "pass", `\`npx\` is available on PATH (${health.message}).`);
+}
+function setupMcpProbeCheck(probe) {
+  if (probe.ok) {
+    return setupCheck("mcp_probe", "MCP stdio probe", "pass", `MCP tools visible: ${probe.tools.join(", ")}.`);
+  }
+  const message = probe.error?.message ?? "MCP probe failed.";
+  const fix = probe.error?.code === "stdout_contamination" ? "Move human logs to stderr so stdout contains only MCP JSON-RPC messages." : "Run the generated serve command in your MCP client, then rerun doctor with the same OKFY_HOME.";
+  return setupCheck("mcp_probe", "MCP stdio probe", "fail", message, fix);
+}
+async function runSetupProbe(name, timeoutSeconds) {
+  const command = serveCommand(name, resolveOkfyHome());
+  return probeMcpStdio({
+    command: process.execPath,
+    args: [cliPath, "serve", name, "--mcp", "--auto-refresh"],
+    env: { ...process.env, ...command.env },
+    timeoutMs: timeoutSeconds * 1e3
+  });
+}
+async function commandHealth(command, args, env) {
+  return new Promise((resolve) => {
+    execFile(command, args, { env, timeout: 3e3 }, (error, stdout, stderr) => {
+      const message = (stderr || stdout || (error instanceof Error ? error.message : String(error ?? ""))).trim();
+      if (error) resolve({ ok: false, message: message || "command failed" });
+      else resolve({ ok: true, message: message || "ok" });
+    });
+  });
+}
+async function setupReportForRecord(options) {
+  const state = await summarizeState(options.record, options.maxAge);
+  await writeRefreshState(options.record.name, state);
+  const bundleCheck = await setupBundleCheck(options.record.bundleDir);
+  const npxCheck = await setupNpxCheck();
+  const checks = [
+    setupCheck("source", "Registered source", "pass", `Source "${options.record.name}" exists.`),
+    setupHomeCheck(resolveOkfyHome()),
+    bundleCheck,
+    setupFreshnessCheck(options.record, state),
+    npxCheck
+  ];
+  if (bundleCheck.severity === "fail" || npxCheck.severity === "fail") {
+    checks.push(
+      setupCheck(
+        "mcp_probe",
+        "MCP stdio probe",
+        "warn",
+        "Skipped MCP probe because setup prerequisites failed.",
+        "Fix the failed checks above, then rerun doctor."
+      )
+    );
+  } else {
+    checks.push(setupMcpProbeCheck(await runSetupProbe(options.record.name, options.probeTimeoutSeconds)));
+  }
+  return createSetupReport({
+    sourceName: options.record.name,
+    client: options.client,
+    okfyHome: resolveOkfyHome(),
+    checks
+  });
+}
+function setupReportForMissingSource(name, client, error) {
+  const message = error instanceof Error ? error.message : `Source "${name}" was not found.`;
+  return createSetupReport({
+    sourceName: name,
+    client,
+    okfyHome: resolveOkfyHome(),
+    checks: [
+      setupCheck(
+        "source",
+        "Registered source",
+        "fail",
+        message,
+        `Run npx -y okfy-ai sources to list sources in this OKFY_HOME, or run npx -y okfy-ai init ${name} <docs-url> --client generic.`
+      ),
+      setupHomeCheck(resolveOkfyHome())
+    ]
+  });
+}
+function setupReportForInitFailure(name, client, error) {
+  const message = error instanceof Error ? error.message : "Init failed.";
+  return createSetupReport({
+    sourceName: name,
+    client,
+    okfyHome: resolveOkfyHome(),
+    checks: [
+      setupCheck(
+        "source",
+        "Registered source",
+        "fail",
+        message,
+        `Check the source name and URL, then rerun npx -y okfy-ai init ${name} <docs-url>.`
+      ),
+      setupHomeCheck(resolveOkfyHome())
+    ]
+  });
+}
+function printSetupReport(report, json) {
+  if (json) {
+    printJson(report);
+    return;
+  }
+  const color = report.status === "failed" ? pc.red : report.status === "warning" ? pc.yellow : pc.green;
+  console.log(color(`Setup status: ${report.status}`));
+  console.log(`Source: ${report.sourceName}`);
+  console.log(`OKFY_HOME: ${report.okfyHome}`);
+  console.log("\nChecks:");
+  for (const check of report.checks) {
+    const label = check.severity === "fail" ? pc.red("FAIL") : check.severity === "warn" ? pc.yellow("WARN") : pc.green("PASS");
+    console.log(`  ${label} ${check.label}: ${check.message}`);
+    if (check.fix) console.log(`       Fix: ${check.fix}`);
+  }
+  console.log("\nMCP launch command:");
+  console.log(`  ${report.command.display}`);
+  if (Object.keys(report.command.env).length) console.log(`  env: ${JSON.stringify(report.command.env)}`);
+  for (const artifact of report.artifacts) {
+    console.log(`
+${artifact.label}:`);
+    console.log(artifact.body);
+  }
+  console.log("\nFirst prompt:");
+  console.log(report.firstPrompt);
+}
 function printCrawlProgress(event) {
   const clear = isTty ? "\r\x1B[K" : "";
   switch (event.type) {
@@ -269,16 +818,44 @@ function printCrawlProgress(event) {
   }
 }
 program.name("okfy").description("Turn docs into agent memory with Open Knowledge Format and MCP.").version(readPackageVersion());
-program.command("add").argument("<name>", "Local source name").argument("<url>", "Docs URL to crawl").option("--max-pages <n>", "Maximum pages", numberOption, 100).option("--max-depth <n>", "Maximum crawl depth", numberOption, 4).option("--include <pattern>", "Include glob or regex", collect, []).option("--exclude <pattern>", "Exclude glob or regex", collect, []).option("--same-origin", "Stay on same origin", true).option("--no-same-origin", "Allow cross-origin links").option("--respect-robots", "Respect robots.txt", true).option("--no-respect-robots", "Ignore robots.txt").option("--concurrency <n>", "Fetch concurrency", numberOption, 4).option("--allow-private-network", "Allow localhost/private IP crawl targets", false).option("--refresh-mode <mode>", "Refresh mode: off, stale-while-refresh, or blocking", refreshMode, "stale-while-refresh").option("--max-age <duration>", "Freshness max age", duration, 24 * 60 * 60).option("--min-refresh-interval <duration>", "Minimum interval between refresh attempts", duration, 15 * 60).option("--out <dir>", "Explicit active bundle directory").option("--force", "Overwrite an existing source registration", false).option("--json", "Print JSON output", false).action(async (name, url, options) => {
+var initCommand = program.command("init").argument("<name>", "Local source name").argument("<url>", "Docs URL to crawl").option("--client <client>", "Target client: claude-code, claude-desktop, cursor, codex, or generic", setupClient, parseSetupClient("generic"));
+addSourceRegistrationOptions(initCommand).option("--probe-timeout <duration>", "MCP setup probe timeout", duration, 5).option("--json", "Print JSON output", false).action(async (name, url, options) => {
   try {
-    const sourceDir = resolveSourceDir(name);
-    if (await pathExists(sourceDir) && !options.force) {
-      throw new Error(`Source "${name}" already exists. Use --force to overwrite it.`);
-    }
-    if (options.force) await removeSource(name);
-    const manifest = manifestFromOptions(name, url, options);
-    await writeSourceManifest(manifest);
-    const result = await runSourceRefresh(manifest, { force: true });
+    const { manifest } = await registerWebsiteSource(name, url, options);
+    const report = await setupReportForRecord({
+      record: await registeredRecord(manifest.name),
+      client: options.client,
+      maxAge: options.maxAge,
+      probeTimeoutSeconds: options.probeTimeout
+    });
+    printSetupReport(report, options.json);
+    if (report.status === "failed") process.exitCode = 1;
+  } catch (error) {
+    if (options.json) printSetupReport(setupReportForInitFailure(name, options.client, error), true);
+    else console.error(pc.red(error?.message ?? "Init failed."));
+    process.exitCode = 1;
+  }
+});
+program.command("doctor").argument("<name>", "Registered source name").option("--client <client>", "Target client: claude-code, claude-desktop, cursor, codex, or generic", setupClient, parseSetupClient("generic")).option("--max-age <duration>", "Override freshness max age", duration).option("--probe-timeout <duration>", "MCP setup probe timeout", duration, 5).option("--json", "Print JSON output", false).action(async (name, options) => {
+  try {
+    const report = await setupReportForRecord({
+      record: await registeredRecord(name),
+      client: options.client,
+      maxAge: options.maxAge,
+      probeTimeoutSeconds: options.probeTimeout
+    });
+    printSetupReport(report, options.json);
+    if (report.status === "failed") process.exitCode = 1;
+  } catch (error) {
+    const report = setupReportForMissingSource(name, options.client, error);
+    printSetupReport(report, options.json);
+    process.exitCode = 1;
+  }
+});
+var addCommand = program.command("add").argument("<name>", "Local source name").argument("<url>", "Docs URL to crawl");
+addSourceRegistrationOptions(addCommand).option("--json", "Print JSON output", false).action(async (name, url, options) => {
+  try {
+    const { manifest, result } = await registerWebsiteSource(name, url, options);
     const bundlePath = resolveBundleDir(manifest);
     const payload = {
       name: manifest.name,
@@ -487,7 +1064,7 @@ program.command("serve").argument("<name-or-bundle>", "Registered source name or
     printStatus(`okfy serve: starting MCP stdio server "${options.name}"`);
     await serveMcpStdio({ bundleDir: target, name: options.name, maxResultChars: options.maxResultChars });
     printStatus("okfy serve: ready on stdio (stdout is reserved for MCP JSON-RPC)");
-    printStatus("okfy serve: tools bundle_summary, search_concepts, read_concept, get_neighbors, list_types, list_tags");
+    printStatus(`okfy serve: tools ${MCP_TOOL_NAMES.join(", ")}`);
     return;
   }
   try {
@@ -524,7 +1101,7 @@ program.command("serve").argument("<name-or-bundle>", "Registered source name or
       }
     });
     printStatus("okfy serve: ready on stdio (stdout is reserved for MCP JSON-RPC)");
-    printStatus("okfy serve: tools bundle_summary, search_concepts, read_concept, get_neighbors, list_types, list_tags");
+    printStatus(`okfy serve: tools ${MCP_TOOL_NAMES.join(", ")}`);
   } catch (error) {
     console.error(pc.red(error?.message ?? "Serve failed."));
     process.exitCode = 1;
@@ -532,8 +1109,8 @@ program.command("serve").argument("<name-or-bundle>", "Registered source name or
 });
 function resolveDemoBundle() {
   const relativeBundle = "examples/bundles/okfy-docs";
-  if (fs.existsSync(relativeBundle)) return relativeBundle;
-  return path.join(packageRoot, relativeBundle);
+  if (fs2.existsSync(relativeBundle)) return relativeBundle;
+  return path2.join(packageRoot, relativeBundle);
 }
 program.command("demo").description("Run offline demo against committed example bundle").action(async () => {
   const bundle = resolveDemoBundle();

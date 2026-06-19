@@ -89,7 +89,7 @@ describe("OKFY home and source names", () => {
   });
 
   it("accepts stable filesystem-safe source names", () => {
-    for (const name of ["stripe", "stripe_checkout", "stripe.checkout-v2", "a1"]) {
+    for (const name of ["stripe", "stripe_checkout", "stripe.checkout-v2", "a1", "-legacy", "_legacy", ".legacy"]) {
       expect(validateSourceName(name)).toBe(name);
     }
   });

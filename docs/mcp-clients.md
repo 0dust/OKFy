@@ -3,9 +3,10 @@
 okfy is meant to be launched by your agent as a local stdio MCP server. The default setup uses `npx -y okfy-ai`, so Claude, Codex, Cursor, or another MCP client can run okfy without a global install:
 
 ```bash
-npx -y okfy-ai add stripe https://docs.stripe.com/checkout --max-pages 100 --max-depth 4
-npx -y okfy-ai serve stripe --mcp --auto-refresh
+npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client generic --max-pages 100 --max-depth 4
 ```
+
+The generated launch command will use `npx -y okfy-ai serve stripe --mcp --auto-refresh`.
 
 MCP stdio means the client starts okfy as a local subprocess, sends JSON-RPC on stdin, and reads JSON-RPC responses on stdout. okfy logs and refresh progress belong on stderr so the MCP protocol stays clean.
 
@@ -17,10 +18,13 @@ Use registered sources for third-party docs sites that should stay fresh over ti
 npx -y okfy-ai add stripe https://docs.stripe.com/checkout --max-pages 100 --max-depth 4
 npx -y okfy-ai sources
 npx -y okfy-ai check stripe
+npx -y okfy-ai doctor stripe
 npx -y okfy-ai update stripe
 npx -y okfy-ai remove stripe
 npx -y okfy-ai serve stripe --mcp --auto-refresh
 ```
+
+If you want registration plus client-specific setup artifacts, use `npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client generic --max-pages 100 --max-depth 4`.
 
 By default, okfy stores sources in `~/.okfy`. Override that with `OKFY_HOME` when you want CI isolation, a project-local cache, or a disposable test home:
 
@@ -38,6 +42,14 @@ $OKFY_HOME/
 `source.json` stores the seed URL, crawl options, refresh policy, and bundle location. `state.json` stores freshness status, last successful refresh time, validation summary, refresh-in-progress state, and the latest refresh error if one exists.
 
 This is local-first. There is no OKFY cloud registry, account, central cache, hosted ranking, or cloud refresh worker. Refreshes run on your machine by rerunning the stored crawl configuration.
+
+`init` is the setup shortcut over the registered-source workflow. It creates the source, validates the bundle, and prints client-specific config plus a first prompt without writing client config files by default.
+
+`doctor` re-runs setup checks later. It verifies source existence, bundle validity, freshness, `npx` availability, generated command shape, MCP tool visibility, and JSON-RPC-clean stdout. Use it when the client cannot start okfy, the agent cannot see tools, or answers look stale:
+
+```bash
+npx -y okfy-ai doctor stripe --client codex
+```
 
 Default refresh mode is `stale-while-refresh`: if the cached bundle is stale, MCP tools keep serving the current bundle while okfy refreshes in the background. Use blocking mode when you want stale sources refreshed before search/read/list tool calls answer:
 
@@ -72,6 +84,7 @@ Direct bundle paths do not use source auto-refresh. Use `add` plus `serve <sourc
 Add a registered source as a local stdio server:
 
 ```bash
+npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client claude-code
 claude mcp add --transport stdio stripe-okf -- npx -y okfy-ai serve stripe --mcp --auto-refresh
 claude mcp list
 ```
@@ -132,6 +145,7 @@ final answer with cited resource fields
 
 Troubleshooting:
 
+- Run `npx -y okfy-ai doctor stripe --client claude-code` for a setup report.
 - `spawn npx ENOENT`: install Node.js >=20 and ensure `npx` is on `PATH`.
 - Server pending: run `/mcp`; approve project-scoped `.mcp.json` if prompted.
 - Unknown source name: run `npx -y okfy-ai sources` and confirm the source exists in the same `OKFY_HOME`.
@@ -142,6 +156,10 @@ Troubleshooting:
 ## Claude Desktop Or Cursor
 
 Claude Desktop and Cursor use MCP server JSON. Add this entry to `claude_desktop_config.json`, `.cursor/mcp.json`, or any client that accepts `mcpServers` JSON:
+
+```bash
+npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client cursor
+```
 
 ```json
 {
@@ -183,6 +201,7 @@ Use stripe-okf. Find concepts about MCP tools, read the relevant concept, then t
 
 Troubleshooting:
 
+- Run `npx -y okfy-ai doctor stripe --client cursor` for a setup report.
 - Desktop cannot find `npx`: replace `"command": "npx"` with the full path from `which npx`.
 - Server exits immediately: run the exact command in a terminal and fix source or bundle validation errors.
 - No okfy tools visible: restart the client after config changes.
@@ -206,6 +225,10 @@ Trusted project config path:
 ```
 
 Add:
+
+```bash
+npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client codex
+```
 
 ```toml
 [mcp_servers.stripe_okf]
@@ -266,6 +289,7 @@ final answer with citations
 
 Troubleshooting:
 
+- Run `npx -y okfy-ai doctor stripe --client codex` for a setup report.
 - Config ignored: project `.codex/config.toml` loads only for trusted projects; use user config if unsure.
 - Server startup timeout: increase `startup_timeout_sec` if first `npx` install or first source load is slow.
 - Tool timeout: increase `tool_timeout_sec` for large bundles or blocking refresh mode.
@@ -276,6 +300,10 @@ Troubleshooting:
 ## Generic MCP Stdio
 
 Use this JSON for clients that accept Claude-style `mcpServers` config:
+
+```bash
+npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client generic
+```
 
 ```json
 {
@@ -332,6 +360,7 @@ Use stripe-okf. Search for OKF bundle structure, read the most relevant concepts
 
 Troubleshooting:
 
+- Run `npx -y okfy-ai doctor stripe --client generic` for a setup report.
 - stdout has logs: okfy must write only MCP JSON-RPC messages to stdout; logs belong on stderr.
 - Client cannot start process: use absolute `command` path, and set `OKFY_HOME` when using a non-default source cache.
 - `tools/list` empty: confirm `okfy serve` was started with `--mcp`.

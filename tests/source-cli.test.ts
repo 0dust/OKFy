@@ -5,6 +5,7 @@ import path from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
+import { readRefreshState } from "../src/source-store.js";
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
@@ -66,6 +67,10 @@ function parseJson<T>(stdout: string): T {
   return JSON.parse(stdout) as T;
 }
 
+async function stateHash(okfyHome: string, name: string): Promise<string | undefined> {
+  return (await readRefreshState(name, { okfyHome })).bundle?.contentHash;
+}
+
 async function markSourceOld(okfyHome: string, name: string): Promise<void> {
   const statePath = path.join(okfyHome, "sources", name, "state.json");
   const parsed = JSON.parse(await fs.readFile(statePath, "utf8")) as Record<string, unknown>;
@@ -115,12 +120,16 @@ describe("registered source CLI flow", () => {
       const addJson = parseJson<{ name: string; status: string; bundlePath: string; conceptCount: number }>(add.stdout);
       expect(addJson).toMatchObject({ name: "stripe", status: "fresh", conceptCount: 2 });
       expect(addJson.bundlePath).toContain(path.join(okfyHome, "sources", "stripe", "bundle"));
+      const hashAfterAdd = await stateHash(okfyHome, "stripe");
+      expect(hashAfterAdd).toMatch(/^sha256:/);
 
       const sources = parseJson<Array<{ name: string; status: string; seedUrl: string }>>((await runCli(["sources", "--json"], okfyHome)).stdout);
       expect(sources).toMatchObject([{ name: "stripe", status: "fresh", seedUrl: `${docs.origin}/` }]);
+      await expect(stateHash(okfyHome, "stripe")).resolves.toBe(hashAfterAdd);
 
       const fresh = parseJson<{ status: string; valid: boolean }>((await runCli(["check", "stripe", "--json"], okfyHome)).stdout);
       expect(fresh).toMatchObject({ status: "fresh", valid: true });
+      await expect(stateHash(okfyHome, "stripe")).resolves.toBe(hashAfterAdd);
 
       await markSourceOld(okfyHome, "stripe");
       await expect(runCli(["check", "stripe", "--max-age", "1s", "--json"], okfyHome)).rejects.toMatchObject({
@@ -173,6 +182,8 @@ describe("registered source CLI flow", () => {
         ],
         okfyHome
       );
+      const hashAfterAdd = await stateHash(okfyHome, "stripe");
+      expect(hashAfterAdd).toMatch(/^sha256:/);
 
       const cli = path.resolve("dist/cli.js");
       const child = spawn(process.execPath, [cli, "serve", "stripe", "--mcp", "--auto-refresh"], {
@@ -227,9 +238,10 @@ describe("registered source CLI flow", () => {
           seedUrl: string;
           freshnessStatus: string;
           lastSuccessfulRefreshAt?: string;
-        };
-        expect(summary).toMatchObject({ sourceName: "stripe", seedUrl: `${docs.origin}/`, freshnessStatus: "fresh" });
-        expect(summary.lastSuccessfulRefreshAt).toBeTruthy();
+      };
+      expect(summary).toMatchObject({ sourceName: "stripe", seedUrl: `${docs.origin}/`, freshnessStatus: "fresh" });
+      expect(summary.lastSuccessfulRefreshAt).toBeTruthy();
+      await expect(stateHash(okfyHome, "stripe")).resolves.toBe(hashAfterAdd);
 
         for (const line of stdoutLines) {
           const parsed = JSON.parse(line) as { jsonrpc?: string };
