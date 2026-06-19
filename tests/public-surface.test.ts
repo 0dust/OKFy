@@ -43,6 +43,8 @@ describe("public surface", () => {
     expect(readme).toContain("[docs/mcp-clients.md](docs/mcp-clients.md)");
     expect(readme.indexOf("## Use With Agents")).toBeGreaterThan(-1);
     expect(readme.indexOf("## Use With Agents")).toBeLessThan(readme.indexOf("## Optional CLI Install"));
+    expect(readme).toContain("npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client codex");
+    expect(readme).toContain("npx -y okfy-ai doctor stripe --client codex");
     expect(readme).toContain("claude mcp add --transport stdio stripe-okf");
     expect(readme).toContain(".cursor/mcp.json");
     expect(readme).toContain("[mcp_servers.stripe_okf]");
@@ -124,10 +126,16 @@ describe("public surface", () => {
       "Turn docs into agent-readable Open Knowledge Format v0.1-conformant bundles, then serve them to Claude, Codex, Cursor"
     );
     expect(npmReadme.indexOf("## Use With Agents")).toBeLessThan(npmReadme.indexOf("## Optional CLI Install"));
+    expect(npmReadme).toContain("npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client generic");
+    expect(npmReadme).toContain("npx -y okfy-ai doctor stripe --client codex");
+    expect(npmReadme).toContain("okfy init <name> <url>");
+    expect(npmReadme).toContain("okfy doctor <name>");
     expect(npmReadme).toContain("claude mcp add --transport stdio stripe-okf");
     expect(npmReadme).toContain("[mcp_servers.stripe_okf]");
     expect(npmReadme).not.toContain("assets/logo.svg");
     expect(mcpDocs).toContain("The default setup uses `npx -y okfy-ai`");
+    expect(mcpDocs).toContain("npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client generic");
+    expect(mcpDocs).toContain("npx -y okfy-ai doctor stripe --client codex");
     expect(mcpDocs).toContain("npx -y okfy-ai add stripe https://docs.stripe.com/checkout");
     expect(mcpDocs).toContain("npx -y okfy-ai serve stripe --mcp --auto-refresh");
     expect(mcpDocs).toContain("Direct bundle paths do not use source auto-refresh.");

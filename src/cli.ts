@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
+import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import pc from "picocolors";
@@ -8,14 +9,28 @@ import { crawlWebsite, type CrawlProgressEvent } from "./crawler.js";
 import { parseDurationSeconds } from "./duration.js";
 import { hashBundleContents } from "./hash.js";
 import { importLocal } from "./importer.js";
-import { serveMcpStdio } from "./mcp.js";
+import { MCP_TOOL_NAMES, serveMcpStdio } from "./mcp.js";
 import { evaluateFreshness, refreshSource } from "./refresh.js";
+import {
+  createSetupReport,
+  defaultOkfyHome,
+  executableOnPath,
+  parseSetupClient,
+  probeMcpStdio,
+  serveCommand,
+  setupCheck,
+  type McpProbeResult,
+  type SetupCheck,
+  type SetupClient,
+  type SetupReport
+} from "./setup.js";
 import {
   listSources,
   readRefreshState,
   readSourceManifest,
   removeSource,
   resolveBundleDir,
+  resolveOkfyHome,
   resolveSourceDir,
   validateSourceName,
   writeRefreshState,
@@ -28,7 +43,8 @@ import {
 import { inspectBundle, validateBundle } from "./validate.js";
 
 const program = new Command();
-const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const cliPath = fileURLToPath(import.meta.url);
+const packageRoot = path.resolve(path.dirname(cliPath), "..");
 const isTty = Boolean(process.stderr.isTTY);
 
 function readPackageVersion(): string {
@@ -114,16 +130,16 @@ async function summarizeState(record: SourceRecord, maxAgeSeconds?: number): Pro
     nextRefreshAllowedAt: state?.nextRefreshAllowedAt ?? null,
     refreshInProgress: decision.status === "refreshing",
     lastError: state?.lastError ?? null,
-    bundle:
-      state?.bundle ??
-      (decision.validation
-        ? {
-            conceptCount: decision.validation.conceptCount,
-            warningCount: decision.validation.warningCount,
-            valid: decision.validation.valid,
-            contentHash: ""
-          }
-        : null)
+    bundle: decision.validation
+      ? {
+          conceptCount: decision.validation.conceptCount,
+          warningCount: decision.validation.warningCount,
+          valid: decision.validation.valid,
+          contentHash: await hashBundleContents(record.bundleDir)
+        }
+      : decision.status === "missing"
+        ? null
+        : (state?.bundle ?? null)
   };
 }
 
@@ -164,6 +180,10 @@ function refreshMode(value: string): RefreshMode {
   throw new Error(`Invalid refresh mode "${value}". Use off, stale-while-refresh, or blocking.`);
 }
 
+function setupClient(value: string): SetupClient {
+  return parseSetupClient(value);
+}
+
 function manifestFromOptions(name: string, seedUrl: string, options: any): SourceManifest {
   const now = new Date().toISOString();
   return {
@@ -195,6 +215,61 @@ function manifestFromOptions(name: string, seedUrl: string, options: any): Sourc
       dir: options.out ? path.resolve(options.out) : "bundle"
     }
   };
+}
+
+function addSourceRegistrationOptions(command: Command): Command {
+  return command
+    .option("--max-pages <n>", "Maximum pages", numberOption, 100)
+    .option("--max-depth <n>", "Maximum crawl depth", numberOption, 4)
+    .option("--include <pattern>", "Include glob or regex", collect, [])
+    .option("--exclude <pattern>", "Exclude glob or regex", collect, [])
+    .option("--same-origin", "Stay on same origin", true)
+    .option("--no-same-origin", "Allow cross-origin links")
+    .option("--respect-robots", "Respect robots.txt", true)
+    .option("--no-respect-robots", "Ignore robots.txt")
+    .option("--concurrency <n>", "Fetch concurrency", numberOption, 4)
+    .option("--allow-private-network", "Allow localhost/private IP crawl targets", false)
+    .option("--refresh-mode <mode>", "Refresh mode: off, stale-while-refresh, or blocking", refreshMode, "stale-while-refresh")
+    .option("--max-age <duration>", "Freshness max age", duration, 24 * 60 * 60)
+    .option("--min-refresh-interval <duration>", "Minimum interval between refresh attempts", duration, 15 * 60)
+    .option("--out <dir>", "Explicit active bundle directory")
+    .option("--force", "Overwrite an existing source registration", false);
+}
+
+async function registerWebsiteSource(name: string, url: string, options: any) {
+  const manifest = manifestFromOptions(name, url, options);
+  const sourceDir = resolveSourceDir(manifest.name);
+  if ((await pathExists(sourceDir)) && !options.force) {
+    throw new Error(`Source "${manifest.name}" already exists. Use --force to overwrite it.`);
+  }
+
+  let backupDir: string | undefined;
+  if (options.force && (await pathExists(sourceDir))) {
+    backupDir = `${sourceDir}.backup-${process.pid}-${Date.now()}`;
+    await fs.promises.rename(sourceDir, backupDir);
+  }
+
+  try {
+    await writeSourceManifest(manifest);
+    const result = await runSourceRefresh(manifest, { force: true });
+    if (result.status === "fresh") {
+      if (backupDir) await fs.promises.rm(backupDir, { recursive: true, force: true });
+      return { manifest, result };
+    }
+    if (backupDir) {
+      await restoreSourceBackup(sourceDir, backupDir);
+      throw new Error(result.error?.message ?? `Refresh failed for source "${manifest.name}".`);
+    }
+    return { manifest, result };
+  } catch (error) {
+    if (backupDir) await restoreSourceBackup(sourceDir, backupDir);
+    throw error;
+  }
+}
+
+async function restoreSourceBackup(sourceDir: string, backupDir: string): Promise<void> {
+  await fs.promises.rm(sourceDir, { recursive: true, force: true });
+  if (await pathExists(backupDir)) await fs.promises.rename(backupDir, sourceDir);
 }
 
 async function runSourceRefresh(manifest: SourceManifest, options: { force?: boolean; dryRun?: boolean } = {}) {
@@ -260,6 +335,232 @@ function printStatus(message: string): void {
   process.stderr.write(`${message}\n`);
 }
 
+function setupHomeCheck(okfyHome: string): SetupCheck {
+  const defaultHome = defaultOkfyHome();
+  if (path.resolve(okfyHome) === path.resolve(defaultHome)) {
+    return setupCheck("source_home", "Source store", "pass", `Using default OKFY_HOME ${okfyHome}.`);
+  }
+  return setupCheck(
+    "source_home",
+    "Source store",
+    "pass",
+    `Using non-default OKFY_HOME ${okfyHome}; generated configs include this environment override.`
+  );
+}
+
+function setupFreshnessCheck(record: SourceRecord, state: RefreshState): SetupCheck {
+  if (state.status === "fresh" && state.bundle?.valid === true) {
+    return setupCheck(
+      "freshness",
+      "Freshness",
+      "pass",
+      `Source "${record.name}" is fresh with ${state.bundle.conceptCount} concepts.`
+    );
+  }
+  if (state.status === "stale") {
+    return setupCheck(
+      "freshness",
+      "Freshness",
+      "warn",
+      `Source "${record.name}" is stale.`,
+      `Run npx -y okfy-ai update ${record.name}, or keep --auto-refresh enabled in the MCP config.`
+    );
+  }
+  if (state.status === "refreshing") {
+    return setupCheck(
+      "freshness",
+      "Freshness",
+      "warn",
+      `Source "${record.name}" is already refreshing.`,
+      `Wait for the current refresh to finish, then run npx -y okfy-ai doctor ${record.name}.`
+    );
+  }
+  return setupCheck(
+    "freshness",
+    "Freshness",
+    "fail",
+    state.lastError?.message ?? `Source "${record.name}" is ${state.status}.`,
+    `Run npx -y okfy-ai update ${record.name}.`
+  );
+}
+
+async function setupBundleCheck(bundleDir: string): Promise<SetupCheck> {
+  try {
+    const validation = await validateBundle(bundleDir);
+    if (validation.valid) {
+      return setupCheck("bundle", "Bundle validation", "pass", `Bundle is valid with ${validation.conceptCount} concepts.`);
+    }
+    const firstIssue = validation.issues[0];
+    return setupCheck(
+      "bundle",
+      "Bundle validation",
+      "fail",
+      firstIssue ? `${firstIssue.code}: ${firstIssue.message}` : "Bundle validation failed.",
+      "Run npx -y okfy-ai check <source> --json for validation details."
+    );
+  } catch (error: any) {
+    return setupCheck(
+      "bundle",
+      "Bundle validation",
+      "fail",
+      error?.message ?? "Bundle validation failed.",
+      "Run npx -y okfy-ai update <source> to rebuild the bundle."
+    );
+  }
+}
+
+async function setupNpxCheck(): Promise<SetupCheck> {
+  const fix =
+    "Install Node.js >=20 with npm/npx, use an absolute npx path, or switch the config to an installed okfy command.";
+  if (!(await executableOnPath("npx"))) {
+    return setupCheck("npx", "npx availability", "fail", "`npx` was not found on PATH, but generated MCP configs use npx by default.", fix);
+  }
+  const health = await commandHealth("npx", ["--version"], process.env);
+  if (!health.ok) {
+    return setupCheck("npx", "npx availability", "fail", `\`npx\` was found but failed to run: ${health.message}`, fix);
+  }
+  return setupCheck("npx", "npx availability", "pass", `\`npx\` is available on PATH (${health.message}).`);
+}
+
+function setupMcpProbeCheck(probe: McpProbeResult): SetupCheck {
+  if (probe.ok) {
+    return setupCheck("mcp_probe", "MCP stdio probe", "pass", `MCP tools visible: ${probe.tools.join(", ")}.`);
+  }
+  const message = probe.error?.message ?? "MCP probe failed.";
+  const fix =
+    probe.error?.code === "stdout_contamination"
+      ? "Move human logs to stderr so stdout contains only MCP JSON-RPC messages."
+      : "Run the generated serve command in your MCP client, then rerun doctor with the same OKFY_HOME.";
+  return setupCheck("mcp_probe", "MCP stdio probe", "fail", message, fix);
+}
+
+async function runSetupProbe(name: string, timeoutSeconds: number): Promise<McpProbeResult> {
+  const command = serveCommand(name, resolveOkfyHome());
+  return probeMcpStdio({
+    command: process.execPath,
+    args: [cliPath, "serve", name, "--mcp", "--auto-refresh"],
+    env: { ...process.env, ...command.env },
+    timeoutMs: timeoutSeconds * 1000
+  });
+}
+
+async function commandHealth(
+  command: string,
+  args: string[],
+  env: NodeJS.ProcessEnv
+): Promise<{ ok: true; message: string } | { ok: false; message: string }> {
+  return new Promise((resolve) => {
+    execFile(command, args, { env, timeout: 3000 }, (error, stdout, stderr) => {
+      const message = (stderr || stdout || (error instanceof Error ? error.message : String(error ?? ""))).trim();
+      if (error) resolve({ ok: false, message: message || "command failed" });
+      else resolve({ ok: true, message: message || "ok" });
+    });
+  });
+}
+
+async function setupReportForRecord(options: {
+  record: SourceRecord;
+  client: SetupClient;
+  maxAge?: number;
+  probeTimeoutSeconds: number;
+}): Promise<SetupReport> {
+  const state = await summarizeState(options.record, options.maxAge);
+  await writeRefreshState(options.record.name, state);
+  const bundleCheck = await setupBundleCheck(options.record.bundleDir);
+  const npxCheck = await setupNpxCheck();
+  const checks: SetupCheck[] = [
+    setupCheck("source", "Registered source", "pass", `Source "${options.record.name}" exists.`),
+    setupHomeCheck(resolveOkfyHome()),
+    bundleCheck,
+    setupFreshnessCheck(options.record, state),
+    npxCheck
+  ];
+  if (bundleCheck.severity === "fail" || npxCheck.severity === "fail") {
+    checks.push(
+      setupCheck(
+        "mcp_probe",
+        "MCP stdio probe",
+        "warn",
+        "Skipped MCP probe because setup prerequisites failed.",
+        "Fix the failed checks above, then rerun doctor."
+      )
+    );
+  } else {
+    checks.push(setupMcpProbeCheck(await runSetupProbe(options.record.name, options.probeTimeoutSeconds)));
+  }
+  return createSetupReport({
+    sourceName: options.record.name,
+    client: options.client,
+    okfyHome: resolveOkfyHome(),
+    checks
+  });
+}
+
+function setupReportForMissingSource(name: string, client: SetupClient, error: unknown): SetupReport {
+  const message = error instanceof Error ? error.message : `Source "${name}" was not found.`;
+  return createSetupReport({
+    sourceName: name,
+    client,
+    okfyHome: resolveOkfyHome(),
+    checks: [
+      setupCheck(
+        "source",
+        "Registered source",
+        "fail",
+        message,
+        `Run npx -y okfy-ai sources to list sources in this OKFY_HOME, or run npx -y okfy-ai init ${name} <docs-url> --client generic.`
+      ),
+      setupHomeCheck(resolveOkfyHome())
+    ]
+  });
+}
+
+function setupReportForInitFailure(name: string, client: SetupClient, error: unknown): SetupReport {
+  const message = error instanceof Error ? error.message : "Init failed.";
+  return createSetupReport({
+    sourceName: name,
+    client,
+    okfyHome: resolveOkfyHome(),
+    checks: [
+      setupCheck(
+        "source",
+        "Registered source",
+        "fail",
+        message,
+        `Check the source name and URL, then rerun npx -y okfy-ai init ${name} <docs-url>.`
+      ),
+      setupHomeCheck(resolveOkfyHome())
+    ]
+  });
+}
+
+function printSetupReport(report: SetupReport, json: boolean): void {
+  if (json) {
+    printJson(report);
+    return;
+  }
+
+  const color = report.status === "failed" ? pc.red : report.status === "warning" ? pc.yellow : pc.green;
+  console.log(color(`Setup status: ${report.status}`));
+  console.log(`Source: ${report.sourceName}`);
+  console.log(`OKFY_HOME: ${report.okfyHome}`);
+  console.log("\nChecks:");
+  for (const check of report.checks) {
+    const label = check.severity === "fail" ? pc.red("FAIL") : check.severity === "warn" ? pc.yellow("WARN") : pc.green("PASS");
+    console.log(`  ${label} ${check.label}: ${check.message}`);
+    if (check.fix) console.log(`       Fix: ${check.fix}`);
+  }
+  console.log("\nMCP launch command:");
+  console.log(`  ${report.command.display}`);
+  if (Object.keys(report.command.env).length) console.log(`  env: ${JSON.stringify(report.command.env)}`);
+  for (const artifact of report.artifacts) {
+    console.log(`\n${artifact.label}:`);
+    console.log(artifact.body);
+  }
+  console.log("\nFirst prompt:");
+  console.log(report.firstPrompt);
+}
+
 function printCrawlProgress(event: CrawlProgressEvent): void {
   const clear = isTty ? "\r\x1b[K" : "";
   switch (event.type) {
@@ -292,37 +593,67 @@ program
   .description("Turn docs into agent memory with Open Knowledge Format and MCP.")
   .version(readPackageVersion());
 
-program
-  .command("add")
+const initCommand = program
+  .command("init")
   .argument("<name>", "Local source name")
   .argument("<url>", "Docs URL to crawl")
-  .option("--max-pages <n>", "Maximum pages", numberOption, 100)
-  .option("--max-depth <n>", "Maximum crawl depth", numberOption, 4)
-  .option("--include <pattern>", "Include glob or regex", collect, [])
-  .option("--exclude <pattern>", "Exclude glob or regex", collect, [])
-  .option("--same-origin", "Stay on same origin", true)
-  .option("--no-same-origin", "Allow cross-origin links")
-  .option("--respect-robots", "Respect robots.txt", true)
-  .option("--no-respect-robots", "Ignore robots.txt")
-  .option("--concurrency <n>", "Fetch concurrency", numberOption, 4)
-  .option("--allow-private-network", "Allow localhost/private IP crawl targets", false)
-  .option("--refresh-mode <mode>", "Refresh mode: off, stale-while-refresh, or blocking", refreshMode, "stale-while-refresh")
-  .option("--max-age <duration>", "Freshness max age", duration, 24 * 60 * 60)
-  .option("--min-refresh-interval <duration>", "Minimum interval between refresh attempts", duration, 15 * 60)
-  .option("--out <dir>", "Explicit active bundle directory")
-  .option("--force", "Overwrite an existing source registration", false)
+  .option("--client <client>", "Target client: claude-code, claude-desktop, cursor, codex, or generic", setupClient, parseSetupClient("generic"));
+
+addSourceRegistrationOptions(initCommand)
+  .option("--probe-timeout <duration>", "MCP setup probe timeout", duration, 5)
   .option("--json", "Print JSON output", false)
   .action(async (name, url, options) => {
     try {
-      const sourceDir = resolveSourceDir(name);
-      if ((await pathExists(sourceDir)) && !options.force) {
-        throw new Error(`Source "${name}" already exists. Use --force to overwrite it.`);
-      }
-      if (options.force) await removeSource(name);
+      const { manifest } = await registerWebsiteSource(name, url, options);
+      const report = await setupReportForRecord({
+        record: await registeredRecord(manifest.name),
+        client: options.client,
+        maxAge: options.maxAge,
+        probeTimeoutSeconds: options.probeTimeout
+      });
+      printSetupReport(report, options.json);
+      if (report.status === "failed") process.exitCode = 1;
+    } catch (error: any) {
+      if (options.json) printSetupReport(setupReportForInitFailure(name, options.client, error), true);
+      else console.error(pc.red(error?.message ?? "Init failed."));
+      process.exitCode = 1;
+    }
+  });
 
-      const manifest = manifestFromOptions(name, url, options);
-      await writeSourceManifest(manifest);
-      const result = await runSourceRefresh(manifest, { force: true });
+program
+  .command("doctor")
+  .argument("<name>", "Registered source name")
+  .option("--client <client>", "Target client: claude-code, claude-desktop, cursor, codex, or generic", setupClient, parseSetupClient("generic"))
+  .option("--max-age <duration>", "Override freshness max age", duration)
+  .option("--probe-timeout <duration>", "MCP setup probe timeout", duration, 5)
+  .option("--json", "Print JSON output", false)
+  .action(async (name, options) => {
+    try {
+      const report = await setupReportForRecord({
+        record: await registeredRecord(name),
+        client: options.client,
+        maxAge: options.maxAge,
+        probeTimeoutSeconds: options.probeTimeout
+      });
+      printSetupReport(report, options.json);
+      if (report.status === "failed") process.exitCode = 1;
+    } catch (error: any) {
+      const report = setupReportForMissingSource(name, options.client, error);
+      printSetupReport(report, options.json);
+      process.exitCode = 1;
+    }
+  });
+
+const addCommand = program
+  .command("add")
+  .argument("<name>", "Local source name")
+  .argument("<url>", "Docs URL to crawl");
+
+addSourceRegistrationOptions(addCommand)
+  .option("--json", "Print JSON output", false)
+  .action(async (name, url, options) => {
+    try {
+      const { manifest, result } = await registerWebsiteSource(name, url, options);
       const bundlePath = resolveBundleDir(manifest);
       const payload = {
         name: manifest.name,
@@ -606,7 +937,7 @@ program
       printStatus(`okfy serve: starting MCP stdio server "${options.name}"`);
       await serveMcpStdio({ bundleDir: target, name: options.name, maxResultChars: options.maxResultChars });
       printStatus("okfy serve: ready on stdio (stdout is reserved for MCP JSON-RPC)");
-      printStatus("okfy serve: tools bundle_summary, search_concepts, read_concept, get_neighbors, list_types, list_tags");
+      printStatus(`okfy serve: tools ${MCP_TOOL_NAMES.join(", ")}`);
       return;
     }
 
@@ -645,7 +976,7 @@ program
         }
       });
       printStatus("okfy serve: ready on stdio (stdout is reserved for MCP JSON-RPC)");
-      printStatus("okfy serve: tools bundle_summary, search_concepts, read_concept, get_neighbors, list_types, list_tags");
+      printStatus(`okfy serve: tools ${MCP_TOOL_NAMES.join(", ")}`);
     } catch (error: any) {
       console.error(pc.red(error?.message ?? "Serve failed."));
       process.exitCode = 1;

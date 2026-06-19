@@ -1122,6 +1122,23 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+var MCP_TOOL_NAMES = [
+  "search_concepts",
+  "read_concept",
+  "get_neighbors",
+  "list_types",
+  "list_tags",
+  "bundle_summary"
+];
+var [
+  SEARCH_CONCEPTS_TOOL,
+  READ_CONCEPT_TOOL,
+  GET_NEIGHBORS_TOOL,
+  LIST_TYPES_TOOL,
+  LIST_TAGS_TOOL,
+  BUNDLE_SUMMARY_TOOL
+] = MCP_TOOL_NAMES;
+var REFRESHABLE_TOOL_NAMES = new Set(MCP_TOOL_NAMES.filter((tool) => tool !== BUNDLE_SUMMARY_TOOL));
 function json(value, maxChars = 12e3) {
   let text = JSON.stringify(value, null, 2);
   if (text.length > maxChars) text = `${text.slice(0, maxChars)}
@@ -1166,7 +1183,7 @@ function shouldRefresh(status, hasSearch) {
   return status === "stale" || status === "missing" || status === "failed";
 }
 function refreshableTool(name) {
-  return name === "search_concepts" || name === "read_concept" || name === "get_neighbors" || name === "list_types" || name === "list_tags";
+  return REFRESHABLE_TOOL_NAMES.has(name);
 }
 async function createMcpServer(options) {
   let activeBundleDir = options.bundleDir;
@@ -1265,7 +1282,7 @@ async function createMcpServer(options) {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       {
-        name: "search_concepts",
+        name: SEARCH_CONCEPTS_TOOL,
         description: "Search OKF concepts by query, type, and tags.",
         inputSchema: {
           type: "object",
@@ -1279,7 +1296,7 @@ async function createMcpServer(options) {
         }
       },
       {
-        name: "read_concept",
+        name: READ_CONCEPT_TOOL,
         description: "Read one OKF concept by id or path.",
         inputSchema: {
           type: "object",
@@ -1288,7 +1305,7 @@ async function createMcpServer(options) {
         }
       },
       {
-        name: "get_neighbors",
+        name: GET_NEIGHBORS_TOOL,
         description: "Return outbound links and backlinks for a concept.",
         inputSchema: {
           type: "object",
@@ -1296,22 +1313,22 @@ async function createMcpServer(options) {
           required: ["id"]
         }
       },
-      { name: "list_types", description: "List concept types and counts.", inputSchema: { type: "object", properties: {} } },
-      { name: "list_tags", description: "List concept tags and counts.", inputSchema: { type: "object", properties: {} } },
-      { name: "bundle_summary", description: "Return bundle stats and validation status.", inputSchema: { type: "object", properties: {} } }
+      { name: LIST_TYPES_TOOL, description: "List concept types and counts.", inputSchema: { type: "object", properties: {} } },
+      { name: LIST_TAGS_TOOL, description: "List concept tags and counts.", inputSchema: { type: "object", properties: {} } },
+      { name: BUNDLE_SUMMARY_TOOL, description: "Return bundle stats and validation status.", inputSchema: { type: "object", properties: {} } }
     ]
   }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const args = request.params.arguments ?? {};
     try {
-      if (request.params.name === "bundle_summary" && options.source) await getFreshness();
+      if (request.params.name === BUNDLE_SUMMARY_TOOL && options.source) await getFreshness();
       await prepareBundleForTool(request.params.name);
-      if (request.params.name === "search_concepts") {
+      if (request.params.name === SEARCH_CONCEPTS_TOOL) {
         if (!search) return bundleUnavailable();
         const parsed = searchSchema.parse(args);
         return json(search.search(parsed.query, parsed), maxResultChars);
       }
-      if (request.params.name === "read_concept") {
+      if (request.params.name === READ_CONCEPT_TOOL) {
         if (!search) return bundleUnavailable();
         const parsed = readSchema.parse(args);
         const concept = search.getConcept(parsed.id);
@@ -1328,7 +1345,7 @@ async function createMcpServer(options) {
           maxResultChars
         );
       }
-      if (request.params.name === "get_neighbors") {
+      if (request.params.name === GET_NEIGHBORS_TOOL) {
         if (!search) return bundleUnavailable();
         const currentSearch = search;
         const parsed = neighborsSchema.parse(args);
@@ -1363,17 +1380,17 @@ async function createMcpServer(options) {
           edges
         });
       }
-      if (request.params.name === "list_types") {
+      if (request.params.name === LIST_TYPES_TOOL) {
         if (!search) return bundleUnavailable();
         const stats = await inspectBundle(activeBundleDir);
         return json(stats.typeDistribution);
       }
-      if (request.params.name === "list_tags") {
+      if (request.params.name === LIST_TAGS_TOOL) {
         if (!search) return bundleUnavailable();
         const stats = await inspectBundle(activeBundleDir);
         return json(stats.tagDistribution);
       }
-      if (request.params.name === "bundle_summary") {
+      if (request.params.name === BUNDLE_SUMMARY_TOOL) {
         if (!search) return bundleUnavailable();
         const [stats, validation] = await Promise.all([inspectBundle(activeBundleDir), validateBundle(activeBundleDir)]);
         return json({
@@ -1883,6 +1900,7 @@ export {
   BundleSearch,
   validateBundle,
   inspectBundle,
+  MCP_TOOL_NAMES,
   createMcpServer,
   serveMcpStdio,
   evaluateFreshness,

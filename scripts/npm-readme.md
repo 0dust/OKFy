@@ -4,12 +4,13 @@ Turn docs into agent-readable Open Knowledge Format v0.1-conformant bundles, the
 
 ## Use With Agents
 
-Register a third-party docs source and serve it by name:
+Create a registered source and print a client-ready setup preview:
 
 ```bash
-npx -y okfy-ai add stripe https://docs.stripe.com/checkout --max-pages 100 --max-depth 4
-npx -y okfy-ai serve stripe --mcp --auto-refresh
+npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client generic --max-pages 100 --max-depth 4
 ```
+
+`init` prints the MCP launch command, client config, and a first prompt. It does not write client config files by default. The generated launch command will look like `npx -y okfy-ai serve stripe --mcp --auto-refresh`.
 
 The MCP server uses the cached local bundle immediately. When the source is stale, `--auto-refresh` refreshes it according to the source policy while exposing freshness metadata through `bundle_summary`.
 
@@ -37,6 +38,7 @@ Use the stripe-okf MCP server. Search for Checkout Sessions, read the most relev
 Claude Code:
 
 ```bash
+npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client claude-code
 claude mcp add --transport stdio stripe-okf -- npx -y okfy-ai serve stripe --mcp --auto-refresh
 ```
 
@@ -53,6 +55,14 @@ enabled = true
 
 Claude Desktop, Cursor, and other `mcpServers` clients can use the JSON config above. More setup: https://github.com/0dust/OKFy/blob/main/docs/mcp-clients.md
 
+If setup is not working, run:
+
+```bash
+npx -y okfy-ai doctor stripe --client codex
+```
+
+`doctor` checks the registered source, bundle validity, freshness, `npx` availability, generated command shape, MCP tool visibility, and JSON-RPC-clean stdout, then tells you the next repair command or config edit.
+
 ## Keep Sources Fresh
 
 Registered sources are the local-first workflow for third-party docs sites that change over time:
@@ -61,10 +71,13 @@ Registered sources are the local-first workflow for third-party docs sites that 
 npx -y okfy-ai add stripe https://docs.stripe.com/checkout --max-pages 100 --max-depth 4
 npx -y okfy-ai sources
 npx -y okfy-ai check stripe
+npx -y okfy-ai doctor stripe
 npx -y okfy-ai update stripe
 npx -y okfy-ai remove stripe
 npx -y okfy-ai serve stripe --mcp --auto-refresh
 ```
+
+If you want registration plus client-specific setup artifacts, use `npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client generic --max-pages 100 --max-depth 4`.
 
 By default, okfy stores registered sources under `~/.okfy`. Set `OKFY_HOME` to use a different local cache for CI, tests, or per-project isolation.
 
@@ -155,6 +168,8 @@ npx -y okfy-ai demo
 ## CLI Commands
 
 ```bash
+okfy init <name> <url>
+okfy doctor <name>
 okfy add <name> <url>
 okfy sources
 okfy check <name-or-bundle>
