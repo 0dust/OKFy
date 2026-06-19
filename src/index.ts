@@ -7,6 +7,7 @@ export * from "./reader.js";
 export * from "./search.js";
 export * from "./types.js";
 export * from "./validate.js";
+export * from "./workspace.js";
 export * from "./writer.js";
 export { parseDurationSeconds } from "./duration.js";
 export { hashBundleContents } from "./hash.js";

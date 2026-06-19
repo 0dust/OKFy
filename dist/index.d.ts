@@ -179,7 +179,171 @@ declare class BundleSearch {
     getConcept(idOrPath: string): Concept | undefined;
 }
 
+type SourceKind = "website";
 type RefreshMode$2 = "off" | "stale-while-refresh" | "blocking";
+type RefreshStatus$1 = "missing" | "fresh" | "stale" | "refreshing" | "failed";
+interface SourceStoreOptions {
+    okfyHome?: string;
+    env?: {
+        OKFY_HOME?: string;
+    };
+}
+interface SourceManifest {
+    schemaVersion: 1;
+    okfyVersion: string;
+    name: string;
+    kind: SourceKind;
+    createdAt: string;
+    updatedAt: string;
+    source: {
+        seedUrl: string;
+    };
+    crawl: {
+        maxPages: number;
+        maxDepth: number;
+        include: string[];
+        exclude: string[];
+        sameOrigin: boolean;
+        respectRobots: boolean;
+        concurrency: number;
+        allowPrivateNetwork: boolean;
+    };
+    refresh: {
+        mode: RefreshMode$2;
+        maxAgeSeconds: number;
+        minIntervalSeconds: number;
+    };
+    bundle: {
+        dir: string;
+    };
+}
+interface RefreshState$1 {
+    schemaVersion: 1;
+    status: RefreshStatus$1;
+    lastCheckedAt: string | null;
+    lastRefreshStartedAt: string | null;
+    lastRefreshCompletedAt: string | null;
+    lastSuccessfulRefreshAt: string | null;
+    nextRefreshAllowedAt: string | null;
+    refreshInProgress: boolean;
+    lastError: {
+        message: string;
+        code?: string;
+    } | null;
+    bundle: {
+        conceptCount: number;
+        warningCount: number;
+        valid: boolean;
+        contentHash: string;
+    } | null;
+}
+interface SourceRecord {
+    name: string;
+    dir: string;
+    manifest: SourceManifest;
+    state?: RefreshState$1;
+    bundleDir: string;
+}
+declare function resolveOkfyHome(options?: SourceStoreOptions): string;
+declare function validateSourceName(name: string): string;
+declare function resolveSourceDir(name: string, options?: SourceStoreOptions): string;
+declare function resolveBundleDir(manifest: SourceManifest, options?: SourceStoreOptions): string;
+declare function writeSourceManifest(manifest: SourceManifest, options?: SourceStoreOptions): Promise<void>;
+declare function readSourceManifest(name: string, options?: SourceStoreOptions): Promise<SourceManifest>;
+declare function writeRefreshState(name: string, state: RefreshState$1, options?: SourceStoreOptions): Promise<void>;
+declare function readRefreshState(name: string, options?: SourceStoreOptions): Promise<RefreshState$1>;
+declare function listSources(options?: SourceStoreOptions): Promise<SourceRecord[]>;
+declare function removeSource(name: string, options?: SourceStoreOptions): Promise<void>;
+
+interface WorkspaceProfile {
+    schemaVersion: 1;
+    name: string;
+    sources: string[];
+}
+interface WorkspaceSourceSelection {
+    names?: string[];
+    all?: boolean;
+    profile?: WorkspaceProfile;
+    profileName?: string;
+}
+interface WorkspaceSourceSet {
+    records: SourceRecord[];
+    sourceNames: string[];
+    workspaceName?: string;
+}
+type WorkspaceSourceRecord = Omit<SourceRecord, "manifest"> & {
+    manifest: Omit<SourceRecord["manifest"], "kind"> & {
+        kind: SourceRecord["manifest"]["kind"] | "local";
+    };
+};
+interface WorkspaceSearchSource {
+    record: WorkspaceSourceRecord;
+    search?: BundleSearch;
+    bundleDir?: string;
+    loadError?: unknown;
+}
+interface WorkspaceSearchResult extends SearchResult {
+    sourceName: string;
+    sourceKind: string;
+    seedUrl: string;
+    ref: string;
+}
+interface WorkspaceConceptCandidate {
+    sourceName: string;
+    sourceKind: string;
+    seedUrl: string;
+    id: string;
+    ref: string;
+    title?: string;
+    type: string;
+    resource?: string;
+}
+declare class WorkspaceError extends Error {
+    readonly code: "ambiguous_concept" | "duplicate_source" | "no_sources" | "no_usable_sources" | "source_not_in_workspace" | "unknown_concept" | "unknown_source";
+    readonly details: Record<string, unknown>;
+    constructor(code: "ambiguous_concept" | "duplicate_source" | "no_sources" | "no_usable_sources" | "source_not_in_workspace" | "unknown_concept" | "unknown_source", message: string, details?: Record<string, unknown>);
+    toJSON(): Record<string, unknown>;
+}
+declare function workspaceProfilePath(name: string, options?: SourceStoreOptions): string;
+declare function readWorkspaceProfile(name: string, options?: SourceStoreOptions): Promise<WorkspaceProfile>;
+declare function writeWorkspaceProfile(profile: WorkspaceProfile, options?: SourceStoreOptions): Promise<void>;
+declare function resolveWorkspaceSources(selection: WorkspaceSourceSelection, options?: SourceStoreOptions): Promise<WorkspaceSourceSet>;
+declare class WorkspaceSearch {
+    readonly sources: WorkspaceSearchSource[];
+    private readonly selectedNames;
+    private readonly availableNames;
+    constructor(sources: WorkspaceSearchSource[], options?: {
+        availableSourceNames?: string[];
+    });
+    static fromSourceRecords(records: SourceRecord[], options?: {
+        availableSourceNames?: string[];
+    }): Promise<WorkspaceSearch>;
+    search(query: string, options?: {
+        source?: string;
+        type?: string;
+        tags?: string[];
+        limit?: number;
+    }): WorkspaceSearchResult[];
+    getConcept(input: {
+        id: string;
+        source?: string;
+    }): {
+        source: WorkspaceSearchSource;
+        concept: Concept;
+    };
+    listTypes(source?: string): Record<string, number>;
+    listTags(source?: string): Record<string, number>;
+    sourceNames(): string[];
+    usableSourceNames(): string[];
+    private distribution;
+    private usableSources;
+    private sourcesWithSearch;
+    private sourceByName;
+    private withSourceResult;
+    private conceptCandidate;
+}
+
+type RefreshMode$1 = "off" | "stale-while-refresh" | "blocking";
 type FreshnessStatus = "fresh" | "stale" | "missing" | "failed" | "refreshing";
 declare const MCP_TOOL_NAMES: readonly ["search_concepts", "read_concept", "get_neighbors", "list_types", "list_tags", "bundle_summary"];
 type SourceMetadata = {
@@ -202,7 +366,7 @@ type FreshnessState = {
     nextRefreshAllowedAt?: string | null;
 };
 type RefreshContext = {
-    mode: Exclude<RefreshMode$2, "off">;
+    mode: Exclude<RefreshMode$1, "off">;
     bundleDir: string;
     source?: SourceMetadata;
     freshness: FreshnessState;
@@ -212,7 +376,7 @@ type RefreshResult$1 = {
     freshness?: FreshnessState;
 };
 type RefreshHooks = {
-    mode?: RefreshMode$2;
+    mode?: RefreshMode$1;
     getFreshness?: () => FreshnessState | Promise<FreshnessState>;
     refreshIfNeeded?: (context: RefreshContext) => void | RefreshResult$1 | Promise<void | RefreshResult$1>;
 };
@@ -224,8 +388,21 @@ type ServeOptions = {
     source?: SourceMetadata;
     refresh?: RefreshHooks;
 };
+type WorkspaceServeSource = {
+    record: WorkspaceSourceRecord;
+    search?: BundleSearch;
+    refresh?: RefreshHooks;
+};
+type WorkspaceServeOptions = {
+    sources: WorkspaceServeSource[];
+    name?: string;
+    maxResultChars?: number;
+    availableSourceNames?: string[];
+};
 declare function createMcpServer(options: ServeOptions): Promise<Server>;
+declare function createWorkspaceMcpServer(options: WorkspaceServeOptions): Promise<Server>;
 declare function serveMcpStdio(options: ServeOptions): Promise<void>;
+declare function serveWorkspaceMcpStdio(options: WorkspaceServeOptions): Promise<void>;
 
 declare function extractHeadings(markdown: string): Array<{
     depth: number;
@@ -265,8 +442,8 @@ declare function parseDurationSeconds(input: string): number;
 
 declare function hashBundleContents(bundleDir: string): Promise<string>;
 
-type RefreshStatus$1 = "missing" | "fresh" | "stale" | "refreshing" | "failed";
-type RefreshMode$1 = "off" | "stale-while-refresh" | "blocking";
+type RefreshStatus = "missing" | "fresh" | "stale" | "refreshing" | "failed";
+type RefreshMode = "off" | "stale-while-refresh" | "blocking";
 type RefreshSourceManifest = {
     schemaVersion: 1;
     name: string;
@@ -276,7 +453,7 @@ type RefreshSourceManifest = {
     };
     crawl: Omit<CrawlOptions, "seedUrl" | "outDir" | "force" | "dryRun" | "timestamp" | "onProgress">;
     refresh: {
-        mode: RefreshMode$1;
+        mode: RefreshMode;
         maxAgeSeconds: number;
         minIntervalSeconds: number;
     };
@@ -297,9 +474,9 @@ type RefreshBundleState = {
     valid: boolean;
     contentHash: string;
 };
-type RefreshState$1 = {
+type RefreshState = {
     schemaVersion: 1;
-    status: RefreshStatus$1;
+    status: RefreshStatus;
     lastCheckedAt: string | null;
     lastRefreshStartedAt: string | null;
     lastRefreshCompletedAt: string | null;
@@ -311,7 +488,7 @@ type RefreshState$1 = {
 };
 type FreshnessReason = "bundle_missing" | "bundle_invalid" | "latest_refresh_failed" | "refresh_in_progress" | "never_refreshed" | "within_max_age" | "exceeded_max_age";
 type FreshnessDecision = {
-    status: RefreshStatus$1;
+    status: RefreshStatus;
     reason: FreshnessReason;
     validation?: ValidationReport;
 };
@@ -321,18 +498,18 @@ type HashBundleContentFn = (bundleDir: string) => Promise<string>;
 type CrawlRunner = (options: CrawlOptions) => Promise<CrawlResult>;
 type RefreshSkipReason = "fresh" | "locked" | "min_interval";
 type RefreshResult = {
-    status: RefreshStatus$1;
+    status: RefreshStatus;
     reason?: RefreshSkipReason;
     skipped: boolean;
     dryRun?: boolean;
-    state?: RefreshState$1;
+    state?: RefreshState;
     crawlResult?: CrawlResult;
     error?: RefreshErrorState;
 };
-type WriteRefreshStateFn = (state: RefreshState$1) => Promise<void>;
+type WriteRefreshStateFn = (state: RefreshState) => Promise<void>;
 declare function evaluateFreshness(options: {
     manifest: RefreshSourceManifest;
-    state?: RefreshState$1 | null;
+    state?: RefreshState | null;
     bundleDir: string;
     now?: Date;
     maxAgeSeconds?: number;
@@ -340,7 +517,7 @@ declare function evaluateFreshness(options: {
 }): Promise<FreshnessDecision>;
 declare function refreshSource(options: {
     manifest: RefreshSourceManifest;
-    state?: RefreshState$1 | null;
+    state?: RefreshState | null;
     sourceDir: string;
     bundleDir: string;
     now?: Date;
@@ -354,80 +531,4 @@ declare function refreshSource(options: {
     staleLockTimeoutMs?: number;
 }): Promise<RefreshResult>;
 
-type SourceKind = "website";
-type RefreshMode = "off" | "stale-while-refresh" | "blocking";
-type RefreshStatus = "missing" | "fresh" | "stale" | "refreshing" | "failed";
-interface SourceStoreOptions {
-    okfyHome?: string;
-    env?: {
-        OKFY_HOME?: string;
-    };
-}
-interface SourceManifest {
-    schemaVersion: 1;
-    okfyVersion: string;
-    name: string;
-    kind: SourceKind;
-    createdAt: string;
-    updatedAt: string;
-    source: {
-        seedUrl: string;
-    };
-    crawl: {
-        maxPages: number;
-        maxDepth: number;
-        include: string[];
-        exclude: string[];
-        sameOrigin: boolean;
-        respectRobots: boolean;
-        concurrency: number;
-        allowPrivateNetwork: boolean;
-    };
-    refresh: {
-        mode: RefreshMode;
-        maxAgeSeconds: number;
-        minIntervalSeconds: number;
-    };
-    bundle: {
-        dir: string;
-    };
-}
-interface RefreshState {
-    schemaVersion: 1;
-    status: RefreshStatus;
-    lastCheckedAt: string | null;
-    lastRefreshStartedAt: string | null;
-    lastRefreshCompletedAt: string | null;
-    lastSuccessfulRefreshAt: string | null;
-    nextRefreshAllowedAt: string | null;
-    refreshInProgress: boolean;
-    lastError: {
-        message: string;
-        code?: string;
-    } | null;
-    bundle: {
-        conceptCount: number;
-        warningCount: number;
-        valid: boolean;
-        contentHash: string;
-    } | null;
-}
-interface SourceRecord {
-    name: string;
-    dir: string;
-    manifest: SourceManifest;
-    state?: RefreshState;
-    bundleDir: string;
-}
-declare function resolveOkfyHome(options?: SourceStoreOptions): string;
-declare function validateSourceName(name: string): string;
-declare function resolveSourceDir(name: string, options?: SourceStoreOptions): string;
-declare function resolveBundleDir(manifest: SourceManifest, options?: SourceStoreOptions): string;
-declare function writeSourceManifest(manifest: SourceManifest, options?: SourceStoreOptions): Promise<void>;
-declare function readSourceManifest(name: string, options?: SourceStoreOptions): Promise<SourceManifest>;
-declare function writeRefreshState(name: string, state: RefreshState, options?: SourceStoreOptions): Promise<void>;
-declare function readRefreshState(name: string, options?: SourceStoreOptions): Promise<RefreshState>;
-declare function listSources(options?: SourceStoreOptions): Promise<SourceRecord[]>;
-declare function removeSource(name: string, options?: SourceStoreOptions): Promise<void>;
-
-export { BundleSearch, type BundleStats, type Concept, type ContentType, type CrawlOptions, type CrawlProgressEvent, type CrawlResult, type CrawlRunner, type FreshnessDecision, type FreshnessReason, type FreshnessState, type FreshnessStatus, type ImportOptions, type KnowledgeGraph, MCP_TOOL_NAMES, type NormalizedDocument, type RawDocument, type RefreshContext, type RefreshErrorDetails, type RefreshHooks, type RefreshMode$2 as RefreshMode, type RefreshResult$1 as RefreshResult, type RefreshSkipReason, type RefreshSourceManifest, type SearchResult, type ServeOptions, type SourceKind, type SourceManifest, type SourceMetadata, type SourceRecord, type RefreshMode as SourceRefreshMode, type RefreshResult as SourceRefreshResult, type RefreshState$1 as SourceRefreshState, type RefreshStatus as SourceRefreshStatus, type SourceStoreOptions, type RefreshState as StoredRefreshState, type ValidationIssue, type ValidationReport, type WriteBundleOptions, assertSafeForceOutDir, buildGraph, crawlWebsite, createMcpServer, descriptionFromMarkdown, evaluateFreshness, extractHeadings, extractInternalLinks, extractMarkdownLinks, hashBundleContents, importLocal, inferTags, inferType, inspectBundle, listSources, normalizeDocument, parseDurationSeconds, readBundle, readConceptFile, readRefreshState, readSourceManifest, refreshSource, removeSource, resolveBundleDir, resolveOkfyHome, resolveSourceDir, serveMcpStdio, validateBundle, validateSourceName, writeOkfBundle, writeRefreshState, writeSourceManifest };
+export { BundleSearch, type BundleStats, type Concept, type ContentType, type CrawlOptions, type CrawlProgressEvent, type CrawlResult, type CrawlRunner, type FreshnessDecision, type FreshnessReason, type FreshnessState, type FreshnessStatus, type ImportOptions, type KnowledgeGraph, MCP_TOOL_NAMES, type NormalizedDocument, type RawDocument, type RefreshContext, type RefreshErrorDetails, type RefreshHooks, type RefreshMode$1 as RefreshMode, type RefreshResult$1 as RefreshResult, type RefreshSkipReason, type RefreshSourceManifest, type SearchResult, type ServeOptions, type SourceKind, type SourceManifest, type SourceMetadata, type SourceRecord, type RefreshMode$2 as SourceRefreshMode, type RefreshResult as SourceRefreshResult, type RefreshState as SourceRefreshState, type RefreshStatus$1 as SourceRefreshStatus, type SourceStoreOptions, type RefreshState$1 as StoredRefreshState, type ValidationIssue, type ValidationReport, type WorkspaceConceptCandidate, WorkspaceError, type WorkspaceProfile, WorkspaceSearch, type WorkspaceSearchResult, type WorkspaceSearchSource, type WorkspaceServeOptions, type WorkspaceServeSource, type WorkspaceSourceRecord, type WorkspaceSourceSelection, type WorkspaceSourceSet, type WriteBundleOptions, assertSafeForceOutDir, buildGraph, crawlWebsite, createMcpServer, createWorkspaceMcpServer, descriptionFromMarkdown, evaluateFreshness, extractHeadings, extractInternalLinks, extractMarkdownLinks, hashBundleContents, importLocal, inferTags, inferType, inspectBundle, listSources, normalizeDocument, parseDurationSeconds, readBundle, readConceptFile, readRefreshState, readSourceManifest, readWorkspaceProfile, refreshSource, removeSource, resolveBundleDir, resolveOkfyHome, resolveSourceDir, resolveWorkspaceSources, serveMcpStdio, serveWorkspaceMcpStdio, validateBundle, validateSourceName, workspaceProfilePath, writeOkfBundle, writeRefreshState, writeSourceManifest, writeWorkspaceProfile };

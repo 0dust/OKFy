@@ -4,8 +4,9 @@ import path from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import { createMcpServer } from "../src/mcp.js";
+import { createMcpServer, createWorkspaceMcpServer } from "../src/mcp.js";
 import { BundleSearch } from "../src/search.js";
+import type { SourceRecord } from "../src/source-store.js";
 
 const execFileAsync = promisify(execFile);
 const bundleDir = path.resolve("test-fixtures/okf-valid");
@@ -52,6 +53,61 @@ async function writeSingleConceptBundle(
     `---\ntype: "${concept.type}"\ntitle: "${concept.title}"\ndescription: "${concept.description ?? concept.body}"\nresource: "https://docs.example.com/concept"\ntags:\n${tags.map((tag) => `  - "${tag}"`).join("\n")}\ntimestamp: "2026-06-14T00:00:00.000Z"\n---\n\n# ${concept.title}\n\n${concept.body}\n`,
     "utf8"
   );
+}
+
+function sourceRecord(name: string, bundleDir: string, state: SourceRecord["state"]): SourceRecord {
+  return {
+    name,
+    dir: path.dirname(bundleDir),
+    bundleDir,
+    state,
+    manifest: {
+      schemaVersion: 1,
+      okfyVersion: "0.2.0",
+      name,
+      kind: "website",
+      createdAt: "2026-06-20T00:00:00.000Z",
+      updatedAt: "2026-06-20T00:00:00.000Z",
+      source: { seedUrl: `https://docs.example.com/${name}` },
+      crawl: {
+        maxPages: 100,
+        maxDepth: 4,
+        include: [],
+        exclude: [],
+        sameOrigin: true,
+        respectRobots: true,
+        concurrency: 4,
+        allowPrivateNetwork: false
+      },
+      refresh: {
+        mode: "stale-while-refresh",
+        maxAgeSeconds: 86_400,
+        minIntervalSeconds: 900
+      },
+      bundle: { dir: bundleDir }
+    }
+  };
+}
+
+function sourceState(partial: Partial<NonNullable<SourceRecord["state"]>> = {}): NonNullable<SourceRecord["state"]> {
+  return {
+    schemaVersion: 1,
+    status: "fresh",
+    lastCheckedAt: "2026-06-20T00:00:00.000Z",
+    lastRefreshStartedAt: "2026-06-20T00:00:00.000Z",
+    lastRefreshCompletedAt: "2026-06-20T00:01:00.000Z",
+    lastSuccessfulRefreshAt: "2026-06-20T00:01:00.000Z",
+    nextRefreshAllowedAt: "2026-06-20T00:16:00.000Z",
+    refreshInProgress: false,
+    lastError: null,
+    bundle: {
+      conceptCount: 1,
+      warningCount: 0,
+      valid: true,
+      contentHash: "sha256:test"
+    },
+    ...partial
+  };
 }
 
 describe("search", () => {
@@ -196,6 +252,461 @@ describe("MCP server", () => {
       lastRefreshError: null,
       nextRefreshAllowedAt: "2026-06-16T00:16:10.000Z"
     });
+  });
+
+  it("exposes source-aware workspace tools without changing the tool list", async () => {
+    const root = await tempRoot();
+    const stripeBundle = path.join(root, "stripe-bundle");
+    const clerkBundle = path.join(root, "clerk-bundle");
+    await writeSingleConceptBundle(stripeBundle, {
+      title: "Stripe Quickstart",
+      type: "Guide",
+      body: "Quickstart for checkout sessions.",
+      tags: ["payments"]
+    });
+    await writeSingleConceptBundle(clerkBundle, {
+      title: "Clerk Quickstart",
+      type: "Guide",
+      body: "Quickstart for auth sessions.",
+      tags: ["auth"]
+    });
+
+    const server = await createWorkspaceMcpServer({
+      maxResultChars: 4000,
+      availableSourceNames: ["stripe", "clerk", "supabase"],
+      sources: [
+        { record: sourceRecord("stripe", stripeBundle, sourceState()) },
+        { record: sourceRecord("clerk", clerkBundle, sourceState()) }
+      ]
+    });
+    const listTools = handler(server, "tools/list");
+    const callTool = handler(server, "tools/call");
+
+    const listed = (await listTools({ method: "tools/list" })) as unknown as {
+      tools: Array<{ name: string; inputSchema: { properties: Record<string, unknown> } }>;
+    };
+    expect(listed.tools.map((tool) => tool.name)).toEqual([
+      "search_concepts",
+      "read_concept",
+      "get_neighbors",
+      "list_types",
+      "list_tags",
+      "bundle_summary"
+    ]);
+    expect(listed.tools.find((tool) => tool.name === "search_concepts")?.inputSchema.properties.source).toBeTruthy();
+
+    const filteredSearch = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "search_concepts", arguments: { query: "quickstart", source: "stripe", limit: 10 } }
+      })
+    ) as Array<{ sourceName: string; id: string; ref: string; seedUrl: string }>;
+    expect(filteredSearch).toMatchObject([{ sourceName: "stripe", id: "concept", ref: "stripe:concept", seedUrl: "https://docs.example.com/stripe" }]);
+
+    const ambiguousRead = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "read_concept", arguments: { id: "concept" } }
+      })
+    ) as { error: { code: string; candidates: Array<{ sourceName: string; id: string }> } };
+    expect(ambiguousRead.error).toMatchObject({
+      code: "ambiguous_concept",
+      candidates: [
+        { sourceName: "stripe", id: "concept" },
+        { sourceName: "clerk", id: "concept" }
+      ]
+    });
+
+    const stripeRead = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "read_concept", arguments: { source: "stripe", id: "concept", max_chars: 80 } }
+      })
+    ) as { sourceName: string; ref: string; markdown_body: string; source_resource: string };
+    expect(stripeRead).toMatchObject({
+      sourceName: "stripe",
+      ref: "stripe:concept",
+      source_resource: "https://docs.example.com/concept"
+    });
+    expect(stripeRead.markdown_body).toContain("Quickstart for checkout");
+
+    const types = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "list_types", arguments: { source: "stripe" } }
+      })
+    ) as Record<string, number>;
+    expect(types).toEqual({ Guide: 1 });
+
+    const tags = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "list_tags", arguments: { source: "clerk" } }
+      })
+    ) as Record<string, number>;
+    expect(tags).toEqual({ auth: 1 });
+
+    const summary = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "bundle_summary", arguments: {} }
+      })
+    ) as {
+      workspace: boolean;
+      sourceCount: number;
+      usableSourceCount: number;
+      conceptCount: number;
+      validationStatus: string;
+      sources: Array<{ sourceName: string; validationStatus: string; freshnessStatus: string; refreshInProgress: boolean; lastRefreshError: unknown }>;
+    };
+    expect(summary).toMatchObject({ workspace: true, sourceCount: 2, usableSourceCount: 2, conceptCount: 2 });
+    expect(summary.validationStatus).toBe("valid");
+    expect(summary.sources[0]).toMatchObject({
+      sourceName: "stripe",
+      validationStatus: "valid",
+      freshnessStatus: "fresh",
+      refreshInProgress: false,
+      lastRefreshError: null
+    });
+    expect(summary.sources.map((source) => source.sourceName)).toEqual(["stripe", "clerk"]);
+
+    const stripeSummary = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "bundle_summary", arguments: { source: "stripe" } }
+      })
+    ) as { sourceCount: number; sources: Array<{ sourceName: string }> };
+    expect(stripeSummary.sourceCount).toBe(1);
+    expect(stripeSummary.sources.map((source) => source.sourceName)).toEqual(["stripe"]);
+
+    const neighbors = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "get_neighbors", arguments: { source: "stripe", id: "concept" } }
+      })
+    ) as { sourceName: string; ref: string; concepts: Array<{ sourceName: string; ref: string }> };
+    expect(neighbors).toMatchObject({ sourceName: "stripe", ref: "stripe:concept" });
+    expect(neighbors.concepts).toEqual(expect.arrayContaining([expect.objectContaining({ sourceName: "stripe", ref: "stripe:concept" })]));
+
+    const unselected = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "search_concepts", arguments: { query: "anything", source: "supabase" } }
+      })
+    ) as { error: { code: string; source: string } };
+    expect(unselected.error).toMatchObject({ code: "source_not_in_workspace", source: "supabase" });
+
+    const unselectedSummary = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "bundle_summary", arguments: { source: "supabase" } }
+      })
+    ) as { error: { code: string; source: string } };
+    expect(unselectedSummary.error).toMatchObject({ code: "source_not_in_workspace", source: "supabase" });
+  });
+
+  it("rejects unreadable selected workspace bundles before MCP readiness", async () => {
+    const root = await tempRoot();
+
+    await expect(
+      createWorkspaceMcpServer({
+        sources: [{ record: sourceRecord("missing", path.join(root, "missing-bundle"), sourceState()) }]
+      })
+    ).rejects.toThrow();
+  });
+
+  it("keeps healthy workspace sources usable when another source freshness check fails", async () => {
+    const root = await tempRoot();
+    const stripeBundle = path.join(root, "stripe-bundle");
+    const clerkBundle = path.join(root, "clerk-bundle");
+    await writeSingleConceptBundle(stripeBundle, {
+      title: "Stripe Concept",
+      type: "Guide",
+      body: "stripe-only-token"
+    });
+    await writeSingleConceptBundle(clerkBundle, {
+      title: "Clerk Concept",
+      type: "Guide",
+      body: "clerk-only-token"
+    });
+
+    const server = await createWorkspaceMcpServer({
+      maxResultChars: 4000,
+      sources: [
+        { record: sourceRecord("stripe", stripeBundle, sourceState()) },
+        {
+          record: sourceRecord("clerk", clerkBundle, sourceState()),
+          refresh: {
+            mode: "blocking",
+            getFreshness: async () => {
+              throw new Error("state file unreadable");
+            }
+          }
+        }
+      ]
+    });
+    const callTool = handler(server, "tools/call");
+
+    const result = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "search_concepts", arguments: { query: "stripe-only-token", limit: 10 } }
+      })
+    ) as Array<{ sourceName: string; title: string }>;
+    expect(result).toMatchObject([{ sourceName: "stripe", title: "Stripe Concept" }]);
+
+    const summary = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "bundle_summary", arguments: {} }
+      })
+    ) as { sources: Array<{ sourceName: string; freshnessStatus: string; lastRefreshError: { message: string } | null }> };
+    expect(summary.sources.find((source) => source.sourceName === "clerk")).toMatchObject({
+      freshnessStatus: "failed",
+      lastRefreshError: { message: "state file unreadable" }
+    });
+  });
+
+  it("keeps workspace summaries source-local when one bundle disappears after startup", async () => {
+    const root = await tempRoot();
+    const stripeBundle = path.join(root, "stripe-bundle");
+    const clerkBundle = path.join(root, "clerk-bundle");
+    await writeSingleConceptBundle(stripeBundle, {
+      title: "Stripe Concept",
+      type: "Guide",
+      body: "stripe-only-token"
+    });
+    await writeSingleConceptBundle(clerkBundle, {
+      title: "Clerk Concept",
+      type: "Guide",
+      body: "clerk-only-token"
+    });
+
+    const server = await createWorkspaceMcpServer({
+      maxResultChars: 4000,
+      sources: [
+        { record: sourceRecord("stripe", stripeBundle, sourceState()) },
+        { record: sourceRecord("clerk", clerkBundle, sourceState()) }
+      ]
+    });
+    await fs.rm(clerkBundle, { recursive: true, force: true });
+    const callTool = handler(server, "tools/call");
+
+    const summary = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "bundle_summary", arguments: {} }
+      })
+    ) as { validationStatus: string; sources: Array<{ sourceName: string; validationStatus: string; lastRefreshError: { message: string } | null }> };
+
+    expect(summary.validationStatus).toBe("invalid");
+    expect(summary.sources.find((source) => source.sourceName === "stripe")).toMatchObject({
+      sourceName: "stripe",
+      validationStatus: "valid",
+      lastRefreshError: null
+    });
+    expect(summary.sources.find((source) => source.sourceName === "clerk")).toMatchObject({
+      sourceName: "clerk",
+      validationStatus: "unavailable"
+    });
+    expect(summary.sources.find((source) => source.sourceName === "clerk")?.lastRefreshError?.message).toBeTruthy();
+  });
+
+  it("serves usable workspace sources while stale sources refresh in the background", async () => {
+    const root = await tempRoot();
+    const stripeBundle = path.join(root, "stripe-bundle");
+    const clerkBundle = path.join(root, "clerk-bundle");
+    await writeSingleConceptBundle(stripeBundle, {
+      title: "Old Stripe Concept",
+      type: "Guide",
+      body: "old-stripe-token"
+    });
+    await writeSingleConceptBundle(clerkBundle, {
+      title: "Clerk Concept",
+      type: "Guide",
+      body: "clerk-token"
+    });
+
+    let stripeFreshness: "stale" | "refreshing" | "fresh" = "stale";
+    let releaseRefresh!: () => void;
+    const refreshCanFinish = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    let refreshStarted!: () => void;
+    const refreshDidStart = new Promise<void>((resolve) => {
+      refreshStarted = resolve;
+    });
+
+    const server = await createWorkspaceMcpServer({
+      maxResultChars: 4000,
+      sources: [
+        {
+          record: sourceRecord("stripe", stripeBundle, sourceState({ status: "stale" })),
+          refresh: {
+            mode: "stale-while-refresh",
+            getFreshness: async () => ({
+              freshnessStatus: stripeFreshness,
+              refreshInProgress: stripeFreshness === "refreshing",
+              lastRefreshError: null
+            }),
+            refreshIfNeeded: async () => {
+              stripeFreshness = "refreshing";
+              refreshStarted();
+              await refreshCanFinish;
+              await writeSingleConceptBundle(stripeBundle, {
+                title: "New Stripe Concept",
+                type: "Guide",
+                body: "new-stripe-token"
+              });
+              stripeFreshness = "fresh";
+              return { bundleDir: stripeBundle };
+            }
+          }
+        },
+        {
+          record: sourceRecord("clerk", clerkBundle, sourceState()),
+          refresh: {
+            mode: "stale-while-refresh",
+            getFreshness: async () => ({ freshnessStatus: "fresh", refreshInProgress: false, lastRefreshError: null })
+          }
+        }
+      ]
+    });
+    const callTool = handler(server, "tools/call");
+
+    const cachedSearch = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "search_concepts", arguments: { query: "token", limit: 10 } }
+      })
+    ) as Array<{ title: string; sourceName: string }>;
+    expect(cachedSearch.map((result) => [result.sourceName, result.title])).toEqual([
+      ["clerk", "Clerk Concept"],
+      ["stripe", "Old Stripe Concept"]
+    ]);
+    await refreshDidStart;
+
+    releaseRefresh();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    const refreshedSearch = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "search_concepts", arguments: { query: "new-stripe-token", source: "stripe", limit: 10 } }
+      })
+    ) as Array<{ title: string; sourceName: string }>;
+    expect(refreshedSearch).toMatchObject([{ title: "New Stripe Concept", sourceName: "stripe" }]);
+  });
+
+  it("blocks refresh only for the requested workspace source", async () => {
+    const root = await tempRoot();
+    const stripeBundle = path.join(root, "stripe-bundle");
+    const clerkBundle = path.join(root, "clerk-bundle");
+    await writeSingleConceptBundle(stripeBundle, {
+      title: "Old Stripe Concept",
+      type: "Guide",
+      body: "old-stripe-token"
+    });
+    await writeSingleConceptBundle(clerkBundle, {
+      title: "Old Clerk Concept",
+      type: "Guide",
+      body: "old-clerk-token"
+    });
+
+    let stripeRefreshCount = 0;
+    let clerkRefreshCount = 0;
+    const server = await createWorkspaceMcpServer({
+      maxResultChars: 4000,
+      sources: [
+        {
+          record: sourceRecord("stripe", stripeBundle, sourceState({ status: "stale" })),
+          refresh: {
+            mode: "blocking",
+            getFreshness: async () => ({ freshnessStatus: "stale", refreshInProgress: false, lastRefreshError: null }),
+            refreshIfNeeded: async () => {
+              stripeRefreshCount += 1;
+              await writeSingleConceptBundle(stripeBundle, {
+                title: "New Stripe Concept",
+                type: "Guide",
+                body: "new-stripe-token"
+              });
+              return { bundleDir: stripeBundle };
+            }
+          }
+        },
+        {
+          record: sourceRecord("clerk", clerkBundle, sourceState({ status: "stale" })),
+          refresh: {
+            mode: "blocking",
+            getFreshness: async () => ({ freshnessStatus: "stale", refreshInProgress: false, lastRefreshError: null }),
+            refreshIfNeeded: async () => {
+              clerkRefreshCount += 1;
+              await writeSingleConceptBundle(clerkBundle, {
+                title: "New Clerk Concept",
+                type: "Guide",
+                body: "new-clerk-token"
+              });
+              return { bundleDir: clerkBundle };
+            }
+          }
+        }
+      ]
+    });
+    const callTool = handler(server, "tools/call");
+
+    const result = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "search_concepts", arguments: { query: "new-clerk-token", source: "clerk", limit: 10 } }
+      })
+    ) as Array<{ title: string; sourceName: string }>;
+
+    expect(result).toMatchObject([{ title: "New Clerk Concept", sourceName: "clerk" }]);
+    expect(clerkRefreshCount).toBe(1);
+    expect(stripeRefreshCount).toBe(0);
+  });
+
+  it("keeps cached workspace rows visible when one source refresh fails", async () => {
+    const root = await tempRoot();
+    const stripeBundle = path.join(root, "stripe-bundle");
+    await writeSingleConceptBundle(stripeBundle, {
+      title: "Cached Stripe Concept",
+      type: "Guide",
+      body: "cached-stripe-token"
+    });
+
+    const server = await createWorkspaceMcpServer({
+      maxResultChars: 4000,
+      sources: [
+        {
+          record: sourceRecord("stripe", stripeBundle, sourceState({ status: "stale" })),
+          refresh: {
+            mode: "blocking",
+            getFreshness: async () => ({ freshnessStatus: "stale", refreshInProgress: false, lastRefreshError: null }),
+            refreshIfNeeded: async () => {
+              throw new Error("network offline");
+            }
+          }
+        }
+      ]
+    });
+    const callTool = handler(server, "tools/call");
+
+    const cachedSearch = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "search_concepts", arguments: { query: "cached-stripe-token", source: "stripe", limit: 10 } }
+      })
+    ) as Array<{ title: string; sourceName: string }>;
+    expect(cachedSearch).toMatchObject([{ title: "Cached Stripe Concept", sourceName: "stripe" }]);
+
+    const summary = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "bundle_summary", arguments: { source: "stripe" } }
+      })
+    ) as { sources: Array<{ freshnessStatus: string; lastRefreshError: { message: string } }> };
+    expect(summary.sources[0]).toMatchObject({ freshnessStatus: "failed", lastRefreshError: { message: "network offline" } });
   });
 
   it("serves stale results while a background refresh reloads search for later calls", async () => {

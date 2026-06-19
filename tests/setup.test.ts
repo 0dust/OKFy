@@ -52,6 +52,83 @@ describe("setup client artifacts", () => {
     expect(codex[1]?.body).toContain("legacy_okf");
   });
 
+  it("renders one workspace MCP command for multiple sources", () => {
+    const okfyHome = defaultOkfyHome();
+
+    const command = serveCommand(["stripe", "clerk"], okfyHome);
+    const generic = renderClientArtifacts({ client: "generic", sourceNames: ["stripe", "clerk"], okfyHome })[0];
+    const codex = renderClientArtifacts({ client: "codex", sourceNames: ["stripe", "clerk"], okfyHome });
+    const claude = renderClientArtifacts({ client: "claude-code", sourceNames: ["stripe", "clerk"], okfyHome })[0];
+    const report = createSetupReport({
+      sourceNames: ["stripe", "clerk"],
+      client: "codex",
+      checks: [setupCheck("source", "Sources", "pass", "Sources exist.")]
+    });
+
+    expect(command).toMatchObject({
+      command: "npx",
+      args: ["-y", "okfy-ai", "serve", "stripe", "clerk", "--mcp", "--auto-refresh"],
+      env: {},
+      display: "npx -y okfy-ai serve stripe clerk --mcp --auto-refresh"
+    });
+    expect(generic.body).toContain('"args": [');
+    expect(generic.body).toContain('"stripe"');
+    expect(generic.body).toContain('"clerk"');
+    expect(codex[0]?.body).toContain("[mcp_servers.stripe_clerk_okf]");
+    expect(codex[1]?.body).toContain("codex mcp add stripe_clerk_okf -- npx -y okfy-ai serve stripe clerk --mcp --auto-refresh");
+    expect(claude.body).toBe("claude mcp add --transport stdio stripe-clerk-okf -- npx -y okfy-ai serve stripe clerk --mcp --auto-refresh");
+    expect(report).toMatchObject({ workspace: true, sourceName: "stripe, clerk", sourceNames: ["stripe", "clerk"] });
+    expect(report.firstPrompt).toContain("workspace sources");
+    expect(report.firstPrompt).toContain("Filter by source");
+  });
+
+  it("renders --all workspace MCP commands without pinning concrete sources", () => {
+    const okfyHome = defaultOkfyHome();
+
+    const command = serveCommand({ all: true }, okfyHome);
+    const generic = renderClientArtifacts({ client: "generic", workspaceAll: true, okfyHome })[0];
+    const report = createSetupReport({
+      sourceNames: ["stripe"],
+      workspaceAll: true,
+      client: "codex",
+      checks: [setupCheck("source", "Sources", "pass", "Sources exist.")]
+    });
+
+    expect(command).toMatchObject({
+      command: "npx",
+      args: ["-y", "okfy-ai", "serve", "--all", "--mcp", "--auto-refresh"],
+      env: {},
+      display: "npx -y okfy-ai serve --all --mcp --auto-refresh"
+    });
+    expect(generic.body).toContain('"all-okf"');
+    expect(generic.body).toContain('"--all"');
+    expect(report).toMatchObject({
+      workspace: true,
+      workspaceAll: true,
+      sourceName: "stripe",
+      sourceNames: ["stripe"],
+      serverName: "all-okf",
+      codexServerName: "all_okf"
+    });
+    expect(report.command.display).toBe("npx -y okfy-ai serve --all --mcp --auto-refresh");
+    expect(report.firstPrompt).toContain("workspace sources");
+  });
+
+  it("renders workspace OKFY_HOME overrides for non-default source stores", () => {
+    const okfyHome = path.join(os.tmpdir(), "okfy workspace setup render test");
+
+    const generic = renderClientArtifacts({ client: "generic", sourceNames: ["stripe", "clerk"], okfyHome })[0];
+    const codexArtifacts = renderClientArtifacts({ client: "codex", sourceNames: ["stripe", "clerk"], okfyHome });
+    const codex = codexArtifacts[0];
+    const codexCli = codexArtifacts.find((artifact) => artifact.label === "Codex CLI");
+    const claude = renderClientArtifacts({ client: "claude-code", sourceNames: ["stripe", "clerk"], okfyHome })[0];
+
+    expect(generic.body).toContain(`"OKFY_HOME": "${okfyHome}"`);
+    expect(codex.body).toContain(`env = { OKFY_HOME = "${okfyHome}" }`);
+    expect(codexCli?.body).toContain(`--env 'OKFY_HOME=${okfyHome}'`);
+    expect(claude.body).toContain(`-e 'OKFY_HOME=${okfyHome}'`);
+  });
+
   it("renders OKFY_HOME overrides for non-default source stores", () => {
     const okfyHome = path.join(os.tmpdir(), "okfy setup render test");
 

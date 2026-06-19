@@ -4,6 +4,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { z } from "zod";
 import { BundleSearch } from "./search.js";
 import { inspectBundle, validateBundle } from "./validate.js";
+import { WorkspaceError, WorkspaceSearch, type WorkspaceSearchSource, type WorkspaceSourceRecord } from "./workspace.js";
 
 export type RefreshMode = "off" | "stale-while-refresh" | "blocking";
 export type FreshnessStatus = "fresh" | "stale" | "missing" | "failed" | "refreshing";
@@ -76,6 +77,19 @@ export type ServeOptions = {
   refresh?: RefreshHooks;
 };
 
+export type WorkspaceServeSource = {
+  record: WorkspaceSourceRecord;
+  search?: BundleSearch;
+  refresh?: RefreshHooks;
+};
+
+export type WorkspaceServeOptions = {
+  sources: WorkspaceServeSource[];
+  name?: string;
+  maxResultChars?: number;
+  availableSourceNames?: string[];
+};
+
 function json(value: unknown, maxChars = 12000): { content: Array<{ type: "text"; text: string }> } {
   let text = JSON.stringify(value, null, 2);
   if (text.length > maxChars) text = `${text.slice(0, maxChars)}\n...truncated`;
@@ -90,6 +104,10 @@ const searchSchema = z.object({
 });
 const readSchema = z.object({ id: z.string(), max_chars: z.number().int().positive().optional() });
 const neighborsSchema = z.object({ id: z.string(), depth: z.number().int().min(1).max(2).optional() });
+const sourceFilterSchema = z.object({ source: z.string().optional() });
+const workspaceSearchSchema = searchSchema.extend({ source: z.string().optional() });
+const workspaceReadSchema = readSchema.extend({ source: z.string().optional() });
+const workspaceNeighborsSchema = neighborsSchema.extend({ source: z.string().optional() });
 
 function errorDetails(error: unknown): RefreshErrorDetails {
   if (error instanceof Error) return { message: error.message };
@@ -372,8 +390,413 @@ export async function createMcpServer(options: ServeOptions): Promise<Server> {
   return server;
 }
 
+type WorkspaceSourceRuntime = {
+  record: WorkspaceSourceRecord;
+  activeBundleDir: string;
+  search?: BundleSearch;
+  observedFreshness?: FreshnessState;
+  lastRefreshError: RefreshErrorDetails | null;
+  inFlightRefresh?: Promise<void>;
+  refresh?: RefreshHooks;
+};
+
+export async function createWorkspaceMcpServer(options: WorkspaceServeOptions): Promise<Server> {
+  const maxResultChars = options.maxResultChars ?? 12000;
+  const runtimes: WorkspaceSourceRuntime[] = await Promise.all(
+    options.sources.map(async (source) => {
+      const runtime: WorkspaceSourceRuntime = {
+        record: source.record,
+        activeBundleDir: source.record.bundleDir,
+        search: source.search,
+        lastRefreshError: null,
+        refresh: source.refresh
+      };
+      if (!runtime.search) {
+        runtime.search = await BundleSearch.fromBundle(runtime.activeBundleDir);
+      }
+      return runtime;
+    })
+  );
+  const selectedNames = new Set(runtimes.map((runtime) => runtime.record.name));
+  const availableNames = new Set([...(options.availableSourceNames ?? []), ...selectedNames]);
+
+  const server = new Server(
+    { name: options.name ?? "okfy", version: "0.1.0" },
+    { capabilities: { tools: {} } }
+  );
+
+  function runtimeForSource(sourceName: string): WorkspaceSourceRuntime {
+    if (selectedNames.has(sourceName)) return runtimes.find((runtime) => runtime.record.name === sourceName)!;
+    if (availableNames.has(sourceName)) {
+      throw new WorkspaceError("source_not_in_workspace", `Source "${sourceName}" is not selected in this workspace.`, {
+        source: sourceName,
+        workspaceSources: [...selectedNames]
+      });
+    }
+    throw new WorkspaceError("unknown_source", `Unknown source "${sourceName}".`, { source: sourceName });
+  }
+
+  function workspaceSearch(): WorkspaceSearch {
+    return new WorkspaceSearch(
+      runtimes.map(
+        (runtime): WorkspaceSearchSource => ({
+          record: runtime.record,
+          bundleDir: runtime.activeBundleDir,
+          search: runtime.search,
+          loadError: runtime.lastRefreshError
+        })
+      ),
+      { availableSourceNames: [...availableNames] }
+    );
+  }
+
+  async function getRuntimeFreshness(runtime: WorkspaceSourceRuntime): Promise<FreshnessState> {
+    if (runtime.refresh?.getFreshness) {
+      runtime.observedFreshness = await runtime.refresh.getFreshness();
+      return runtime.observedFreshness;
+    }
+    runtime.observedFreshness ??= { freshnessStatus: runtime.search ? "fresh" : "missing", refreshInProgress: false, lastRefreshError: null };
+    return runtime.observedFreshness;
+  }
+
+  function runtimeRefreshMode(runtime: WorkspaceSourceRuntime): RefreshMode {
+    return runtime.refresh?.mode ?? "stale-while-refresh";
+  }
+
+  function sourceSummaryFields(runtime: WorkspaceSourceRuntime): Record<string, unknown> {
+    const normalized = normalizeFreshness(runtime.observedFreshness);
+    const lastError = runtime.lastRefreshError ?? normalized.lastRefreshError;
+    const refreshing = Boolean(runtime.inFlightRefresh) || normalized.refreshInProgress;
+    const status = refreshing
+      ? "refreshing"
+      : lastError
+      ? "failed"
+      : (normalized.freshnessStatus ?? (runtime.search ? "fresh" : "missing"));
+    return {
+      sourceName: runtime.record.name,
+      sourceKind: runtime.record.manifest.kind,
+      seedUrl: runtime.record.manifest.source.seedUrl,
+      freshnessStatus: status,
+      lastSuccessfulRefreshAt: normalized.lastSuccessfulRefreshAt,
+      refreshInProgress: refreshing,
+      lastRefreshError: lastError,
+      nextRefreshAllowedAt: normalized.nextRefreshAllowedAt
+    };
+  }
+
+  function startRuntimeRefresh(
+    runtime: WorkspaceSourceRuntime,
+    mode: Exclude<RefreshMode, "off">,
+    freshness: FreshnessState
+  ): Promise<void> | undefined {
+    if (!runtime.refresh?.refreshIfNeeded) return undefined;
+    if (runtime.inFlightRefresh) return runtime.inFlightRefresh;
+    runtime.inFlightRefresh = (async () => {
+      try {
+        const result = await runtime.refresh?.refreshIfNeeded?.({
+          mode,
+          bundleDir: runtime.activeBundleDir,
+          source: {
+            name: runtime.record.name,
+            kind: runtime.record.manifest.kind,
+            seedUrl: runtime.record.manifest.source.seedUrl
+          },
+          freshness
+        });
+        if (result?.freshness) runtime.observedFreshness = result.freshness;
+        const nextBundleDir = result?.bundleDir ?? runtime.activeBundleDir;
+        runtime.search = await BundleSearch.fromBundle(nextBundleDir);
+        runtime.activeBundleDir = nextBundleDir;
+        runtime.lastRefreshError = null;
+      } catch (error) {
+        runtime.lastRefreshError = errorDetails(error);
+      } finally {
+        runtime.inFlightRefresh = undefined;
+      }
+    })();
+    return runtime.inFlightRefresh;
+  }
+
+  async function prepareRuntime(
+    runtime: WorkspaceSourceRuntime,
+    toolName: string,
+    sourceFiltered: boolean,
+    workspaceHadUsableSource: boolean
+  ): Promise<void> {
+    try {
+      const mode = runtimeRefreshMode(runtime);
+      if (mode === "off" || !refreshableTool(toolName)) return;
+
+      const freshness = await getRuntimeFreshness(runtime);
+      const normalized = normalizeFreshness(freshness);
+      if (!shouldRefresh(normalized.freshnessStatus, Boolean(runtime.search))) return;
+
+      const refresh = startRuntimeRefresh(runtime, mode, freshness);
+      if (!refresh) return;
+      const shouldAwait = sourceFiltered ? mode === "blocking" || !runtime.search : !workspaceHadUsableSource && !runtime.search;
+      if (shouldAwait) await refresh;
+    } catch (error) {
+      runtime.lastRefreshError = errorDetails(error);
+    }
+  }
+
+  async function prepareWorkspaceForTool(toolName: string, sourceName?: string): Promise<void> {
+    if (!refreshableTool(toolName)) return;
+    const selected = sourceName ? [runtimeForSource(sourceName)] : runtimes;
+    const workspaceHadUsableSource = selected.some((runtime) => runtime.search);
+    await Promise.all(selected.map((runtime) => prepareRuntime(runtime, toolName, Boolean(sourceName), workspaceHadUsableSource)));
+  }
+
+  function workspaceUnavailable() {
+    return json(
+      {
+        error: {
+          code: "bundle_unavailable",
+          message: "No usable OKF bundle is available in this workspace.",
+          sources: runtimes.map((runtime) => ({
+            sourceName: runtime.record.name,
+            seedUrl: runtime.record.manifest.source.seedUrl,
+            lastRefreshError: runtime.lastRefreshError
+          }))
+        }
+      },
+      maxResultChars
+    );
+  }
+
+  async function sourceSummary(runtime: WorkspaceSourceRuntime): Promise<Record<string, unknown>> {
+    try {
+      await getRuntimeFreshness(runtime);
+    } catch (error) {
+      runtime.lastRefreshError = errorDetails(error);
+    }
+    const freshness = sourceSummaryFields(runtime);
+    if (!runtime.search) {
+      return unavailableSourceSummary(runtime);
+    }
+    let stats: Awaited<ReturnType<typeof inspectBundle>>;
+    let validation: Awaited<ReturnType<typeof validateBundle>>;
+    try {
+      [stats, validation] = await Promise.all([inspectBundle(runtime.activeBundleDir), validateBundle(runtime.activeBundleDir)]);
+    } catch (error) {
+      runtime.lastRefreshError = errorDetails(error);
+      return unavailableSourceSummary(runtime);
+    }
+    return {
+      ...freshness,
+      bundleDir: runtime.activeBundleDir,
+      conceptCount: stats.conceptCount,
+      reservedFileCount: validation.reservedFileCount,
+      warningCount: validation.warningCount,
+      validationStatus: validation.valid ? "valid" : "invalid",
+      validationIssues: validation.issues,
+      typeDistribution: stats.typeDistribution,
+      tagDistribution: stats.tagDistribution,
+      linkCount: stats.linkCount,
+      brokenLinks: stats.brokenLinks,
+      orphanConcepts: stats.orphanConcepts,
+      sourceDomains: stats.sourceDomains
+    };
+  }
+
+  function unavailableSourceSummary(runtime: WorkspaceSourceRuntime): Record<string, unknown> {
+    return {
+      ...sourceSummaryFields(runtime),
+      bundleDir: runtime.activeBundleDir,
+      conceptCount: runtime.search?.graph.concepts.size ?? runtime.record.state?.bundle?.conceptCount ?? 0,
+      reservedFileCount: 0,
+      warningCount: runtime.record.state?.bundle?.warningCount ?? 0,
+      validationStatus: "unavailable",
+      validationIssues: []
+    };
+  }
+
+  async function workspaceSummary(sourceName?: string): Promise<Record<string, unknown>> {
+    const selected = sourceName ? [runtimeForSource(sourceName)] : runtimes;
+    const sources = await Promise.all(selected.map(sourceSummary));
+    const usableSourceCount = selected.filter((runtime) => runtime.search).length;
+    const conceptCount = sources.reduce((sum, source) => sum + numberField(source.conceptCount), 0);
+    const reservedFileCount = sources.reduce((sum, source) => sum + numberField(source.reservedFileCount), 0);
+    const warningCount = sources.reduce((sum, source) => sum + numberField(source.warningCount), 0);
+    let typeDistribution: Record<string, number> = {};
+    let tagDistribution: Record<string, number> = {};
+    try {
+      const workspace = workspaceSearch();
+      typeDistribution = workspace.listTypes(sourceName);
+      tagDistribution = workspace.listTags(sourceName);
+    } catch (error) {
+      if (!(error instanceof WorkspaceError) || error.code !== "no_usable_sources") throw error;
+    }
+
+    return {
+      workspace: true,
+      sourceCount: selected.length,
+      usableSourceCount,
+      conceptCount,
+      reservedFileCount,
+      warningCount,
+      validationStatus: sources.some((source) => source.validationStatus !== "valid") ? "invalid" : "valid",
+      typeDistribution,
+      tagDistribution,
+      sources
+    };
+  }
+
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [
+      {
+        name: SEARCH_CONCEPTS_TOOL,
+        description: "Search workspace OKF concepts by query, source, type, and tags.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: { type: "string" },
+            source: { type: "string" },
+            type: { type: "string" },
+            tags: { type: "array", items: { type: "string" } },
+            limit: { type: "number", default: 10 }
+          },
+          required: ["query"]
+        }
+      },
+      {
+        name: READ_CONCEPT_TOOL,
+        description: "Read one workspace OKF concept by source and id. Id-only reads work when the id is unique.",
+        inputSchema: {
+          type: "object",
+          properties: { source: { type: "string" }, id: { type: "string" }, max_chars: { type: "number" } },
+          required: ["id"]
+        }
+      },
+      {
+        name: GET_NEIGHBORS_TOOL,
+        description: "Return outbound links and backlinks for a workspace concept.",
+        inputSchema: {
+          type: "object",
+          properties: { source: { type: "string" }, id: { type: "string" }, depth: { type: "number", default: 1 } },
+          required: ["id"]
+        }
+      },
+      {
+        name: LIST_TYPES_TOOL,
+        description: "List workspace concept types and counts.",
+        inputSchema: { type: "object", properties: { source: { type: "string" } } }
+      },
+      {
+        name: LIST_TAGS_TOOL,
+        description: "List workspace concept tags and counts.",
+        inputSchema: { type: "object", properties: { source: { type: "string" } } }
+      },
+      {
+        name: BUNDLE_SUMMARY_TOOL,
+        description: "Return workspace stats, per-source validation, and freshness status.",
+        inputSchema: { type: "object", properties: { source: { type: "string" } } }
+      }
+    ]
+  }));
+
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const args = request.params.arguments ?? {};
+    try {
+      const sourceName = sourceFilterSchema.partial().parse(args).source;
+      if (request.params.name === BUNDLE_SUMMARY_TOOL) {
+        return json(await workspaceSummary(sourceName), maxResultChars);
+      }
+
+      await prepareWorkspaceForTool(request.params.name, sourceName);
+      const workspace = workspaceSearch();
+      if (workspace.usableSourceNames().length === 0) return workspaceUnavailable();
+
+      if (request.params.name === SEARCH_CONCEPTS_TOOL) {
+        const parsed = workspaceSearchSchema.parse(args);
+        return json(workspace.search(parsed.query, parsed), maxResultChars);
+      }
+      if (request.params.name === READ_CONCEPT_TOOL) {
+        const parsed = workspaceReadSchema.parse(args);
+        const { source, concept } = workspace.getConcept(parsed);
+        const max = parsed.max_chars ?? maxResultChars;
+        return json(
+          {
+            sourceName: source.record.name,
+            sourceKind: source.record.manifest.kind,
+            seedUrl: source.record.manifest.source.seedUrl,
+            ref: `${source.record.name}:${concept.id}`,
+            frontmatter: concept.frontmatter,
+            markdown_body: concept.body.slice(0, max),
+            outbound_links: source.search!.graph.outbound.get(concept.id) ?? [],
+            backlinks: source.search!.graph.backlinks.get(concept.id) ?? [],
+            source_resource: concept.resource
+          },
+          maxResultChars
+        );
+      }
+      if (request.params.name === GET_NEIGHBORS_TOOL) {
+        const parsed = workspaceNeighborsSchema.parse(args);
+        const { source, concept: root } = workspace.getConcept(parsed);
+        const currentSearch = source.search!;
+        const depth = parsed.depth ?? 1;
+        const seen = new Set([root.id]);
+        let frontier = [root.id];
+        const edges: Array<{ from: string; to: string; direction: "outbound" | "backlink"; relationship_text?: string; sourceName: string }> = [];
+        for (let level = 0; level < depth; level += 1) {
+          const next: string[] = [];
+          for (const id of frontier) {
+            for (const to of currentSearch.graph.outbound.get(id) ?? []) {
+              edges.push({ from: id, to, direction: "outbound", relationship_text: "Markdown link", sourceName: source.record.name });
+              if (!seen.has(to)) next.push(to);
+              seen.add(to);
+            }
+            for (const from of currentSearch.graph.backlinks.get(id) ?? []) {
+              edges.push({ from, to: id, direction: "backlink", relationship_text: "Backlink", sourceName: source.record.name });
+              if (!seen.has(from)) next.push(from);
+              seen.add(from);
+            }
+          }
+          frontier = next;
+        }
+        return json({
+          sourceName: source.record.name,
+          sourceKind: source.record.manifest.kind,
+          seedUrl: source.record.manifest.source.seedUrl,
+          root: root.id,
+          ref: `${source.record.name}:${root.id}`,
+          concepts: [...seen].map((id) => {
+            const concept = currentSearch.graph.concepts.get(id);
+            return { sourceName: source.record.name, id, ref: `${source.record.name}:${id}`, title: concept?.title, type: concept?.type, resource: concept?.resource };
+          }),
+          edges
+        });
+      }
+      if (request.params.name === LIST_TYPES_TOOL) {
+        const parsed = sourceFilterSchema.parse(args);
+        return json(workspace.listTypes(parsed.source), maxResultChars);
+      }
+      if (request.params.name === LIST_TAGS_TOOL) {
+        const parsed = sourceFilterSchema.parse(args);
+        return json(workspace.listTags(parsed.source), maxResultChars);
+      }
+      return json({ error: { code: "unknown_tool", message: `Unknown tool: ${request.params.name}` } });
+    } catch (error: any) {
+      if (error instanceof WorkspaceError) return json({ error: error.toJSON() }, maxResultChars);
+      return json({ error: { code: "tool_error", message: error?.message ?? "Tool failed." } }, maxResultChars);
+    }
+  });
+
+  return server;
+}
+
+function numberField(value: unknown): number {
+  return typeof value === "number" ? value : 0;
+}
+
 export async function serveMcpStdio(options: ServeOptions): Promise<void> {
   const server = await createMcpServer(options);
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}
+
+export async function serveWorkspaceMcpStdio(options: WorkspaceServeOptions): Promise<void> {
+  const server = await createWorkspaceMcpServer(options);
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

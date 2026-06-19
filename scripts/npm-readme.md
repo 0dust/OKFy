@@ -63,6 +63,40 @@ npx -y okfy-ai doctor stripe --client codex
 
 `doctor` checks the registered source, bundle validity, freshness, `npx` availability, generated command shape, MCP tool visibility, and JSON-RPC-clean stdout, then tells you the next repair command or config edit.
 
+## Multi-Source Workspaces
+
+Register several docs sources and expose them through one source-aware MCP server:
+
+```bash
+npx -y okfy-ai add stripe https://docs.stripe.com/checkout --max-pages 100 --max-depth 4
+npx -y okfy-ai add clerk https://clerk.com/docs --max-pages 100 --max-depth 4
+npx -y okfy-ai doctor stripe clerk --client codex
+npx -y okfy-ai serve stripe clerk --mcp --auto-refresh
+```
+
+For project-local docs, import each Markdown folder into its own OKF bundle and serve the bundle paths together:
+
+```bash
+npx -y okfy-ai import ./docs/api --out ./okf/api-docs --source-name "API docs" --force
+npx -y okfy-ai import ./docs/product --out ./okf/product-docs --source-name "Product docs" --force
+npx -y okfy-ai serve ./okf/api-docs ./okf/product-docs --mcp
+```
+
+In local bundle workspaces, source filters use the bundle directory names, such as `api-docs` and `product-docs`.
+
+Codex config for the registered-source workspace:
+
+```toml
+[mcp_servers.stripe_clerk_okf]
+command = "npx"
+args = ["-y", "okfy-ai", "serve", "stripe", "clerk", "--mcp", "--auto-refresh"]
+startup_timeout_sec = 20
+tool_timeout_sec = 60
+enabled = true
+```
+
+Workspace `bundle_summary` reports totals plus per-source validation, freshness, refresh progress, and refresh errors. Search and list tools accept a `source` filter, and duplicate concept ids can be read with `{ "source": "stripe", "id": "guides/quickstart" }`.
+
 ## Keep Sources Fresh
 
 Registered sources are the local-first workflow for third-party docs sites that change over time:
@@ -75,6 +109,7 @@ npx -y okfy-ai doctor stripe
 npx -y okfy-ai update stripe
 npx -y okfy-ai remove stripe
 npx -y okfy-ai serve stripe --mcp --auto-refresh
+npx -y okfy-ai serve stripe clerk --mcp --auto-refresh
 ```
 
 If you want registration plus client-specific setup artifacts, use `npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client generic --max-pages 100 --max-depth 4`.
@@ -116,7 +151,7 @@ Serve an existing bundle path when you already manage the bundle yourself:
 npx -y okfy-ai serve ./docs-okf --mcp
 ```
 
-Direct bundle paths do not use source auto-refresh.
+Direct bundle paths, including local bundle workspaces, do not use source auto-refresh.
 
 ## Optional CLI Install
 
@@ -169,7 +204,7 @@ npx -y okfy-ai demo
 
 ```bash
 okfy init <name> <url>
-okfy doctor <name>
+okfy doctor <name> [more-names...]
 okfy add <name> <url>
 okfy sources
 okfy check <name-or-bundle>
@@ -179,7 +214,7 @@ okfy crawl <url> --out <dir>
 okfy import <path> --out <dir>
 okfy validate <bundle>
 okfy inspect <bundle>
-okfy serve <name-or-bundle> --mcp
+okfy serve <name-or-bundle> [more-source-names...] --mcp
 okfy demo
 ```
 
@@ -187,12 +222,12 @@ okfy demo
 
 | Tool | Purpose |
 | --- | --- |
-| `bundle_summary` | Show bundle stats, validation status, and source freshness when available. |
-| `search_concepts` | Search concept previews by query, type, or tags. |
+| `bundle_summary` | Show bundle or workspace stats, validation status, and source freshness when available. |
+| `search_concepts` | Search concept previews by query, optional source, type, or tags. |
 | `read_concept` | Read one concept body, frontmatter, links, backlinks, and source. |
 | `get_neighbors` | Traverse outbound links and backlinks around a concept. |
-| `list_types` | List concept types and counts. |
-| `list_tags` | List tags and counts. |
+| `list_types` | List concept types and counts, optionally filtered by workspace source. |
+| `list_tags` | List tags and counts, optionally filtered by workspace source. |
 
 ## What okfy Generates
 

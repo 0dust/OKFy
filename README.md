@@ -23,6 +23,7 @@
 
   <p>
     <a href="#use-with-agents">Use with agents</a> |
+    <a href="#project-stack-workspaces">Project stack workspaces</a> |
     <a href="#keep-sources-fresh">Keep sources fresh</a> |
     <a href="#create-a-bundle">Create a bundle</a> |
     <a href="#optional-cli-install">CLI install</a> |
@@ -37,7 +38,7 @@ Agents are bad at reading docs when the only options are "paste everything" or "
 
 `okfy` converts documentation websites and local Markdown folders into [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf) v0.1-conformant bundles: typed Markdown concept files with frontmatter, reserved navigation files, source URLs, internal links, backlinks, and a read-only MCP server. It can also remember third-party docs sources locally and refresh their bundles when they go stale.
 
-Use it when you want Claude, Codex, Cursor, or another MCP-capable agent to search your docs, read only the relevant pages, traverse neighbors, and cite sources without dumping the whole docs site into context.
+Use it when you want Claude, Codex, Cursor, or another MCP-capable agent to search one docs source or a whole project stack, read only the relevant pages, traverse neighbors, and cite sources without dumping docs sites into context.
 
 ![okfy terminal demo](assets/demo.gif)
 
@@ -105,6 +106,60 @@ npx -y okfy-ai doctor stripe --client codex
 
 `doctor` checks the registered source, bundle validity, freshness, `npx` availability, generated command shape, MCP tool visibility, and JSON-RPC-clean stdout, then tells you the next repair command or config edit.
 
+## Project Stack Workspaces
+
+Most coding sessions need more than one docs source. Register each source locally, then serve a source-aware workspace through one MCP server:
+
+```bash
+npx -y okfy-ai add stripe https://docs.stripe.com/checkout --max-pages 100 --max-depth 4
+npx -y okfy-ai add clerk https://clerk.com/docs --max-pages 100 --max-depth 4
+npx -y okfy-ai doctor stripe clerk --client codex
+npx -y okfy-ai serve stripe clerk --mcp --auto-refresh
+```
+
+Project-local docs work the same way when you manage the bundles yourself. Import each Markdown folder into its own OKF bundle, then serve those bundle paths together:
+
+```bash
+npx -y okfy-ai import ./docs/api --out ./okf/api-docs --source-name "API docs" --force
+npx -y okfy-ai import ./docs/product --out ./okf/product-docs --source-name "Product docs" --force
+npx -y okfy-ai validate ./okf/api-docs
+npx -y okfy-ai validate ./okf/product-docs
+npx -y okfy-ai serve ./okf/api-docs ./okf/product-docs --mcp
+```
+
+In local bundle workspaces, source filters use the bundle directory names, such as `api-docs` and `product-docs`.
+
+Codex config for the registered-source workspace:
+
+```toml
+[mcp_servers.stripe_clerk_okf]
+command = "npx"
+args = ["-y", "okfy-ai", "serve", "stripe", "clerk", "--mcp", "--auto-refresh"]
+startup_timeout_sec = 20
+tool_timeout_sec = 60
+enabled = true
+```
+
+Use `--all` only when you intentionally want every readable registered source in the current `OKFY_HOME`:
+
+```bash
+npx -y okfy-ai serve --all --mcp --auto-refresh
+```
+
+Workspace tool results preserve provenance. `search_concepts` includes `sourceName`, `seedUrl`, `ref`, `resource`, snippets, and scores. When you know the docs source, filter by source:
+
+```json
+{ "query": "checkout sessions", "source": "stripe", "limit": 5 }
+```
+
+If the same concept id exists in more than one source, read with source-aware disambiguation:
+
+```json
+{ "source": "stripe", "id": "guides/quickstart" }
+```
+
+Start workspace sessions with `bundle_summary`; it reports workspace totals plus per-source validation, freshness, refresh progress, and refresh errors.
+
 ## Keep Sources Fresh
 
 Registered sources are the local-first workflow for third-party docs sites that change over time:
@@ -117,6 +172,7 @@ npx -y okfy-ai doctor stripe
 npx -y okfy-ai update stripe
 npx -y okfy-ai remove stripe
 npx -y okfy-ai serve stripe --mcp --auto-refresh
+npx -y okfy-ai serve stripe clerk --mcp --auto-refresh
 ```
 
 If you want registration plus client-specific setup artifacts, use `npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client codex --max-pages 100 --max-depth 4`.
@@ -242,12 +298,12 @@ registered docs source or Markdown folder
 
 | Tool | Purpose |
 | --- | --- |
-| `bundle_summary` | Show bundle stats, validation status, and source freshness when available. |
-| `search_concepts` | Search concept previews by query, type, or tags. |
-| `read_concept` | Read one concept body, frontmatter, links, backlinks, and source. |
-| `get_neighbors` | Traverse outbound links and backlinks around a concept. |
-| `list_types` | List concept types and counts. |
-| `list_tags` | List tags and counts. |
+| `bundle_summary` | Show bundle or workspace stats, validation status, and source freshness when available. |
+| `search_concepts` | Search concept previews by query, optional source, type, or tags. |
+| `read_concept` | Read one concept body, frontmatter, links, backlinks, and source; workspace reads can pass `source`. |
+| `get_neighbors` | Traverse outbound links and backlinks around a concept; workspace calls can pass `source`. |
+| `list_types` | List concept types and counts, optionally filtered by workspace source. |
+| `list_tags` | List tags and counts, optionally filtered by workspace source. |
 
 The server is read-only in v0.1. Auto-refresh is server-side maintenance for registered sources, not an agent-callable write tool. `okfy serve --mcp` writes MCP JSON-RPC to stdout, so launch it through an MCP client rather than as a normal terminal command.
 

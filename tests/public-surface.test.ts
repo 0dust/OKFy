@@ -45,6 +45,16 @@ describe("public surface", () => {
     expect(readme.indexOf("## Use With Agents")).toBeLessThan(readme.indexOf("## Optional CLI Install"));
     expect(readme).toContain("npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client codex");
     expect(readme).toContain("npx -y okfy-ai doctor stripe --client codex");
+    expect(readme).toContain("npx -y okfy-ai doctor stripe clerk --client codex");
+    expect(readme).toContain("npx -y okfy-ai serve stripe clerk --mcp --auto-refresh");
+    expect(readme).toContain('npx -y okfy-ai import ./docs/api --out ./okf/api-docs --source-name "API docs" --force');
+    expect(readme).toContain(
+      'npx -y okfy-ai import ./docs/product --out ./okf/product-docs --source-name "Product docs" --force'
+    );
+    expect(readme).toContain("npx -y okfy-ai serve ./okf/api-docs ./okf/product-docs --mcp");
+    expect(readme).toContain("[mcp_servers.stripe_clerk_okf]");
+    expect(readme).toContain('"source": "stripe"');
+    expect(readme).toContain("Start workspace sessions with `bundle_summary`");
     expect(readme).toContain("claude mcp add --transport stdio stripe-okf");
     expect(readme).toContain(".cursor/mcp.json");
     expect(readme).toContain("[mcp_servers.stripe_okf]");
@@ -128,17 +138,38 @@ describe("public surface", () => {
     expect(npmReadme.indexOf("## Use With Agents")).toBeLessThan(npmReadme.indexOf("## Optional CLI Install"));
     expect(npmReadme).toContain("npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client generic");
     expect(npmReadme).toContain("npx -y okfy-ai doctor stripe --client codex");
+    expect(npmReadme).toContain("npx -y okfy-ai doctor stripe clerk --client codex");
+    expect(npmReadme).toContain("npx -y okfy-ai serve stripe clerk --mcp --auto-refresh");
+    expect(npmReadme).toContain(
+      'npx -y okfy-ai import ./docs/api --out ./okf/api-docs --source-name "API docs" --force'
+    );
+    expect(npmReadme).toContain(
+      'npx -y okfy-ai import ./docs/product --out ./okf/product-docs --source-name "Product docs" --force'
+    );
+    expect(npmReadme).toContain("npx -y okfy-ai serve ./okf/api-docs ./okf/product-docs --mcp");
+    expect(npmReadme).toContain("[mcp_servers.stripe_clerk_okf]");
+    expect(npmReadme).toContain("Search and list tools accept a `source` filter");
     expect(npmReadme).toContain("okfy init <name> <url>");
-    expect(npmReadme).toContain("okfy doctor <name>");
+    expect(npmReadme).toContain("okfy doctor <name> [more-names...]");
     expect(npmReadme).toContain("claude mcp add --transport stdio stripe-okf");
     expect(npmReadme).toContain("[mcp_servers.stripe_okf]");
     expect(npmReadme).not.toContain("assets/logo.svg");
     expect(mcpDocs).toContain("The default setup uses `npx -y okfy-ai`");
     expect(mcpDocs).toContain("npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client generic");
     expect(mcpDocs).toContain("npx -y okfy-ai doctor stripe --client codex");
+    expect(mcpDocs).toContain("npx -y okfy-ai doctor stripe clerk --client codex");
     expect(mcpDocs).toContain("npx -y okfy-ai add stripe https://docs.stripe.com/checkout");
     expect(mcpDocs).toContain("npx -y okfy-ai serve stripe --mcp --auto-refresh");
-    expect(mcpDocs).toContain("Direct bundle paths do not use source auto-refresh.");
+    expect(mcpDocs).toContain("npx -y okfy-ai serve stripe clerk --mcp --auto-refresh");
+    expect(mcpDocs).toContain('npx -y okfy-ai import ./docs/api --out ./okf/api-docs --source-name "API docs" --force');
+    expect(mcpDocs).toContain(
+      'npx -y okfy-ai import ./docs/product --out ./okf/product-docs --source-name "Product docs" --force'
+    );
+    expect(mcpDocs).toContain("npx -y okfy-ai serve ./okf/api-docs ./okf/product-docs --mcp");
+    expect(mcpDocs).toContain("search_concepts({ \"query\": \"checkout sessions\", \"source\": \"stripe\", \"limit\": 5 })");
+    expect(mcpDocs).toContain("ambiguous_concept");
+    expect(mcpDocs).toContain("Workspace mode keeps the same read-only tools.");
+    expect(mcpDocs).toContain("Direct bundle paths, including local bundle workspaces, do not use source auto-refresh.");
     expect(mcpDocs).toContain('args": ["-y", "okfy-ai", "serve", "./docs-okf", "--mcp"]');
     expect(`${readme}\n${npmReadme}\n${mcpDocs}`).not.toMatch(/npx -y okfy(?:@|\s)/);
   });

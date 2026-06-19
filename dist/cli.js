@@ -15,18 +15,20 @@ import {
   resolveBundleDir,
   resolveOkfyHome,
   resolveSourceDir,
+  resolveWorkspaceSources,
   serveMcpStdio,
+  serveWorkspaceMcpStdio,
   validateBundle,
   validateSourceName,
   writeRefreshState,
   writeSourceManifest
-} from "./chunk-7V2ZN6IS.js";
+} from "./chunk-WOTGUGUO.js";
 
 // src/cli.ts
 import fs2 from "fs";
 import path2 from "path";
 import { execFile } from "child_process";
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 import { Command } from "commander";
 import pc from "picocolors";
 
@@ -59,19 +61,26 @@ function setupStatus(checks) {
 function createSetupReport(input) {
   const okfyHome = path.resolve(input.okfyHome ?? resolveOkfyHome());
   const defaultHome = defaultOkfyHome();
-  const serverName = mcpServerName(input.sourceName);
-  const codexServerName = codexMcpServerName(input.sourceName);
-  const command = serveCommand(input.sourceName, okfyHome, defaultHome);
+  const sourceNames = setupSourceNames(input);
+  const workspace = Boolean(input.workspaceAll) || sourceNames.length > 1;
+  const serverIdentity = input.workspaceAll ? ["all"] : sourceNames;
+  const commandTarget = input.workspaceAll ? { all: true } : sourceNames;
+  const serverName = mcpServerName(serverIdentity);
+  const codexServerName = codexMcpServerName(serverIdentity);
+  const command = serveCommand(commandTarget, okfyHome, defaultHome);
   return {
-    sourceName: input.sourceName,
+    sourceName: input.workspaceAll && sourceNames.length === 0 ? "--all" : sourceNames.join(", "),
+    sourceNames,
+    workspace,
+    workspaceAll: Boolean(input.workspaceAll),
     client: input.client,
     serverName,
     codexServerName,
     okfyHome,
     defaultOkfyHome: defaultHome,
     command,
-    artifacts: renderClientArtifacts({ client: input.client, sourceName: input.sourceName, okfyHome, defaultOkfyHome: defaultHome }),
-    firstPrompt: firstAgentPrompt(input.client === "codex" ? codexServerName : serverName),
+    artifacts: renderClientArtifacts({ client: input.client, sourceNames, workspaceAll: input.workspaceAll, okfyHome, defaultOkfyHome: defaultHome }),
+    firstPrompt: firstAgentPrompt(input.client === "codex" ? codexServerName : serverName, { workspace }),
     checks: input.checks,
     status: setupStatus(input.checks)
   };
@@ -79,9 +88,12 @@ function createSetupReport(input) {
 function renderClientArtifacts(input) {
   const okfyHome = path.resolve(input.okfyHome ?? resolveOkfyHome());
   const defaultHome = input.defaultOkfyHome ?? defaultOkfyHome();
-  const serverName = mcpServerName(input.sourceName);
-  const codexName = codexMcpServerName(input.sourceName);
-  const command = serveCommand(input.sourceName, okfyHome, defaultHome);
+  const sourceNames = setupSourceNames(input);
+  const serverIdentity = input.workspaceAll ? ["all"] : sourceNames;
+  const commandTarget = input.workspaceAll ? { all: true } : sourceNames;
+  const serverName = mcpServerName(serverIdentity);
+  const codexName = codexMcpServerName(serverIdentity);
+  const command = serveCommand(commandTarget, okfyHome, defaultHome);
   const env = Object.keys(command.env).length ? command.env : void 0;
   if (input.client === "claude-code") {
     return [
@@ -131,11 +143,14 @@ function renderClientArtifacts(input) {
     }
   ];
 }
-function firstAgentPrompt(serverName) {
+function firstAgentPrompt(serverName, options = {}) {
+  if (options.workspace) {
+    return `Use the ${serverName} MCP server. Start with bundle_summary to understand the workspace sources and freshness. Filter by source when you know which docs apply, search before reading concepts, read only the most relevant concepts, inspect neighbors when relationships matter, and cite source_resource URLs in the final answer.`;
+  }
   return `Use the ${serverName} MCP server. Start with bundle_summary to understand the bundle and freshness. Search before reading concepts, read only the most relevant concepts, inspect neighbors when relationships matter, and cite source_resource URLs in the final answer.`;
 }
-function serveCommand(sourceName, okfyHome, defaultHome = defaultOkfyHome()) {
-  const args = sourceName.startsWith("-") ? ["-y", "okfy-ai", "serve", "--mcp", "--auto-refresh", "--", sourceName] : ["-y", "okfy-ai", "serve", sourceName, "--mcp", "--auto-refresh"];
+function serveCommand(sourceNameOrNames, okfyHome, defaultHome = defaultOkfyHome()) {
+  const args = ["-y", "okfy-ai", ...serveCommandArgs(sourceNameOrNames)];
   const env = needsOkfyHomeEnv(okfyHome, defaultHome) ? { OKFY_HOME: path.resolve(okfyHome) } : {};
   return {
     command: "npx",
@@ -143,6 +158,16 @@ function serveCommand(sourceName, okfyHome, defaultHome = defaultOkfyHome()) {
     env,
     display: ["npx", ...args].join(" ")
   };
+}
+function serveCommandArgs(sourceNameOrNames) {
+  if (isAllCommandTarget(sourceNameOrNames)) {
+    return ["serve", "--all", "--mcp", "--auto-refresh"];
+  }
+  const sourceNames = Array.isArray(sourceNameOrNames) ? sourceNameOrNames : [sourceNameOrNames];
+  return sourceNames.some((sourceName) => sourceName.startsWith("-")) ? ["serve", "--mcp", "--auto-refresh", "--", ...sourceNames] : ["serve", ...sourceNames, "--mcp", "--auto-refresh"];
+}
+function isAllCommandTarget(sourceNameOrNames) {
+  return typeof sourceNameOrNames === "object" && !Array.isArray(sourceNameOrNames) && sourceNameOrNames.all;
 }
 function setupCheck(id, label, severity, message, fix) {
   return { id, label, severity, message, ...fix ? { fix } : {} };
@@ -305,13 +330,21 @@ function formatExit(exit) {
 function needsOkfyHomeEnv(okfyHome, defaultHome) {
   return path.resolve(okfyHome) !== path.resolve(defaultHome);
 }
-function mcpServerName(sourceName) {
-  const safeName = sourceName.replace(/[._]+/g, "-").replace(/^-+/, "");
+function mcpServerName(sourceNameOrNames) {
+  const sourceNames = Array.isArray(sourceNameOrNames) ? sourceNameOrNames : [sourceNameOrNames];
+  const safeName = sourceNames.map((sourceName) => sourceName.replace(/[._]+/g, "-").replace(/^-+/, "")).filter(Boolean).join("-");
   return `${safeName || "source"}-okf`;
 }
-function codexMcpServerName(sourceName) {
-  const safeName = sourceName.replace(/[^a-z0-9]+/g, "_").replace(/^_+/, "");
+function codexMcpServerName(sourceNameOrNames) {
+  const sourceNames = Array.isArray(sourceNameOrNames) ? sourceNameOrNames : [sourceNameOrNames];
+  const safeName = sourceNames.map((sourceName) => sourceName.replace(/[^a-z0-9]+/g, "_").replace(/^_+/, "")).filter(Boolean).join("_");
   return `${safeName || "source"}_okf`;
+}
+function setupSourceNames(input) {
+  const names = input.sourceNames ?? (input.sourceName ? [input.sourceName] : []);
+  if (input.workspaceAll) return [...names];
+  if (!names.length) throw new Error("Setup report requires at least one source name.");
+  return [...names];
 }
 function shellEnvArgs(env, flag) {
   const entries = Object.entries(env);
@@ -370,6 +403,77 @@ async function pathExists(target) {
     if (error?.code === "ENOENT") return false;
     throw error;
   }
+}
+function pathLikeTarget(target) {
+  return path2.isAbsolute(target) || target === "." || target === ".." || target.startsWith("./") || target.startsWith("../") || target.includes("/") || target.includes("\\");
+}
+async function registeredSourceDirExists(name) {
+  try {
+    return await pathExists(resolveSourceDir(name));
+  } catch {
+    return false;
+  }
+}
+async function serveBundleTarget(target, options) {
+  printStatus(`okfy serve: loading ${target}`);
+  printStatus(`okfy serve: starting MCP stdio server "${options.name}"`);
+  await serveMcpStdio({ bundleDir: target, name: options.name, maxResultChars: options.maxResultChars });
+  printStatus("okfy serve: ready on stdio (stdout is reserved for MCP JSON-RPC)");
+  printStatus(`okfy serve: tools ${MCP_TOOL_NAMES.join(", ")}`);
+}
+function bundleSourceName(bundleDir) {
+  const baseName = path2.basename(path2.resolve(bundleDir));
+  const candidate = baseName.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[._-]+|[._-]+$/g, "");
+  return validateSourceName(candidate || "bundle");
+}
+function localBundleRecord(bundleDir) {
+  const resolved = path2.resolve(bundleDir);
+  const name = bundleSourceName(resolved);
+  const timestamp = "1970-01-01T00:00:00.000Z";
+  return {
+    name,
+    dir: resolved,
+    bundleDir: resolved,
+    manifest: {
+      schemaVersion: 1,
+      okfyVersion: readPackageVersion(),
+      name,
+      kind: "local",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      source: {
+        seedUrl: pathToFileURL(resolved).href
+      },
+      crawl: {
+        maxPages: 0,
+        maxDepth: 0,
+        include: [],
+        exclude: [],
+        sameOrigin: true,
+        respectRobots: true,
+        concurrency: 1,
+        allowPrivateNetwork: false
+      },
+      refresh: {
+        mode: "off",
+        maxAgeSeconds: 0,
+        minIntervalSeconds: 0
+      },
+      bundle: {
+        dir: resolved
+      }
+    }
+  };
+}
+function assertUniqueWorkspaceRecordNames(records) {
+  const seen = /* @__PURE__ */ new Set();
+  for (const record of records) {
+    if (seen.has(record.name)) throw new Error(`Duplicate workspace source "${record.name}". Rename one bundle directory or source.`);
+    seen.add(record.name);
+  }
+}
+function isRegisteredWorkspaceRecord(record) {
+  return record.manifest.kind === "website";
 }
 async function readStateIfExists(name) {
   try {
@@ -553,6 +657,26 @@ async function registeredRecord(name) {
     bundleDir: resolveBundleDir(manifest)
   };
 }
+function mcpRefreshHooksForRecord(record, mode, maxAgeSeconds) {
+  return {
+    mode,
+    getFreshness: async () => {
+      const latest = await registeredRecord(record.name);
+      const nextState = await summarizeState(latest, maxAgeSeconds);
+      await writeRefreshState(record.name, nextState);
+      return nextState;
+    },
+    refreshIfNeeded: async () => {
+      const latestManifest = await readSourceManifest(record.name);
+      const result = await runSourceRefresh(latestManifest, { force: false });
+      const bundleDir = resolveBundleDir(latestManifest);
+      return {
+        bundleDir,
+        freshness: result.state ?? await readStateIfExists(record.name) ?? emptyState(result.status, (/* @__PURE__ */ new Date()).toISOString())
+      };
+    }
+  };
+}
 function printValidation(report, json) {
   if (json) {
     console.log(JSON.stringify(report, null, 2));
@@ -674,11 +798,11 @@ function setupMcpProbeCheck(probe) {
   const fix = probe.error?.code === "stdout_contamination" ? "Move human logs to stderr so stdout contains only MCP JSON-RPC messages." : "Run the generated serve command in your MCP client, then rerun doctor with the same OKFY_HOME.";
   return setupCheck("mcp_probe", "MCP stdio probe", "fail", message, fix);
 }
-async function runSetupProbe(name, timeoutSeconds) {
-  const command = serveCommand(name, resolveOkfyHome());
+async function runSetupProbe(sourceNameOrNames, timeoutSeconds) {
+  const command = serveCommand(sourceNameOrNames, resolveOkfyHome());
   return probeMcpStdio({
     command: process.execPath,
-    args: [cliPath, "serve", name, "--mcp", "--auto-refresh"],
+    args: [cliPath, ...serveCommandArgs(sourceNameOrNames)],
     env: { ...process.env, ...command.env },
     timeoutMs: timeoutSeconds * 1e3
   });
@@ -724,6 +848,56 @@ async function setupReportForRecord(options) {
     checks
   });
 }
+async function setupReportForWorkspace(options) {
+  const sourceNames = options.records.map((record) => record.name);
+  const commandTarget = options.all ? { all: true } : sourceNames;
+  const states = await Promise.all(
+    options.records.map(async (record) => {
+      const state = await summarizeState(record, options.maxAge);
+      await writeRefreshState(record.name, state);
+      return { record, state };
+    })
+  );
+  const bundleChecks = await Promise.all(
+    options.records.map(async (record) => namespaceWorkspaceCheck(await setupBundleCheck(record.bundleDir), record.name))
+  );
+  const freshnessChecks = states.map(({ record, state }) => namespaceWorkspaceCheck(setupFreshnessCheck(record, state), record.name));
+  const npxCheck = await setupNpxCheck();
+  const checks = [
+    setupCheck("source", "Registered sources", "pass", `Workspace sources exist: ${sourceNames.join(", ")}.`),
+    setupHomeCheck(resolveOkfyHome()),
+    ...bundleChecks,
+    ...freshnessChecks,
+    npxCheck
+  ];
+  if (bundleChecks.some((check) => check.severity === "fail") || npxCheck.severity === "fail") {
+    checks.push(
+      setupCheck(
+        "mcp_probe",
+        "MCP stdio probe",
+        "warn",
+        "Skipped workspace MCP probe because setup prerequisites failed.",
+        "Fix the failed checks above, then rerun doctor."
+      )
+    );
+  } else {
+    checks.push(setupMcpProbeCheck(await runSetupProbe(commandTarget, options.probeTimeoutSeconds)));
+  }
+  return createSetupReport({
+    sourceNames,
+    workspaceAll: options.all,
+    client: options.client,
+    okfyHome: resolveOkfyHome(),
+    checks
+  });
+}
+function namespaceWorkspaceCheck(check, sourceName) {
+  return {
+    ...check,
+    id: `${check.id}:${sourceName}`,
+    label: `${check.label} (${sourceName})`
+  };
+}
 function setupReportForMissingSource(name, client, error) {
   const message = error instanceof Error ? error.message : `Source "${name}" was not found.`;
   return createSetupReport({
@@ -737,6 +911,26 @@ function setupReportForMissingSource(name, client, error) {
         "fail",
         message,
         `Run npx -y okfy-ai sources to list sources in this OKFY_HOME, or run npx -y okfy-ai init ${name} <docs-url> --client generic.`
+      ),
+      setupHomeCheck(resolveOkfyHome())
+    ]
+  });
+}
+function setupReportForMissingWorkspace(names, client, error, all = false) {
+  const sourceNames = all ? names : names.length ? names : ["workspace"];
+  const message = error instanceof Error ? error.message : "Workspace sources were not found.";
+  return createSetupReport({
+    sourceNames,
+    workspaceAll: all,
+    client,
+    okfyHome: resolveOkfyHome(),
+    checks: [
+      setupCheck(
+        "source",
+        "Registered sources",
+        "fail",
+        message,
+        "Run npx -y okfy-ai sources to list sources in this OKFY_HOME, then rerun doctor with known source names."
       ),
       setupHomeCheck(resolveOkfyHome())
     ]
@@ -767,7 +961,7 @@ function printSetupReport(report, json) {
   }
   const color = report.status === "failed" ? pc.red : report.status === "warning" ? pc.yellow : pc.green;
   console.log(color(`Setup status: ${report.status}`));
-  console.log(`Source: ${report.sourceName}`);
+  console.log(`${report.workspace ? "Sources" : "Source"}: ${report.sourceName}`);
   console.log(`OKFY_HOME: ${report.okfyHome}`);
   console.log("\nChecks:");
   for (const check of report.checks) {
@@ -836,8 +1030,26 @@ addSourceRegistrationOptions(initCommand).option("--probe-timeout <duration>", "
     process.exitCode = 1;
   }
 });
-program.command("doctor").argument("<name>", "Registered source name").option("--client <client>", "Target client: claude-code, claude-desktop, cursor, codex, or generic", setupClient, parseSetupClient("generic")).option("--max-age <duration>", "Override freshness max age", duration).option("--probe-timeout <duration>", "MCP setup probe timeout", duration, 5).option("--json", "Print JSON output", false).action(async (name, options) => {
+program.command("doctor").argument("[names...]", "Registered source name(s)").option("--all", "Check all registered sources as one workspace", false).option("--client <client>", "Target client: claude-code, claude-desktop, cursor, codex, or generic", setupClient, parseSetupClient("generic")).option("--max-age <duration>", "Override freshness max age", duration).option("--probe-timeout <duration>", "MCP setup probe timeout", duration, 5).option("--json", "Print JSON output", false).action(async (names = [], options) => {
   try {
+    if (options.all && names.length > 0) {
+      throw new Error("Use either --all or explicit source names, not both.");
+    }
+    if (options.all || names.length > 1) {
+      const sourceSet = await resolveWorkspaceSources({ all: options.all, names });
+      const report2 = await setupReportForWorkspace({
+        records: sourceSet.records,
+        client: options.client,
+        maxAge: options.maxAge,
+        probeTimeoutSeconds: options.probeTimeout,
+        all: options.all
+      });
+      printSetupReport(report2, options.json);
+      if (report2.status === "failed") process.exitCode = 1;
+      return;
+    }
+    const name = names[0];
+    if (!name) throw new Error("Provide a registered source name, multiple source names, or --all.");
     const report = await setupReportForRecord({
       record: await registeredRecord(name),
       client: options.client,
@@ -847,7 +1059,7 @@ program.command("doctor").argument("<name>", "Registered source name").option("-
     printSetupReport(report, options.json);
     if (report.status === "failed") process.exitCode = 1;
   } catch (error) {
-    const report = setupReportForMissingSource(name, options.client, error);
+    const report = names.length <= 1 && !options.all ? setupReportForMissingSource(names[0] ?? "source", options.client, error) : setupReportForMissingWorkspace(names, options.client, error, options.all);
     printSetupReport(report, options.json);
     process.exitCode = 1;
   }
@@ -1048,7 +1260,7 @@ program.command("inspect").argument("<bundle>", "OKF bundle directory").action(a
     process.exitCode = 1;
   }
 });
-program.command("serve").argument("<name-or-bundle>", "Registered source name or OKF bundle directory").option("--mcp", "Start MCP server", false).option("--transport <transport>", "Transport: stdio", "stdio").option("--name <server-name>", "MCP server name", "okfy").option("--max-result-chars <n>", "Maximum characters per tool result", (value) => Number(value), 12e3).option("--auto-refresh", "Enable registered source refresh behavior", false).option("--refresh-mode <mode>", "Refresh mode override: off, stale-while-refresh, or blocking", refreshMode).option("--max-age <duration>", "Override freshness max age", duration).action(async (target, options) => {
+program.command("serve").argument("[targets...]", "Registered source name(s), OKF bundle path(s), or one OKF bundle directory").option("--all", "Serve all registered sources as one source-aware workspace", false).option("--mcp", "Start MCP server", false).option("--transport <transport>", "Transport: stdio", "stdio").option("--name <server-name>", "MCP server name", "okfy").option("--max-result-chars <n>", "Maximum characters per tool result", (value) => Number(value), 12e3).option("--auto-refresh", "Enable registered source refresh behavior", false).option("--refresh-mode <mode>", "Refresh mode override: off, stale-while-refresh, or blocking", refreshMode).option("--max-age <duration>", "Override freshness max age", duration).action(async (targets = [], options) => {
   if (!options.mcp) {
     console.error(pc.red("Only --mcp mode is supported in v0.1."));
     process.exitCode = 1;
@@ -1059,19 +1271,69 @@ program.command("serve").argument("<name-or-bundle>", "Registered source name or
     process.exitCode = 1;
     return;
   }
-  if (await pathExists(target)) {
-    printStatus(`okfy serve: loading ${target}`);
-    printStatus(`okfy serve: starting MCP stdio server "${options.name}"`);
-    await serveMcpStdio({ bundleDir: target, name: options.name, maxResultChars: options.maxResultChars });
-    printStatus("okfy serve: ready on stdio (stdout is reserved for MCP JSON-RPC)");
-    printStatus(`okfy serve: tools ${MCP_TOOL_NAMES.join(", ")}`);
+  if (options.all && targets.length > 0) {
+    console.error(pc.red("Use either --all or explicit source names, not both."));
+    process.exitCode = 1;
     return;
   }
+  if (!options.all && targets.length === 0) {
+    console.error(pc.red("Provide a registered source name, an OKF bundle directory, or --all."));
+    process.exitCode = 1;
+    return;
+  }
+  const target = targets[0];
   try {
-    const manifest = await readSourceManifest(target);
+    if (!options.all && targets.length === 1 && pathLikeTarget(target)) {
+      if (!await pathExists(target)) throw new Error(`Bundle path does not exist: ${target}`);
+      await serveBundleTarget(target, options);
+      return;
+    }
+    if (options.all || targets.length > 1) {
+      const bundleTargets = options.all ? [] : targets.filter(pathLikeTarget);
+      const sourceTargets = options.all ? [] : targets.filter((sourceName) => !pathLikeTarget(sourceName));
+      const sourceSet = options.all || sourceTargets.length ? await resolveWorkspaceSources({ all: options.all, names: sourceTargets }) : { records: [], sourceNames: [] };
+      const bundleRecords = await Promise.all(
+        bundleTargets.map(async (bundleTarget) => {
+          if (!await pathExists(bundleTarget)) {
+            throw new Error(`Workspace bundle path does not exist: ${bundleTarget}`);
+          }
+          return localBundleRecord(bundleTarget);
+        })
+      );
+      const records = [...sourceSet.records, ...bundleRecords];
+      assertUniqueWorkspaceRecordNames(records);
+      const availableSourceNames = options.all ? sourceSet.sourceNames : (await listSources()).map((record2) => record2.name);
+      const workspaceNames = records.map((record2) => record2.name);
+      printStatus(`okfy serve: loading workspace sources ${workspaceNames.join(", ")}`);
+      printStatus(`okfy serve: starting MCP stdio server "${options.name}"`);
+      await serveWorkspaceMcpStdio({
+        name: options.name,
+        maxResultChars: options.maxResultChars,
+        availableSourceNames,
+        sources: records.map((record2) => {
+          if (!isRegisteredWorkspaceRecord(record2)) return { record: record2 };
+          const mode2 = options.autoRefresh ? options.refreshMode ?? record2.manifest.refresh.mode : "off";
+          return { record: record2, refresh: mcpRefreshHooksForRecord(record2, mode2, options.maxAge) };
+        })
+      });
+      printStatus("okfy serve: ready on stdio (stdout is reserved for MCP JSON-RPC)");
+      printStatus(`okfy serve: tools ${MCP_TOOL_NAMES.join(", ")}`);
+      return;
+    }
+    let manifest;
+    try {
+      manifest = await readSourceManifest(target);
+    } catch (error) {
+      if (!pathLikeTarget(target) && await pathExists(target) && !await registeredSourceDirExists(target)) {
+        await serveBundleTarget(target, options);
+        return;
+      }
+      throw error;
+    }
     const bundleDir = resolveBundleDir(manifest);
     const mode = options.autoRefresh ? options.refreshMode ?? manifest.refresh.mode : "off";
     const maxAgeSeconds = options.maxAge;
+    const record = await registeredRecord(manifest.name);
     printStatus(`okfy serve: loading source ${manifest.name} from ${bundleDir}`);
     printStatus(`okfy serve: starting MCP stdio server "${options.name}"`);
     await serveMcpStdio({
@@ -1083,22 +1345,7 @@ program.command("serve").argument("<name-or-bundle>", "Registered source name or
         kind: manifest.kind,
         seedUrl: manifest.source.seedUrl
       },
-      refresh: {
-        mode,
-        getFreshness: async () => {
-          const record = await registeredRecord(manifest.name);
-          const nextState = await summarizeState(record, maxAgeSeconds);
-          await writeRefreshState(manifest.name, nextState);
-          return nextState;
-        },
-        refreshIfNeeded: async () => {
-          const result = await runSourceRefresh(manifest, { force: false });
-          return {
-            bundleDir,
-            freshness: result.state ?? await readStateIfExists(manifest.name) ?? emptyState(result.status, (/* @__PURE__ */ new Date()).toISOString())
-          };
-        }
-      }
+      refresh: mcpRefreshHooksForRecord(record, mode, maxAgeSeconds)
     });
     printStatus("okfy serve: ready on stdio (stdout is reserved for MCP JSON-RPC)");
     printStatus(`okfy serve: tools ${MCP_TOOL_NAMES.join(", ")}`);
