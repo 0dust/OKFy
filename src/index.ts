@@ -2,6 +2,7 @@ export * from "./crawler.js";
 export * from "./graph.js";
 export * from "./importer.js";
 export * from "./mcp.js";
+export * from "./metadata.js";
 export * from "./normalize.js";
 export * from "./reader.js";
 export * from "./search.js";

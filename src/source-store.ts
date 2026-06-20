@@ -44,6 +44,15 @@ export interface SourceManifest {
   };
 }
 
+export interface RefreshErrorState {
+  [key: string]: unknown;
+  message: string;
+  code?: string;
+  sourceName?: string;
+  seedUrl?: string;
+  occurredAt?: string;
+}
+
 export interface RefreshState {
   schemaVersion: 1;
   status: RefreshStatus;
@@ -53,7 +62,7 @@ export interface RefreshState {
   lastSuccessfulRefreshAt: string | null;
   nextRefreshAllowedAt: string | null;
   refreshInProgress: boolean;
-  lastError: { message: string; code?: string } | null;
+  lastError: RefreshErrorState | null;
   bundle: {
     conceptCount: number;
     warningCount: number;
@@ -68,6 +77,13 @@ export interface SourceRecord {
   manifest: SourceManifest;
   state?: RefreshState;
   bundleDir: string;
+  loadError?: SourceLoadError;
+}
+
+export interface SourceLoadError {
+  message: string;
+  code?: string;
+  sourceDirName?: string;
 }
 
 const SOURCE_NAME_PATTERN = /^[a-z0-9._-]+$/;
@@ -84,7 +100,16 @@ const MANIFEST_KEYS = [
   "refresh",
   "bundle"
 ];
-const CRAWL_KEYS = ["maxPages", "maxDepth", "include", "exclude", "sameOrigin", "respectRobots", "concurrency", "allowPrivateNetwork"];
+const CRAWL_KEYS = [
+  "maxPages",
+  "maxDepth",
+  "include",
+  "exclude",
+  "sameOrigin",
+  "respectRobots",
+  "concurrency",
+  "allowPrivateNetwork"
+];
 const REFRESH_KEYS = ["mode", "maxAgeSeconds", "minIntervalSeconds"];
 const STATE_KEYS = [
   "schemaVersion",
@@ -125,7 +150,10 @@ export function resolveSourceDir(name: string, options: SourceStoreOptions = {})
   return sourceDir;
 }
 
-export function resolveBundleDir(manifest: SourceManifest, options: SourceStoreOptions = {}): string {
+export function resolveBundleDir(
+  manifest: SourceManifest,
+  options: SourceStoreOptions = {}
+): string {
   const sourceDir = resolveSourceDir(manifest.name, options);
   const bundleDir = manifest.bundle.dir;
   if (!bundleDir || bundleDir.trim() === "") {
@@ -135,32 +163,49 @@ export function resolveBundleDir(manifest: SourceManifest, options: SourceStoreO
 
   const resolved = path.resolve(sourceDir, bundleDir);
   if (resolved === sourceDir || !isInsideOrEqual(sourceDir, resolved)) {
-    throw new Error(`Invalid bundle directory for source "${manifest.name}". Relative bundle paths must stay inside the source directory.`);
+    throw new Error(
+      `Invalid bundle directory for source "${manifest.name}". Relative bundle paths must stay inside the source directory.`
+    );
   }
   return resolved;
 }
 
-export async function writeSourceManifest(manifest: SourceManifest, options: SourceStoreOptions = {}): Promise<void> {
+export async function writeSourceManifest(
+  manifest: SourceManifest,
+  options: SourceStoreOptions = {}
+): Promise<void> {
   const sourceDir = resolveSourceDir(manifest.name, options);
   await writeStableJson(path.join(sourceDir, "source.json"), manifest);
 }
 
-export async function readSourceManifest(name: string, options: SourceStoreOptions = {}): Promise<SourceManifest> {
+export async function readSourceManifest(
+  name: string,
+  options: SourceStoreOptions = {}
+): Promise<SourceManifest> {
   const sourceDir = resolveSourceDir(name, options);
-  const manifest = await readJson<SourceManifest>(path.join(sourceDir, "source.json"));
+  const manifest = validateSourceManifest(
+    await readJson<unknown>(path.join(sourceDir, "source.json")),
+    name
+  );
   if (manifest.name !== name) {
     throw new Error(`Source manifest name mismatch: expected "${name}", found "${manifest.name}".`);
   }
-  validateSourceName(manifest.name);
   return manifest;
 }
 
-export async function writeRefreshState(name: string, state: RefreshState, options: SourceStoreOptions = {}): Promise<void> {
+export async function writeRefreshState(
+  name: string,
+  state: RefreshState,
+  options: SourceStoreOptions = {}
+): Promise<void> {
   const sourceDir = resolveSourceDir(name, options);
   await writeStableJson(path.join(sourceDir, "state.json"), state);
 }
 
-export async function readRefreshState(name: string, options: SourceStoreOptions = {}): Promise<RefreshState> {
+export async function readRefreshState(
+  name: string,
+  options: SourceStoreOptions = {}
+): Promise<RefreshState> {
   const sourceDir = resolveSourceDir(name, options);
   return readJson<RefreshState>(path.join(sourceDir, "state.json"));
 }
@@ -178,19 +223,39 @@ export async function listSources(options: SourceStoreOptions = {}): Promise<Sou
   const records: SourceRecord[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
+    let manifest: SourceManifest;
     try {
-      const manifest = await readSourceManifest(entry.name, options);
-      const state = await readRefreshStateIfExists(entry.name, options);
-      records.push({
-        name: manifest.name,
-        dir: resolveSourceDir(manifest.name, options),
-        manifest,
-        state,
-        bundleDir: resolveBundleDir(manifest, options)
-      });
-    } catch {
+      manifest = await readSourceManifest(entry.name, options);
+    } catch (error) {
+      records.push(invalidSourceRecord(sourcesRoot, entry.name, error));
       continue;
     }
+
+    const dir = resolveSourceDir(manifest.name, options);
+    let state: RefreshState | undefined;
+    let loadError: SourceLoadError | undefined;
+    try {
+      state = await readRefreshStateIfExists(entry.name, options);
+    } catch (error) {
+      loadError = errorDetails(error);
+    }
+
+    let bundleDir: string;
+    try {
+      bundleDir = resolveBundleDir(manifest, options);
+    } catch (error) {
+      bundleDir = path.join(dir, "bundle");
+      loadError ??= errorDetails(error);
+    }
+
+    records.push({
+      name: manifest.name,
+      dir,
+      manifest,
+      state,
+      bundleDir,
+      loadError
+    });
   }
 
   return records.sort((first, second) => first.name.localeCompare(second.name));
@@ -205,7 +270,217 @@ function resolveSourcesRoot(options: SourceStoreOptions): string {
   return path.join(resolveOkfyHome(options), "sources");
 }
 
-async function readRefreshStateIfExists(name: string, options: SourceStoreOptions): Promise<RefreshState | undefined> {
+function invalidSourceRecord(sourcesRoot: string, name: string, error: unknown): SourceRecord {
+  const dir = path.join(sourcesRoot, name);
+  const sourceName = fallbackSourceName(name);
+  return {
+    name: sourceName,
+    dir,
+    manifest: fallbackSourceManifest(sourceName),
+    bundleDir: path.join(dir, "bundle"),
+    loadError: errorDetails(error, name)
+  };
+}
+
+function fallbackSourceManifest(name: string): SourceManifest {
+  const timestamp = "1970-01-01T00:00:00.000Z";
+  return {
+    schemaVersion: 1,
+    okfyVersion: "unknown",
+    name,
+    kind: "website",
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    source: {
+      seedUrl: ""
+    },
+    crawl: {
+      maxPages: 0,
+      maxDepth: 0,
+      include: [],
+      exclude: [],
+      sameOrigin: true,
+      respectRobots: true,
+      concurrency: 1,
+      allowPrivateNetwork: false
+    },
+    refresh: {
+      mode: "off",
+      maxAgeSeconds: 0,
+      minIntervalSeconds: 0
+    },
+    bundle: {
+      dir: "bundle"
+    }
+  };
+}
+
+function fallbackSourceName(name: string): string {
+  try {
+    return validateSourceName(name);
+  } catch {
+    const slug = name
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 48);
+    return `invalid-${shortHash(name)}${slug ? `-${slug}` : ""}`;
+  }
+}
+
+function shortHash(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function errorDetails(error: unknown, sourceDirName?: string): SourceLoadError {
+  const withSourceDir = (details: SourceLoadError): SourceLoadError => ({
+    ...details,
+    ...(sourceDirName && sourceDirName !== fallbackSourceName(sourceDirName)
+      ? { sourceDirName }
+      : {})
+  });
+  if (error instanceof Error) {
+    const details: SourceLoadError = { message: error.message };
+    if (isNodeError(error) && error.code) details.code = error.code;
+    return withSourceDir(details);
+  }
+  return withSourceDir({ message: String(error) });
+}
+
+function validateSourceManifest(value: unknown, expectedName: string): SourceManifest {
+  if (!isPlainObject(value))
+    throw new Error(`Invalid source manifest for "${expectedName}": expected object.`);
+
+  const name = requiredString(value, "name", expectedName);
+  validateSourceName(name);
+  if (value.schemaVersion !== 1) {
+    throw new Error(`Invalid source manifest for "${expectedName}": schemaVersion must be 1.`);
+  }
+  if (value.kind !== "website") {
+    throw new Error(`Invalid source manifest for "${expectedName}": kind must be "website".`);
+  }
+
+  const source = requiredObject(value, "source", expectedName);
+  const crawl = requiredObject(value, "crawl", expectedName);
+  const refresh = requiredObject(value, "refresh", expectedName);
+  const bundle = requiredObject(value, "bundle", expectedName);
+  const mode = requiredString(refresh, "mode", expectedName, "refresh");
+  if (!["off", "stale-while-refresh", "blocking"].includes(mode)) {
+    throw new Error(`Invalid source manifest for "${expectedName}": refresh.mode is invalid.`);
+  }
+
+  return {
+    schemaVersion: 1,
+    okfyVersion: requiredString(value, "okfyVersion", expectedName),
+    name,
+    kind: "website",
+    createdAt: requiredString(value, "createdAt", expectedName),
+    updatedAt: requiredString(value, "updatedAt", expectedName),
+    source: {
+      seedUrl: requiredString(source, "seedUrl", expectedName, "source")
+    },
+    crawl: {
+      maxPages: requiredNumber(crawl, "maxPages", expectedName, "crawl"),
+      maxDepth: requiredNumber(crawl, "maxDepth", expectedName, "crawl"),
+      include: requiredStringArray(crawl, "include", expectedName, "crawl"),
+      exclude: requiredStringArray(crawl, "exclude", expectedName, "crawl"),
+      sameOrigin: requiredBoolean(crawl, "sameOrigin", expectedName, "crawl"),
+      respectRobots: requiredBoolean(crawl, "respectRobots", expectedName, "crawl"),
+      concurrency: requiredNumber(crawl, "concurrency", expectedName, "crawl"),
+      allowPrivateNetwork: requiredBoolean(crawl, "allowPrivateNetwork", expectedName, "crawl")
+    },
+    refresh: {
+      mode: mode as RefreshMode,
+      maxAgeSeconds: requiredNumber(refresh, "maxAgeSeconds", expectedName, "refresh"),
+      minIntervalSeconds: requiredNumber(refresh, "minIntervalSeconds", expectedName, "refresh")
+    },
+    bundle: {
+      dir: requiredString(bundle, "dir", expectedName, "bundle")
+    }
+  };
+}
+
+function requiredObject(
+  value: Record<string, unknown>,
+  key: string,
+  sourceName: string,
+  prefix?: string
+): Record<string, unknown> {
+  const found = value[key];
+  if (!isPlainObject(found)) throw invalidManifestField(sourceName, key, "object", prefix);
+  return found;
+}
+
+function requiredString(
+  value: Record<string, unknown>,
+  key: string,
+  sourceName: string,
+  prefix?: string
+): string {
+  const found = value[key];
+  if (typeof found !== "string" || found.trim() === "") {
+    throw invalidManifestField(sourceName, key, "non-empty string", prefix);
+  }
+  return found;
+}
+
+function requiredNumber(
+  value: Record<string, unknown>,
+  key: string,
+  sourceName: string,
+  prefix?: string
+): number {
+  const found = value[key];
+  if (typeof found !== "number" || !Number.isFinite(found)) {
+    throw invalidManifestField(sourceName, key, "number", prefix);
+  }
+  return found;
+}
+
+function requiredBoolean(
+  value: Record<string, unknown>,
+  key: string,
+  sourceName: string,
+  prefix?: string
+): boolean {
+  const found = value[key];
+  if (typeof found !== "boolean") throw invalidManifestField(sourceName, key, "boolean", prefix);
+  return found;
+}
+
+function requiredStringArray(
+  value: Record<string, unknown>,
+  key: string,
+  sourceName: string,
+  prefix?: string
+): string[] {
+  const found = value[key];
+  if (!Array.isArray(found) || !found.every((item) => typeof item === "string")) {
+    throw invalidManifestField(sourceName, key, "string array", prefix);
+  }
+  return found;
+}
+
+function invalidManifestField(
+  sourceName: string,
+  key: string,
+  expected: string,
+  prefix?: string
+): Error {
+  return new Error(
+    `Invalid source manifest for "${sourceName}": ${prefix ? `${prefix}.` : ""}${key} must be ${expected}.`
+  );
+}
+
+async function readRefreshStateIfExists(
+  name: string,
+  options: SourceStoreOptions
+): Promise<RefreshState | undefined> {
   try {
     return await readRefreshState(name, options);
   } catch (error) {
@@ -239,7 +514,8 @@ function orderKeys(value: Record<string, unknown>): string[] {
   if ("okfyVersion" in value) return sortByPreferredOrder(Object.keys(value), MANIFEST_KEYS);
   if (hasKeys(value, CRAWL_KEYS)) return sortByPreferredOrder(Object.keys(value), CRAWL_KEYS);
   if (hasKeys(value, REFRESH_KEYS)) return sortByPreferredOrder(Object.keys(value), REFRESH_KEYS);
-  if (hasKeys(value, STATE_BUNDLE_KEYS)) return sortByPreferredOrder(Object.keys(value), STATE_BUNDLE_KEYS);
+  if (hasKeys(value, STATE_BUNDLE_KEYS))
+    return sortByPreferredOrder(Object.keys(value), STATE_BUNDLE_KEYS);
   if ("seedUrl" in value) return sortByPreferredOrder(Object.keys(value), ["seedUrl"]);
   if ("dir" in value) return sortByPreferredOrder(Object.keys(value), ["dir"]);
   return Object.keys(value).sort((first, second) => first.localeCompare(second));

@@ -20,12 +20,17 @@ afterEach(async () => {
 function manifest(partial: Partial<RefreshSourceManifest> = {}): RefreshSourceManifest {
   return {
     schemaVersion: 1,
+    okfyVersion: "0.3.0",
     name: "stripe",
     kind: "website",
+    createdAt: "2026-06-16T00:00:00.000Z",
+    updatedAt: "2026-06-16T00:00:00.000Z",
     source: { seedUrl: "https://docs.stripe.com/checkout" },
     crawl: {
       maxPages: 3,
       maxDepth: 2,
+      include: [],
+      exclude: [],
       sameOrigin: true,
       respectRobots: true,
       concurrency: 2,
@@ -73,7 +78,13 @@ describe("evaluateFreshness", () => {
       state: state(),
       bundleDir,
       now: new Date("2026-06-16T00:00:30.000Z"),
-      validateBundle: async () => ({ valid: true, issues: [], conceptCount: 2, reservedFileCount: 1, warningCount: 0 })
+      validateBundle: async () => ({
+        valid: true,
+        issues: [],
+        conceptCount: 2,
+        reservedFileCount: 1,
+        warningCount: 0
+      })
     });
 
     expect(result.status).toBe("fresh");
@@ -100,7 +111,13 @@ describe("evaluateFreshness", () => {
         state: state({ lastSuccessfulRefreshAt: "2026-06-15T23:00:00.000Z" }),
         bundleDir,
         now: new Date("2026-06-16T00:01:30.000Z"),
-        validateBundle: async () => ({ valid: true, issues: [], conceptCount: 2, reservedFileCount: 1, warningCount: 0 })
+        validateBundle: async () => ({
+          valid: true,
+          issues: [],
+          conceptCount: 2,
+          reservedFileCount: 1,
+          warningCount: 0
+        })
       })
     ).resolves.toMatchObject({ status: "stale", reason: "exceeded_max_age" });
 
@@ -140,7 +157,13 @@ describe("evaluateFreshness", () => {
         }),
         bundleDir,
         now: new Date("2026-06-16T00:01:30.000Z"),
-        validateBundle: async () => ({ valid: true, issues: [], conceptCount: 2, reservedFileCount: 1, warningCount: 0 })
+        validateBundle: async () => ({
+          valid: true,
+          issues: [],
+          conceptCount: 2,
+          reservedFileCount: 1,
+          warningCount: 0
+        })
       })
     ).resolves.toMatchObject({ status: "stale", reason: "latest_refresh_failed" });
   });
@@ -163,7 +186,13 @@ describe("refreshSource", () => {
       sourceDir: root,
       bundleDir,
       now: new Date("2026-06-16T00:00:30.000Z"),
-      validateBundle: async () => ({ valid: true, issues: [], conceptCount: 2, reservedFileCount: 1, warningCount: 0 }),
+      validateBundle: async () => ({
+        valid: true,
+        issues: [],
+        conceptCount: 2,
+        reservedFileCount: 1,
+        warningCount: 0
+      }),
       crawlRunner: async () => {
         throw new Error("crawler should not run for a fresh bundle");
       },
@@ -205,7 +234,13 @@ describe("refreshSource", () => {
       sourceDir: root,
       bundleDir,
       now: new Date("2026-06-16T00:00:30.000Z"),
-      validateBundle: async () => ({ valid: true, issues: [], conceptCount: 2, reservedFileCount: 1, warningCount: 0 }),
+      validateBundle: async () => ({
+        valid: true,
+        issues: [],
+        conceptCount: 2,
+        reservedFileCount: 1,
+        warningCount: 0
+      }),
       crawlRunner: async () => {
         throw new Error("crawler should not run while throttled");
       },
@@ -270,7 +305,13 @@ describe("refreshSource", () => {
       },
       validateBundle: async (dir) => {
         if (dir === bundleDir) {
-          return { valid: true, issues: [], conceptCount: 1, reservedFileCount: 1, warningCount: 0 };
+          return {
+            valid: true,
+            issues: [],
+            conceptCount: 1,
+            reservedFileCount: 1,
+            warningCount: 0
+          };
         }
         expect(dir).toBe(crawlOutDir);
         return { valid: true, issues: [], conceptCount: 1, reservedFileCount: 1, warningCount: 0 };
@@ -303,7 +344,9 @@ describe("refreshSource", () => {
     expect(crawled).toBe(true);
     expect(result).toMatchObject({ status: "fresh", skipped: false });
     await expect(fs.readFile(path.join(bundleDir, "new.md"), "utf8")).resolves.toBe("new bundle\n");
-    await expect(fs.access(path.join(bundleDir, "old.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.access(path.join(bundleDir, "old.md"))).rejects.toMatchObject({
+      code: "ENOENT"
+    });
     await expect(fs.access(crawlOutDir)).rejects.toMatchObject({ code: "ENOENT" });
     expect(writes.map((item) => item.status)).toEqual(["refreshing", "fresh"]);
     expect(writes.at(-1)).toMatchObject({
@@ -345,7 +388,13 @@ describe("refreshSource", () => {
       },
       validateBundle: async (dir) => {
         if (dir === bundleDir) {
-          return { valid: true, issues: [], conceptCount: 1, reservedFileCount: 1, warningCount: 0 };
+          return {
+            valid: true,
+            issues: [],
+            conceptCount: 1,
+            reservedFileCount: 1,
+            warningCount: 0
+          };
         }
         throw new Error("validator should not run after crawl failure");
       },
@@ -371,7 +420,9 @@ describe("refreshSource", () => {
       }
     });
     await expect(fs.readFile(path.join(bundleDir, "old.md"), "utf8")).resolves.toBe("old bundle\n");
-    await expect(fs.access(path.join(bundleDir, "new.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.access(path.join(bundleDir, "new.md"))).rejects.toMatchObject({
+      code: "ENOENT"
+    });
     await expect(fs.access(crawlOutDir)).rejects.toMatchObject({ code: "ENOENT" });
     expect(writes.map((item) => item.status)).toEqual(["refreshing", "failed"]);
     expect(writes.at(-1)).toMatchObject({
@@ -455,7 +506,9 @@ describe("refreshSource", () => {
       crawlResult: { dryRunPages: ["https://docs.stripe.com/checkout"] }
     });
     await expect(fs.readFile(path.join(bundleDir, "old.md"), "utf8")).resolves.toBe("old bundle\n");
-    await expect(fs.access(path.join(bundleDir, "would-not-activate.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.access(path.join(bundleDir, "would-not-activate.md"))).rejects.toMatchObject({
+      code: "ENOENT"
+    });
     await expect(fs.readdir(root)).resolves.toEqual(["bundle"]);
     expect(writes).toEqual([]);
   });
@@ -464,7 +517,11 @@ describe("refreshSource", () => {
     const root = await tempOut();
     const bundleDir = path.join(root, "bundle");
     await fs.mkdir(bundleDir);
-    await fs.writeFile(path.join(root, ".refresh.lock"), JSON.stringify({ pid: 12345, createdAt: "2026-06-16T00:20:00.000Z" }), "utf8");
+    await fs.writeFile(
+      path.join(root, ".refresh.lock"),
+      JSON.stringify({ pid: 12345, createdAt: "2026-06-16T00:20:00.000Z" }),
+      "utf8"
+    );
     const writes: RefreshState[] = [];
 
     const result = await refreshSource({
@@ -479,7 +536,13 @@ describe("refreshSource", () => {
       force: true,
       staleLockTimeoutMs: 60_000,
       now: new Date("2026-06-16T00:20:30.000Z"),
-      validateBundle: async () => ({ valid: true, issues: [], conceptCount: 1, reservedFileCount: 1, warningCount: 0 }),
+      validateBundle: async () => ({
+        valid: true,
+        issues: [],
+        conceptCount: 1,
+        reservedFileCount: 1,
+        warningCount: 0
+      }),
       crawlRunner: async () => {
         throw new Error("crawler should not run while another refresh holds the lock");
       },
@@ -510,7 +573,11 @@ describe("refreshSource", () => {
     const bundleDir = path.join(root, "bundle");
     await fs.mkdir(bundleDir);
     await fs.writeFile(path.join(bundleDir, "old.md"), "old bundle\n", "utf8");
-    await fs.writeFile(path.join(root, ".refresh.lock"), JSON.stringify({ pid: 12345, createdAt: "2026-06-16T00:00:00.000Z" }), "utf8");
+    await fs.writeFile(
+      path.join(root, ".refresh.lock"),
+      JSON.stringify({ pid: 12345, createdAt: "2026-06-16T00:00:00.000Z" }),
+      "utf8"
+    );
     let crawlOutDir = "";
 
     const result = await refreshSource({
@@ -533,7 +600,13 @@ describe("refreshSource", () => {
       },
       validateBundle: async (dir) => {
         if (dir === bundleDir) {
-          return { valid: true, issues: [], conceptCount: 1, reservedFileCount: 1, warningCount: 0 };
+          return {
+            valid: true,
+            issues: [],
+            conceptCount: 1,
+            reservedFileCount: 1,
+            warningCount: 0
+          };
         }
         expect(dir).toBe(crawlOutDir);
         return { valid: true, issues: [], conceptCount: 1, reservedFileCount: 1, warningCount: 0 };
@@ -557,6 +630,8 @@ describe("refreshSource", () => {
 
     expect(result).toMatchObject({ status: "fresh", skipped: false });
     await expect(fs.readFile(path.join(bundleDir, "new.md"), "utf8")).resolves.toBe("new bundle\n");
-    await expect(fs.access(path.join(root, ".refresh.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.access(path.join(root, ".refresh.lock"))).rejects.toMatchObject({
+      code: "ENOENT"
+    });
   });
 });

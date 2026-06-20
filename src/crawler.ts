@@ -3,8 +3,16 @@ import pLimit from "p-limit";
 import * as cheerio from "cheerio";
 import { normalizeDocument } from "./normalize.js";
 import { writeOkfBundle } from "./writer.js";
+import { okfyUserAgent } from "./metadata.js";
 import { matchesAnyPattern } from "./util/match.js";
-import { assertPublicNetworkUrl, canonicalizeUrl, isHttpUrl, isPrivateNetworkUrl, resolvesToPrivateNetwork, sameOrigin } from "./util/url.js";
+import {
+  assertPublicNetworkUrl,
+  canonicalizeUrl,
+  isHttpUrl,
+  isPrivateNetworkUrl,
+  resolvesToPrivateNetwork,
+  sameOrigin
+} from "./util/url.js";
 import type { NormalizedDocument, RawDocument } from "./types.js";
 
 export type CrawlOptions = {
@@ -29,7 +37,14 @@ export type CrawlOptions = {
 export type CrawlProgressEvent =
   | { type: "start"; seed: string; maxPages: number; maxDepth: number }
   | { type: "fetch"; url: string; fetched: number; queued: number; maxPages: number }
-  | { type: "fetched"; url: string; fetched: number; queued: number; discovered: number; maxPages: number }
+  | {
+      type: "fetched";
+      url: string;
+      fetched: number;
+      queued: number;
+      discovered: number;
+      maxPages: number;
+    }
   | { type: "skipped"; url: string; fetched: number; queued: number; maxPages: number }
   | { type: "failed"; url: string; fetched: number; queued: number; maxPages: number }
   | { type: "writing"; concepts: number; outDir: string };
@@ -43,7 +58,7 @@ export type CrawlResult = {
   dryRunPages?: string[];
 };
 
-const USER_AGENT = "okfy/0.1 (+https://github.com/0dust/OKFy)";
+const USER_AGENT = okfyUserAgent();
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 
 type FetchTextOptions = {
@@ -57,10 +72,17 @@ function isRedirect(status: number): boolean {
 
 function isSecurityRejection(error: unknown): boolean {
   const message = error instanceof Error ? error.message : "";
-  return message.includes("Private network crawl target rejected") || message.includes("Cross-origin redirect rejected");
+  return (
+    message.includes("Private network crawl target rejected") ||
+    message.includes("Cross-origin redirect rejected")
+  );
 }
 
-async function fetchWithRedirects(url: string, options: FetchTextOptions, signal: AbortSignal): Promise<Response> {
+async function fetchWithRedirects(
+  url: string,
+  options: FetchTextOptions,
+  signal: AbortSignal
+): Promise<Response> {
   let current = url;
   for (let redirectCount = 0; redirectCount <= 10; redirectCount += 1) {
     if (!options.allowPrivateNetwork) await assertPublicNetworkUrl(current);
@@ -80,7 +102,10 @@ async function fetchWithRedirects(url: string, options: FetchTextOptions, signal
   throw new Error(`Too many redirects for ${url}`);
 }
 
-async function fetchText(url: string, options: FetchTextOptions = {}): Promise<{ text: string; contentType: string }> {
+async function fetchText(
+  url: string,
+  options: FetchTextOptions = {}
+): Promise<{ text: string; contentType: string }> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
   try {
@@ -98,7 +123,8 @@ async function fetchText(url: string, options: FetchTextOptions = {}): Promise<{
         const length = Number(response.headers.get("content-length") ?? "0");
         if (length > MAX_RESPONSE_BYTES) throw new Error(`Response too large for ${url}`);
         const text = await response.text();
-        if (Buffer.byteLength(text, "utf8") > MAX_RESPONSE_BYTES) throw new Error(`Response too large for ${url}`);
+        if (Buffer.byteLength(text, "utf8") > MAX_RESPONSE_BYTES)
+          throw new Error(`Response too large for ${url}`);
         return { text, contentType: response.headers.get("content-type") ?? "" };
       } catch (error: any) {
         lastError = error;
@@ -112,7 +138,10 @@ async function fetchText(url: string, options: FetchTextOptions = {}): Promise<{
   }
 }
 
-async function loadRobots(seedUrl: string, enabled: boolean): Promise<ReturnType<typeof robotsParser> | undefined> {
+async function loadRobots(
+  seedUrl: string,
+  enabled: boolean
+): Promise<ReturnType<typeof robotsParser> | undefined> {
   if (!enabled) return undefined;
   const origin = new URL(seedUrl).origin;
   try {
@@ -124,7 +153,12 @@ async function loadRobots(seedUrl: string, enabled: boolean): Promise<ReturnType
   }
 }
 
-function shouldVisit(url: string, seed: string, options: CrawlOptions, robots?: ReturnType<typeof robotsParser>): boolean {
+function shouldVisit(
+  url: string,
+  seed: string,
+  options: CrawlOptions,
+  robots?: ReturnType<typeof robotsParser>
+): boolean {
   if (!isHttpUrl(url)) return false;
   if ((options.sameOrigin ?? true) && !sameOrigin(url, seed)) return false;
   if (!options.allowPrivateNetwork && isPrivateNetworkUrl(url)) return false;
@@ -157,7 +191,9 @@ function extractRawHtmlLinks(raw: string): Array<{ href: string; text: string }>
 export async function crawlWebsite(options: CrawlOptions): Promise<CrawlResult> {
   const seed = canonicalizeUrl(options.seedUrl);
   if (!options.allowPrivateNetwork && isPrivateNetworkUrl(seed)) {
-    throw new Error("Private network crawl target rejected. Use --allow-private-network for trusted local fixtures.");
+    throw new Error(
+      "Private network crawl target rejected. Use --allow-private-network for trusted local fixtures."
+    );
   }
   if (!options.allowPrivateNetwork) await assertPublicNetworkUrl(seed);
   const maxPages = options.maxPages ?? 100;
@@ -182,15 +218,27 @@ export async function crawlWebsite(options: CrawlOptions): Promise<CrawlResult> 
           visited.add(item.url);
           if (!shouldVisit(item.url, seed, options, robots)) {
             skipped += 1;
-            options.onProgress?.({ type: "skipped", url: item.url, fetched: documents.length, queued: queue.length, maxPages });
+            options.onProgress?.({
+              type: "skipped",
+              url: item.url,
+              fetched: documents.length,
+              queued: queue.length,
+              maxPages
+            });
             return;
           }
           planned.push(item.url);
-          options.onProgress?.({ type: "fetch", url: item.url, fetched: documents.length, queued: queue.length, maxPages });
+          options.onProgress?.({
+            type: "fetch",
+            url: item.url,
+            fetched: documents.length,
+            queued: queue.length,
+            maxPages
+          });
           try {
             const fetched = await fetchText(item.url, {
               allowPrivateNetwork: options.allowPrivateNetwork,
-              sameOriginSeed: options.sameOrigin ?? true ? seed : undefined
+              sameOriginSeed: (options.sameOrigin ?? true) ? seed : undefined
             });
             const contentType = contentTypeFromHeader(fetched.contentType);
             if (!contentType) {
@@ -208,7 +256,10 @@ export async function crawlWebsite(options: CrawlOptions): Promise<CrawlResult> 
             if (!options.dryRun) documents.push(doc);
             let discovered = 0;
             if (item.depth < maxDepth) {
-              const links = options.dryRun && contentType === "html" ? extractRawHtmlLinks(fetched.text) : doc.links;
+              const links =
+                options.dryRun && contentType === "html"
+                  ? extractRawHtmlLinks(fetched.text)
+                  : doc.links;
               for (const link of links) {
                 try {
                   const next = canonicalizeUrl(link.href, item.url);
@@ -238,7 +289,13 @@ export async function crawlWebsite(options: CrawlOptions): Promise<CrawlResult> 
           } catch (error) {
             if (isSecurityRejection(error)) throw error;
             failed += 1;
-            options.onProgress?.({ type: "failed", url: item.url, fetched: documents.length, queued: queue.length, maxPages });
+            options.onProgress?.({
+              type: "failed",
+              url: item.url,
+              fetched: documents.length,
+              queued: queue.length,
+              maxPages
+            });
           }
         })
       )
@@ -247,7 +304,14 @@ export async function crawlWebsite(options: CrawlOptions): Promise<CrawlResult> 
   }
 
   if (options.dryRun) {
-    return { pagesFetched: planned.length, skipped, failed, written: [], documents: [], dryRunPages: planned.slice(0, maxPages) };
+    return {
+      pagesFetched: planned.length,
+      skipped,
+      failed,
+      written: [],
+      documents: [],
+      dryRunPages: planned.slice(0, maxPages)
+    };
   }
   if (documents.length === 0) throw new Error("Crawl generated zero concepts.");
   options.onProgress?.({ type: "writing", concepts: documents.length, outDir: options.outDir });

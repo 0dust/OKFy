@@ -3,7 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { isReservedOkfPath } from "./okf.js";
 import { canonicalizeUrl } from "./util/url.js";
-import { ensureMarkdownPath, relativeMarkdownLink, toPosixPath, urlToOutputPath } from "./util/path.js";
+import {
+  ensureMarkdownPath,
+  relativeMarkdownLink,
+  toPosixPath,
+  urlToOutputPath
+} from "./util/path.js";
 import { descriptionFromMarkdown } from "./normalize.js";
 import type { NormalizedDocument } from "./types.js";
 
@@ -58,7 +63,11 @@ function assignOutputPaths(docs: NormalizedDocument[]): Map<string, string> {
   const used = new Set<string>();
   const result = new Map<string, string>();
   for (const doc of docs) {
-    const base = safeConceptOutputPath(doc.resource ? urlToOutputPath(doc.resource) : ensureMarkdownPath(doc.sourcePath ?? doc.sourceId));
+    const base = safeConceptOutputPath(
+      doc.resource
+        ? urlToOutputPath(doc.resource)
+        : ensureMarkdownPath(doc.sourcePath ?? doc.sourceId)
+    );
     let candidate = base;
     let index = 2;
     while (used.has(candidate)) {
@@ -76,7 +85,8 @@ function assignOutputPaths(docs: NormalizedDocument[]): Map<string, string> {
 function safeConceptOutputPath(candidate: string): string {
   if (!isReservedOkfPath(candidate)) return candidate;
   const parsed = path.posix.parse(candidate);
-  const safeName = parsed.name.toLowerCase() === "log" ? "change-log" : parsed.dir ? "overview" : "home";
+  const safeName =
+    parsed.name.toLowerCase() === "log" ? "change-log" : parsed.dir ? "overview" : "home";
   return path.posix.join(parsed.dir, `${safeName}.md`);
 }
 
@@ -98,7 +108,8 @@ function rewriteLinks(doc: NormalizedDocument, sourceToOutput: Map<string, strin
       try {
         const key = canonicalizeUrl(href, doc.resource);
         const target = sourceToOutput.get(key);
-        if (target && doc.outputPath) return `[${text}](${relativeMarkdownLink(doc.outputPath, target)}${suffix})`;
+        if (target && doc.outputPath)
+          return `[${text}](${relativeMarkdownLink(doc.outputPath, target)}${suffix})`;
         return `[${text}](${key}${suffix})`;
       } catch {
         return full;
@@ -106,10 +117,13 @@ function rewriteLinks(doc: NormalizedDocument, sourceToOutput: Map<string, strin
     }
 
     if (!href.startsWith("#") && doc.sourcePath) {
-      const abs = toPosixPath(path.posix.normalize(path.posix.join(path.posix.dirname(doc.sourcePath), href)));
+      const abs = toPosixPath(
+        path.posix.normalize(path.posix.join(path.posix.dirname(doc.sourcePath), href))
+      );
       const noHash = abs.split("#")[0] ?? abs;
       const target = sourceToOutput.get(noHash);
-      if (target && doc.outputPath) return `[${text}](${relativeMarkdownLink(doc.outputPath, target)}${suffix})`;
+      if (target && doc.outputPath)
+        return `[${text}](${relativeMarkdownLink(doc.outputPath, target)}${suffix})`;
     }
     return full;
   });
@@ -143,7 +157,10 @@ async function findRepoRoot(start: string): Promise<string | undefined> {
   }
 }
 
-export async function assertSafeForceOutDir(outDir: string, options: WriteBundleOptions): Promise<void> {
+export async function assertSafeForceOutDir(
+  outDir: string,
+  options: WriteBundleOptions
+): Promise<void> {
   if (options.dangerouslyAllowUnsafeOutput) return;
   if (outDir.trim() === "") throw new Error("Unsafe output directory for --force: empty path.");
   const rawResolved = path.resolve(outDir);
@@ -168,7 +185,10 @@ export async function assertSafeForceOutDir(outDir: string, options: WriteBundle
     forbidden.set(path.dirname(inputReal), "parent of input path");
   }
   const reason = forbidden.get(realOutDir);
-  if (reason) throw new Error(`Unsafe output directory for --force: refusing to delete ${reason} (${realOutDir}).`);
+  if (reason)
+    throw new Error(
+      `Unsafe output directory for --force: refusing to delete ${reason} (${realOutDir}).`
+    );
 }
 
 async function ensureCleanOutDir(outDir: string, options: WriteBundleOptions): Promise<void> {
@@ -176,7 +196,8 @@ async function ensureCleanOutDir(outDir: string, options: WriteBundleOptions): P
   try {
     const entries = await fs.readdir(outDir);
     if (entries.length > 0) {
-      if (!options.force) throw new Error(`Output directory is not empty: ${outDir}. Use --force to overwrite.`);
+      if (!options.force)
+        throw new Error(`Output directory is not empty: ${outDir}. Use --force to overwrite.`);
       await fs.rm(outDir, { recursive: true, force: true });
     }
   } catch (error: any) {
@@ -205,30 +226,48 @@ function indexTitle(dir: string, options: WriteBundleOptions): string {
     .join(" ");
 }
 
-async function writePlainIndex(outDir: string, dir: string, concepts: WrittenConcept[], options: WriteBundleOptions): Promise<string> {
+async function writePlainIndex(
+  outDir: string,
+  dir: string,
+  concepts: WrittenConcept[],
+  options: WriteBundleOptions
+): Promise<string> {
   const indexPath = dir === "." ? "index.md" : path.posix.join(dir, "index.md");
-  const entries = (dir === "." ? concepts : concepts.filter((concept) => path.posix.dirname(concept.relPath) === dir))
+  const entries = (
+    dir === "."
+      ? concepts
+      : concepts.filter((concept) => path.posix.dirname(concept.relPath) === dir)
+  )
     .slice()
     .sort((a, b) => a.relPath.localeCompare(b.relPath));
   const lines = [
     `# ${indexTitle(dir, options)}`,
     "",
-    ...entries.map((concept) => `* [${concept.title}](${markdownLink(dir, concept.relPath)}) - ${concept.description}`)
+    ...entries.map(
+      (concept) =>
+        `* [${concept.title}](${markdownLink(dir, concept.relPath)}) - ${concept.description}`
+    )
   ];
   await fs.mkdir(path.dirname(path.join(outDir, indexPath)), { recursive: true });
   await fs.writeFile(path.join(outDir, indexPath), `${lines.join("\n").trimEnd()}\n`, "utf8");
   return indexPath;
 }
 
-export async function writeOkfBundle(docs: NormalizedDocument[], options: WriteBundleOptions): Promise<string[]> {
+export async function writeOkfBundle(
+  docs: NormalizedDocument[],
+  options: WriteBundleOptions
+): Promise<string[]> {
   if (docs.length === 0) throw new Error("No documents to write.");
   await ensureCleanOutDir(options.outDir, options);
   const timestamp = options.timestamp ?? new Date().toISOString();
-  const sourceToOutput = assignOutputPaths(docs);
+  const orderedDocs = docs
+    .slice()
+    .sort((first, second) => sourceKey(first).localeCompare(sourceKey(second)));
+  const sourceToOutput = assignOutputPaths(orderedDocs);
   const written: string[] = [];
   const concepts: WrittenConcept[] = [];
 
-  for (const doc of docs) {
+  for (const doc of orderedDocs) {
     const relPath = doc.outputPath ?? "index.md";
     const absolute = path.join(options.outDir, relPath);
     await fs.mkdir(path.dirname(absolute), { recursive: true });
@@ -243,7 +282,11 @@ export async function writeOkfBundle(docs: NormalizedDocument[], options: WriteB
   }
 
   written.push(await writePlainIndex(options.outDir, ".", concepts, options));
-  const dirs = [...new Set(concepts.map((concept) => path.posix.dirname(concept.relPath)).filter((dir) => dir !== "."))].sort();
+  const dirs = [
+    ...new Set(
+      concepts.map((concept) => path.posix.dirname(concept.relPath)).filter((dir) => dir !== ".")
+    )
+  ].sort();
   for (const dir of dirs) {
     written.push(await writePlainIndex(options.outDir, dir, concepts, options));
   }

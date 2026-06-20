@@ -3,7 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { BundleSearch } from "../src/search.js";
-import { writeRefreshState, writeSourceManifest, type RefreshState, type SourceManifest } from "../src/source-store.js";
+import {
+  writeRefreshState,
+  writeSourceManifest,
+  type RefreshState,
+  type SourceManifest
+} from "../src/source-store.js";
 import {
   WorkspaceError,
   WorkspaceSearch,
@@ -85,13 +90,24 @@ async function registerSource(okfyHome: string, name: string): Promise<void> {
 
 async function writeBundle(
   dir: string,
-  options: { id?: string; title: string; type: string; body: string; resource?: string; tags?: string[] }
+  options: {
+    id?: string;
+    title: string;
+    type: string;
+    body: string;
+    resource?: string;
+    tags?: string[];
+  }
 ): Promise<void> {
   const id = options.id ?? "guides/quickstart";
   const conceptPath = path.join(dir, `${id}.md`);
   await fs.rm(dir, { recursive: true, force: true });
   await fs.mkdir(path.dirname(conceptPath), { recursive: true });
-  await fs.writeFile(path.join(dir, "index.md"), `# ${options.title}\n\n* [${options.title}](${id}.md)\n`, "utf8");
+  await fs.writeFile(
+    path.join(dir, "index.md"),
+    `# ${options.title}\n\n* [${options.title}](${id}.md)\n`,
+    "utf8"
+  );
   await fs.writeFile(
     conceptPath,
     `---\ntype: "${options.type}"\ntitle: "${options.title}"\ndescription: "${options.body}"\nresource: "${options.resource ?? `https://docs.example.com/${id}`}"\ntags:\n${(options.tags ?? ["workspace"]).map((tag) => `  - "${tag}"`).join("\n")}\ntimestamp: "2026-06-20T00:00:00.000Z"\n---\n\n# ${options.title}\n\n${options.body}\n`,
@@ -106,7 +122,10 @@ describe("workspace source resolution", () => {
     await registerSource(okfyHome, "clerk");
     await registerSource(okfyHome, "supabase");
 
-    const sourceSet = await resolveWorkspaceSources({ names: ["stripe", "clerk", "supabase"] }, { okfyHome });
+    const sourceSet = await resolveWorkspaceSources(
+      { names: ["stripe", "clerk", "supabase"] },
+      { okfyHome }
+    );
 
     expect(sourceSet.sourceNames).toEqual(["stripe", "clerk", "supabase"]);
     expect(sourceSet.records.map((record) => record.bundleDir)).toEqual([
@@ -120,13 +139,17 @@ describe("workspace source resolution", () => {
     const okfyHome = await tempHome();
     await registerSource(okfyHome, "stripe");
 
-    await expect(resolveWorkspaceSources({ names: ["stripe", "stripe"] }, { okfyHome })).rejects.toMatchObject({
+    await expect(
+      resolveWorkspaceSources({ names: ["stripe", "stripe"] }, { okfyHome })
+    ).rejects.toMatchObject({
       code: "duplicate_source"
     });
-    await expect(resolveWorkspaceSources({ names: ["stripe", "missing"] }, { okfyHome })).rejects.toThrow(/missing|ENOENT/i);
+    await expect(
+      resolveWorkspaceSources({ names: ["stripe", "missing"] }, { okfyHome })
+    ).rejects.toThrow(/missing|ENOENT/i);
   });
 
-  it("resolves --all in deterministic order and fails visibly on corrupt directories", async () => {
+  it("resolves --all in deterministic order with visible corrupt source errors", async () => {
     const okfyHome = await tempHome();
     await registerSource(okfyHome, "stripe");
     await registerSource(okfyHome, "clerk");
@@ -136,14 +159,27 @@ describe("workspace source resolution", () => {
     });
 
     await fs.mkdir(path.join(okfyHome, "sources", "broken"), { recursive: true });
-    await expect(resolveWorkspaceSources({ all: true }, { okfyHome })).rejects.toThrow(/broken|source\.json|ENOENT/i);
+    await expect(resolveWorkspaceSources({ all: true }, { okfyHome })).resolves.toMatchObject({
+      sourceNames: ["broken", "clerk", "stripe"],
+      records: [
+        {
+          name: "broken",
+          loadError: { code: "ENOENT" }
+        },
+        { name: "clerk" },
+        { name: "stripe" }
+      ]
+    });
   });
 
   it("resolves a minimal local workspace profile", async () => {
     const okfyHome = await tempHome();
     await registerSource(okfyHome, "stripe");
     await registerSource(okfyHome, "clerk");
-    await writeWorkspaceProfile({ schemaVersion: 1, name: "payments", sources: ["stripe", "clerk"] }, { okfyHome });
+    await writeWorkspaceProfile(
+      { schemaVersion: 1, name: "payments", sources: ["stripe", "clerk"] },
+      { okfyHome }
+    );
 
     const sourceSet = await resolveWorkspaceSources({ profileName: "payments" }, { okfyHome });
 
@@ -155,13 +191,19 @@ describe("workspace source resolution", () => {
     const okfyHome = await tempHome();
     await registerSource(okfyHome, "stripe");
     await registerSource(okfyHome, "clerk");
-    await writeWorkspaceProfile({ schemaVersion: 1, name: "payments", sources: ["clerk"] }, { okfyHome });
-
-    await expect(resolveWorkspaceSources({ names: ["stripe"], profileName: "payments" }, { okfyHome })).rejects.toThrow(
-      /choose one workspace source selection/i
+    await writeWorkspaceProfile(
+      { schemaVersion: 1, name: "payments", sources: ["clerk"] },
+      { okfyHome }
     );
+
     await expect(
-      resolveWorkspaceSources({ names: ["stripe"], profile: { schemaVersion: 1, name: "payments", sources: ["clerk"] } }, { okfyHome })
+      resolveWorkspaceSources({ names: ["stripe"], profileName: "payments" }, { okfyHome })
+    ).rejects.toThrow(/choose one workspace source selection/i);
+    await expect(
+      resolveWorkspaceSources(
+        { names: ["stripe"], profile: { schemaVersion: 1, name: "payments", sources: ["clerk"] } },
+        { okfyHome }
+      )
     ).rejects.toThrow(/choose one workspace source selection/i);
   });
 });
@@ -196,7 +238,9 @@ describe("workspace search", () => {
 
   it("labels search results with source identity and supports source filters", async () => {
     const okfyHome = await tempHome();
-    const workspace = new WorkspaceSearch(await searchSources(okfyHome), { availableSourceNames: ["stripe", "clerk", "supabase"] });
+    const workspace = new WorkspaceSearch(await searchSources(okfyHome), {
+      availableSourceNames: ["stripe", "clerk", "supabase"]
+    });
 
     const all = workspace.search("quickstart", { limit: 10 });
     expect(all.map((result) => [result.sourceName, result.id]).sort()).toEqual([
@@ -215,7 +259,9 @@ describe("workspace search", () => {
 
   it("requires source-aware reads when an id exists in more than one source", async () => {
     const okfyHome = await tempHome();
-    const workspace = new WorkspaceSearch(await searchSources(okfyHome), { availableSourceNames: ["stripe", "clerk"] });
+    const workspace = new WorkspaceSearch(await searchSources(okfyHome), {
+      availableSourceNames: ["stripe", "clerk"]
+    });
 
     expect(() => workspace.getConcept({ id: "guides/quickstart" })).toThrow(WorkspaceError);
     try {
@@ -236,7 +282,9 @@ describe("workspace search", () => {
 
   it("returns source_not_in_workspace for a valid but unselected source filter", async () => {
     const okfyHome = await tempHome();
-    const workspace = new WorkspaceSearch(await searchSources(okfyHome), { availableSourceNames: ["stripe", "clerk", "supabase"] });
+    const workspace = new WorkspaceSearch(await searchSources(okfyHome), {
+      availableSourceNames: ["stripe", "clerk", "supabase"]
+    });
 
     expect(() => workspace.search("anything", { source: "supabase" })).toThrow(WorkspaceError);
     try {

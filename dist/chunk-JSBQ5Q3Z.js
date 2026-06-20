@@ -274,7 +274,9 @@ function assignOutputPaths(docs) {
   const used = /* @__PURE__ */ new Set();
   const result = /* @__PURE__ */ new Map();
   for (const doc of docs) {
-    const base = safeConceptOutputPath(doc.resource ? urlToOutputPath(doc.resource) : ensureMarkdownPath(doc.sourcePath ?? doc.sourceId));
+    const base = safeConceptOutputPath(
+      doc.resource ? urlToOutputPath(doc.resource) : ensureMarkdownPath(doc.sourcePath ?? doc.sourceId)
+    );
     let candidate = base;
     let index = 2;
     while (used.has(candidate)) {
@@ -311,17 +313,21 @@ function rewriteLinks(doc, sourceToOutput) {
       try {
         const key = canonicalizeUrl(href, doc.resource);
         const target = sourceToOutput.get(key);
-        if (target && doc.outputPath) return `[${text}](${relativeMarkdownLink(doc.outputPath, target)}${suffix})`;
+        if (target && doc.outputPath)
+          return `[${text}](${relativeMarkdownLink(doc.outputPath, target)}${suffix})`;
         return `[${text}](${key}${suffix})`;
       } catch {
         return full;
       }
     }
     if (!href.startsWith("#") && doc.sourcePath) {
-      const abs = toPosixPath(path3.posix.normalize(path3.posix.join(path3.posix.dirname(doc.sourcePath), href)));
+      const abs = toPosixPath(
+        path3.posix.normalize(path3.posix.join(path3.posix.dirname(doc.sourcePath), href))
+      );
       const noHash = abs.split("#")[0] ?? abs;
       const target = sourceToOutput.get(noHash);
-      if (target && doc.outputPath) return `[${text}](${relativeMarkdownLink(doc.outputPath, target)}${suffix})`;
+      if (target && doc.outputPath)
+        return `[${text}](${relativeMarkdownLink(doc.outputPath, target)}${suffix})`;
     }
     return full;
   });
@@ -376,14 +382,18 @@ async function assertSafeForceOutDir(outDir, options) {
     forbidden.set(path3.dirname(inputReal), "parent of input path");
   }
   const reason = forbidden.get(realOutDir);
-  if (reason) throw new Error(`Unsafe output directory for --force: refusing to delete ${reason} (${realOutDir}).`);
+  if (reason)
+    throw new Error(
+      `Unsafe output directory for --force: refusing to delete ${reason} (${realOutDir}).`
+    );
 }
 async function ensureCleanOutDir(outDir, options) {
   if (options.force) await assertSafeForceOutDir(outDir, options);
   try {
     const entries = await fs.readdir(outDir);
     if (entries.length > 0) {
-      if (!options.force) throw new Error(`Output directory is not empty: ${outDir}. Use --force to overwrite.`);
+      if (!options.force)
+        throw new Error(`Output directory is not empty: ${outDir}. Use --force to overwrite.`);
       await fs.rm(outDir, { recursive: true, force: true });
     }
   } catch (error) {
@@ -410,7 +420,9 @@ async function writePlainIndex(outDir, dir, concepts, options) {
   const lines = [
     `# ${indexTitle(dir, options)}`,
     "",
-    ...entries.map((concept) => `* [${concept.title}](${markdownLink(dir, concept.relPath)}) - ${concept.description}`)
+    ...entries.map(
+      (concept) => `* [${concept.title}](${markdownLink(dir, concept.relPath)}) - ${concept.description}`
+    )
   ];
   await fs.mkdir(path3.dirname(path3.join(outDir, indexPath)), { recursive: true });
   await fs.writeFile(path3.join(outDir, indexPath), `${lines.join("\n").trimEnd()}
@@ -421,10 +433,11 @@ async function writeOkfBundle(docs, options) {
   if (docs.length === 0) throw new Error("No documents to write.");
   await ensureCleanOutDir(options.outDir, options);
   const timestamp = options.timestamp ?? (/* @__PURE__ */ new Date()).toISOString();
-  const sourceToOutput = assignOutputPaths(docs);
+  const orderedDocs = docs.slice().sort((first, second) => sourceKey(first).localeCompare(sourceKey(second)));
+  const sourceToOutput = assignOutputPaths(orderedDocs);
   const written = [];
   const concepts = [];
-  for (const doc of docs) {
+  for (const doc of orderedDocs) {
     const relPath = doc.outputPath ?? "index.md";
     const absolute = path3.join(options.outDir, relPath);
     await fs.mkdir(path3.dirname(absolute), { recursive: true });
@@ -439,11 +452,54 @@ async function writeOkfBundle(docs, options) {
     });
   }
   written.push(await writePlainIndex(options.outDir, ".", concepts, options));
-  const dirs = [...new Set(concepts.map((concept) => path3.posix.dirname(concept.relPath)).filter((dir) => dir !== "."))].sort();
+  const dirs = [
+    ...new Set(
+      concepts.map((concept) => path3.posix.dirname(concept.relPath)).filter((dir) => dir !== ".")
+    )
+  ].sort();
   for (const dir of dirs) {
     written.push(await writePlainIndex(options.outDir, dir, concepts, options));
   }
   return written.sort();
+}
+
+// src/metadata.ts
+import fs2 from "fs";
+import path4 from "path";
+import { fileURLToPath } from "url";
+var FALLBACK_NAME = "okfy-ai";
+var FALLBACK_VERSION = "0.0.0";
+var cachedMetadata;
+function runtimePackageRoot() {
+  return path4.resolve(path4.dirname(fileURLToPath(import.meta.url)), "..");
+}
+function packageMetadata() {
+  cachedMetadata ??= readPackageMetadata();
+  return cachedMetadata;
+}
+function packageVersion() {
+  return packageMetadata().version;
+}
+function okfyUserAgent() {
+  return `okfy/${packageVersion()} (+https://github.com/0dust/OKFy)`;
+}
+function readPackageMetadata() {
+  const root = runtimePackageRoot();
+  try {
+    const raw = fs2.readFileSync(path4.join(root, "package.json"), "utf8");
+    const parsed = JSON.parse(raw);
+    return {
+      name: parsed.name ?? FALLBACK_NAME,
+      version: parsed.version ?? FALLBACK_VERSION,
+      root
+    };
+  } catch {
+    return {
+      name: FALLBACK_NAME,
+      version: FALLBACK_VERSION,
+      root
+    };
+  }
 }
 
 // src/crawler.ts
@@ -472,7 +528,7 @@ function matchesAnyPattern(value, patterns) {
 }
 
 // src/crawler.ts
-var USER_AGENT = "okfy/0.1 (+https://github.com/0dust/OKFy)";
+var USER_AGENT = okfyUserAgent();
 var MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 function isRedirect(status) {
   return status >= 300 && status < 400;
@@ -518,7 +574,8 @@ async function fetchText(url, options = {}) {
         const length = Number(response.headers.get("content-length") ?? "0");
         if (length > MAX_RESPONSE_BYTES) throw new Error(`Response too large for ${url}`);
         const text = await response.text();
-        if (Buffer.byteLength(text, "utf8") > MAX_RESPONSE_BYTES) throw new Error(`Response too large for ${url}`);
+        if (Buffer.byteLength(text, "utf8") > MAX_RESPONSE_BYTES)
+          throw new Error(`Response too large for ${url}`);
         return { text, contentType: response.headers.get("content-type") ?? "" };
       } catch (error) {
         lastError = error;
@@ -569,7 +626,9 @@ function extractRawHtmlLinks(raw) {
 async function crawlWebsite(options) {
   const seed = canonicalizeUrl(options.seedUrl);
   if (!options.allowPrivateNetwork && isPrivateNetworkUrl(seed)) {
-    throw new Error("Private network crawl target rejected. Use --allow-private-network for trusted local fixtures.");
+    throw new Error(
+      "Private network crawl target rejected. Use --allow-private-network for trusted local fixtures."
+    );
   }
   if (!options.allowPrivateNetwork) await assertPublicNetworkUrl(seed);
   const maxPages = options.maxPages ?? 100;
@@ -593,11 +652,23 @@ async function crawlWebsite(options) {
           visited.add(item.url);
           if (!shouldVisit(item.url, seed, options, robots)) {
             skipped += 1;
-            options.onProgress?.({ type: "skipped", url: item.url, fetched: documents.length, queued: queue.length, maxPages });
+            options.onProgress?.({
+              type: "skipped",
+              url: item.url,
+              fetched: documents.length,
+              queued: queue.length,
+              maxPages
+            });
             return;
           }
           planned.push(item.url);
-          options.onProgress?.({ type: "fetch", url: item.url, fetched: documents.length, queued: queue.length, maxPages });
+          options.onProgress?.({
+            type: "fetch",
+            url: item.url,
+            fetched: documents.length,
+            queued: queue.length,
+            maxPages
+          });
           try {
             const fetched = await fetchText(item.url, {
               allowPrivateNetwork: options.allowPrivateNetwork,
@@ -644,7 +715,13 @@ async function crawlWebsite(options) {
           } catch (error) {
             if (isSecurityRejection(error)) throw error;
             failed += 1;
-            options.onProgress?.({ type: "failed", url: item.url, fetched: documents.length, queued: queue.length, maxPages });
+            options.onProgress?.({
+              type: "failed",
+              url: item.url,
+              fetched: documents.length,
+              queued: queue.length,
+              maxPages
+            });
           }
         })
       )
@@ -652,7 +729,14 @@ async function crawlWebsite(options) {
     void results;
   }
   if (options.dryRun) {
-    return { pagesFetched: planned.length, skipped, failed, written: [], documents: [], dryRunPages: planned.slice(0, maxPages) };
+    return {
+      pagesFetched: planned.length,
+      skipped,
+      failed,
+      written: [],
+      documents: [],
+      dryRunPages: planned.slice(0, maxPages)
+    };
   }
   if (documents.length === 0) throw new Error("Crawl generated zero concepts.");
   options.onProgress?.({ type: "writing", concepts: documents.length, outDir: options.outDir });
@@ -692,19 +776,19 @@ function parseDurationSeconds(input) {
 
 // src/hash.ts
 import crypto from "crypto";
-import fs2 from "fs/promises";
-import path4 from "path";
+import fs3 from "fs/promises";
+import path5 from "path";
 async function listBundleFiles(bundleDir) {
   const files = [];
   async function walk(current) {
-    for (const entry of await fs2.readdir(current, { withFileTypes: true })) {
-      const absolutePath = path4.join(current, entry.name);
+    for (const entry of await fs3.readdir(current, { withFileTypes: true })) {
+      const absolutePath = path5.join(current, entry.name);
       if (entry.isDirectory()) {
         await walk(absolutePath);
       } else if (entry.isFile()) {
         files.push({
           absolutePath,
-          relativePath: toPosixPath(path4.relative(bundleDir, absolutePath))
+          relativePath: toPosixPath(path5.relative(bundleDir, absolutePath))
         });
       }
     }
@@ -716,7 +800,7 @@ async function hashBundleContents(bundleDir) {
   const hash = crypto.createHash("sha256");
   const files = await listBundleFiles(bundleDir);
   for (const file of files) {
-    const contents = await fs2.readFile(file.absolutePath);
+    const contents = await fs3.readFile(file.absolutePath);
     hash.update(`${file.relativePath.length}:${file.relativePath}\0${contents.byteLength}:`);
     hash.update(contents);
     hash.update("\0");
@@ -725,10 +809,10 @@ async function hashBundleContents(bundleDir) {
 }
 
 // src/importer.ts
-import fs3 from "fs/promises";
-import path5 from "path";
+import fs4 from "fs/promises";
+import path6 from "path";
 function contentTypeFor(file) {
-  const ext = path5.extname(file).toLowerCase();
+  const ext = path6.extname(file).toLowerCase();
   if (ext === ".md") return "markdown";
   if (ext === ".mdx") return "mdx";
   if (ext === ".html" || ext === ".htm") return "html";
@@ -736,12 +820,12 @@ function contentTypeFor(file) {
   return void 0;
 }
 async function listFiles(root) {
-  const stat = await fs3.stat(root);
+  const stat = await fs4.stat(root);
   if (stat.isFile()) return [root];
   const files = [];
   async function walk(dir) {
-    for (const entry of await fs3.readdir(dir, { withFileTypes: true })) {
-      const absolute = path5.join(dir, entry.name);
+    for (const entry of await fs4.readdir(dir, { withFileTypes: true })) {
+      const absolute = path6.join(dir, entry.name);
       if (entry.isDirectory()) {
         if (![".git", "node_modules", "dist"].includes(entry.name)) await walk(absolute);
       } else if (entry.isFile()) {
@@ -753,11 +837,11 @@ async function listFiles(root) {
   return files.sort();
 }
 async function importLocal(options) {
-  const root = path5.resolve(options.inputPath);
+  const root = path6.resolve(options.inputPath);
   const files = await listFiles(root);
   const docs = [];
   for (const file of files) {
-    const rel = path5.relative(root, file).split(path5.sep).join("/");
+    const rel = path6.relative(root, file).split(path6.sep).join("/");
     if (options.include?.length && !matchesAnyPattern(rel, options.include)) continue;
     if (matchesAnyPattern(rel, options.exclude)) continue;
     const contentType = contentTypeFor(file);
@@ -766,7 +850,7 @@ async function importLocal(options) {
       sourceId: rel,
       filePath: rel,
       contentType,
-      raw: await fs3.readFile(file, "utf8"),
+      raw: await fs4.readFile(file, "utf8"),
       discoveredAt: options.timestamp ?? (/* @__PURE__ */ new Date()).toISOString()
     };
     docs.push(normalizeDocument(raw));
@@ -785,7 +869,7 @@ async function importLocal(options) {
 }
 
 // src/graph.ts
-import path6 from "path";
+import path7 from "path";
 function extractInternalLinks(concept) {
   const links = /* @__PURE__ */ new Set();
   for (const match of concept.body.matchAll(/\[[^\]]*]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)) {
@@ -794,7 +878,7 @@ function extractInternalLinks(concept) {
     if (!noHash) continue;
     if (/^(https?:)?\/\//i.test(noHash) || /^mailto:/i.test(noHash)) continue;
     if (/^[a-z][a-z0-9+.-]*:/i.test(noHash)) continue;
-    const resolved = noHash.startsWith("/") ? path6.posix.normalize(noHash.slice(1)) : path6.posix.normalize(path6.posix.join(path6.posix.dirname(concept.path), noHash));
+    const resolved = noHash.startsWith("/") ? path7.posix.normalize(noHash.slice(1)) : path7.posix.normalize(path7.posix.join(path7.posix.dirname(concept.path), noHash));
     if (!resolved || resolved === ".") continue;
     links.add(stripMdExtension(resolved));
   }
@@ -820,14 +904,14 @@ function buildGraph(conceptsByAnyKey) {
 }
 
 // src/reader.ts
-import fs4 from "fs/promises";
-import path7 from "path";
+import fs5 from "fs/promises";
+import path8 from "path";
 import matter from "gray-matter";
 async function listMarkdownFiles(dir) {
   const result = [];
   async function walk(current) {
-    for (const entry of await fs4.readdir(current, { withFileTypes: true })) {
-      const absolute = path7.join(current, entry.name);
+    for (const entry of await fs5.readdir(current, { withFileTypes: true })) {
+      const absolute = path8.join(current, entry.name);
       if (entry.isDirectory()) await walk(absolute);
       else if (entry.isFile() && entry.name.endsWith(".md")) result.push(absolute);
     }
@@ -840,9 +924,9 @@ function stringArray(value) {
   return value.filter((item) => typeof item === "string");
 }
 async function readConceptFile(bundleDir, absolutePath) {
-  const raw = await fs4.readFile(absolutePath, "utf8");
+  const raw = await fs5.readFile(absolutePath, "utf8");
   const parsed = matter(raw);
-  const relPath = toPosixPath(path7.relative(bundleDir, absolutePath));
+  const relPath = toPosixPath(path8.relative(bundleDir, absolutePath));
   if (isReservedOkfPath(relPath)) throw new Error(`Reserved OKF file is not a concept: ${relPath}`);
   const id = stripMdExtension(relPath);
   const frontmatter2 = parsed.data;
@@ -862,7 +946,7 @@ async function readBundle(bundleDir) {
   const files = await listMarkdownFiles(bundleDir);
   const concepts = /* @__PURE__ */ new Map();
   for (const file of files) {
-    const relPath = toPosixPath(path7.relative(bundleDir, file));
+    const relPath = toPosixPath(path8.relative(bundleDir, file));
     if (!isConceptMarkdownPath(relPath)) continue;
     const concept = await readConceptFile(bundleDir, file);
     concepts.set(concept.id, concept);
@@ -926,14 +1010,14 @@ var BundleSearch = class _BundleSearch {
 };
 
 // src/validate.ts
-import fs5 from "fs/promises";
-import path8 from "path";
+import fs6 from "fs/promises";
+import path9 from "path";
 import matter2 from "gray-matter";
 async function listMarkdownFiles2(dir) {
   const result = [];
   async function walk(current) {
-    for (const entry of await fs5.readdir(current, { withFileTypes: true })) {
-      const absolute = path8.join(current, entry.name);
+    for (const entry of await fs6.readdir(current, { withFileTypes: true })) {
+      const absolute = path9.join(current, entry.name);
       if (entry.isDirectory()) await walk(absolute);
       else if (entry.isFile() && entry.name.endsWith(".md")) result.push(absolute);
     }
@@ -993,7 +1077,7 @@ function validateLogFile(raw, rel, issues) {
   }
 }
 function validateReservedFile(raw, rel, issues) {
-  const name = path8.posix.basename(rel).toLowerCase();
+  const name = path9.posix.basename(rel).toLowerCase();
   if (name === "index.md") validateIndexFile(raw, rel, issues);
   if (name === "log.md") validateLogFile(raw, rel, issues);
 }
@@ -1011,20 +1095,20 @@ async function validateBundle(bundleDir) {
       warningCount: 0
     };
   }
-  const conceptFiles = files.filter((file) => isConceptMarkdownPath(path8.relative(bundleDir, file).split(path8.sep).join("/")));
-  const reservedFiles = files.filter((file) => isReservedOkfPath(path8.relative(bundleDir, file).split(path8.sep).join("/")));
+  const conceptFiles = files.filter((file) => isConceptMarkdownPath(path9.relative(bundleDir, file).split(path9.sep).join("/")));
+  const reservedFiles = files.filter((file) => isReservedOkfPath(path9.relative(bundleDir, file).split(path9.sep).join("/")));
   for (const file of reservedFiles) {
-    const rel = path8.relative(bundleDir, file).split(path8.sep).join("/");
-    const raw = await fs5.readFile(file, "utf8");
+    const rel = path9.relative(bundleDir, file).split(path9.sep).join("/");
+    const raw = await fs6.readFile(file, "utf8");
     validateReservedFile(raw, rel, issues);
   }
   for (const file of files) {
-    const rel = path8.relative(bundleDir, file).split(path8.sep).join("/");
+    const rel = path9.relative(bundleDir, file).split(path9.sep).join("/");
     if (!isConceptMarkdownPath(rel)) continue;
-    if (rel.includes("..") || path8.isAbsolute(rel)) {
+    if (rel.includes("..") || path9.isAbsolute(rel)) {
       issues.push(issue("error", "unsafe_path", "Concept path is unsafe.", rel));
     }
-    const raw = await fs5.readFile(file, "utf8");
+    const raw = await fs6.readFile(file, "utf8");
     if (!raw.startsWith("---")) {
       issues.push(issue("error", "missing_frontmatter", "Concept file must start with YAML frontmatter.", rel));
       continue;
@@ -1058,16 +1142,16 @@ async function validateBundle(bundleDir) {
       }
     }
   }
-  const dirs = new Set(conceptFiles.map((file) => path8.dirname(file)));
+  const dirs = new Set(conceptFiles.map((file) => path9.dirname(file)));
   for (const dir of dirs) {
-    const index = path8.join(dir, "index.md");
+    const index = path9.join(dir, "index.md");
     if (!files.includes(index)) {
       issues.push(
         issue(
           "warning",
           "missing_folder_index",
           "Folder has concepts but no index.md.",
-          path8.relative(bundleDir, dir).split(path8.sep).join("/") || "."
+          path9.relative(bundleDir, dir).split(path9.sep).join("/") || "."
         )
       );
     }
@@ -1103,7 +1187,7 @@ async function inspectBundle(bundleDir) {
   const linkCount = [...graph.outbound.values()].reduce((sum, links) => sum + links.length, 0);
   const validation = await validateBundle(bundleDir);
   return {
-    title: path8.basename(bundleDir),
+    title: path9.basename(bundleDir),
     conceptCount: concepts.length,
     reservedFileCount: validation.reservedFileCount,
     warningCount: validation.warningCount,
@@ -1118,9 +1202,9 @@ async function inspectBundle(bundleDir) {
 }
 
 // src/source-store.ts
-import fs6 from "fs/promises";
+import fs7 from "fs/promises";
 import os2 from "os";
-import path9 from "path";
+import path10 from "path";
 var SOURCE_NAME_PATTERN = /^[a-z0-9._-]+$/;
 var MANIFEST_KEYS = [
   "schemaVersion",
@@ -1134,7 +1218,16 @@ var MANIFEST_KEYS = [
   "refresh",
   "bundle"
 ];
-var CRAWL_KEYS = ["maxPages", "maxDepth", "include", "exclude", "sameOrigin", "respectRobots", "concurrency", "allowPrivateNetwork"];
+var CRAWL_KEYS = [
+  "maxPages",
+  "maxDepth",
+  "include",
+  "exclude",
+  "sameOrigin",
+  "respectRobots",
+  "concurrency",
+  "allowPrivateNetwork"
+];
 var REFRESH_KEYS = ["mode", "maxAgeSeconds", "minIntervalSeconds"];
 var STATE_KEYS = [
   "schemaVersion",
@@ -1151,8 +1244,8 @@ var STATE_KEYS = [
 var STATE_BUNDLE_KEYS = ["conceptCount", "warningCount", "valid", "contentHash"];
 function resolveOkfyHome(options = {}) {
   const configured = options.okfyHome ?? options.env?.OKFY_HOME ?? process.env.OKFY_HOME;
-  if (configured && configured.trim() !== "") return path9.resolve(configured);
-  return path9.join(os2.homedir(), ".okfy");
+  if (configured && configured.trim() !== "") return path10.resolve(configured);
+  return path10.join(os2.homedir(), ".okfy");
 }
 function validateSourceName(name) {
   if (!name || name === "." || name === ".." || !SOURCE_NAME_PATTERN.test(name)) {
@@ -1165,7 +1258,7 @@ function validateSourceName(name) {
 function resolveSourceDir(name, options = {}) {
   const safeName = validateSourceName(name);
   const sourcesRoot = resolveSourcesRoot(options);
-  const sourceDir = path9.resolve(sourcesRoot, safeName);
+  const sourceDir = path10.resolve(sourcesRoot, safeName);
   if (!isInsideOrEqual(sourcesRoot, sourceDir)) {
     throw new Error(`Invalid source name "${name}". Source directory escapes OKFY_HOME.`);
   }
@@ -1177,39 +1270,43 @@ function resolveBundleDir(manifest, options = {}) {
   if (!bundleDir || bundleDir.trim() === "") {
     throw new Error(`Invalid bundle directory for source "${manifest.name}".`);
   }
-  if (path9.isAbsolute(bundleDir)) return path9.normalize(bundleDir);
-  const resolved = path9.resolve(sourceDir, bundleDir);
+  if (path10.isAbsolute(bundleDir)) return path10.normalize(bundleDir);
+  const resolved = path10.resolve(sourceDir, bundleDir);
   if (resolved === sourceDir || !isInsideOrEqual(sourceDir, resolved)) {
-    throw new Error(`Invalid bundle directory for source "${manifest.name}". Relative bundle paths must stay inside the source directory.`);
+    throw new Error(
+      `Invalid bundle directory for source "${manifest.name}". Relative bundle paths must stay inside the source directory.`
+    );
   }
   return resolved;
 }
 async function writeSourceManifest(manifest, options = {}) {
   const sourceDir = resolveSourceDir(manifest.name, options);
-  await writeStableJson(path9.join(sourceDir, "source.json"), manifest);
+  await writeStableJson(path10.join(sourceDir, "source.json"), manifest);
 }
 async function readSourceManifest(name, options = {}) {
   const sourceDir = resolveSourceDir(name, options);
-  const manifest = await readJson(path9.join(sourceDir, "source.json"));
+  const manifest = validateSourceManifest(
+    await readJson(path10.join(sourceDir, "source.json")),
+    name
+  );
   if (manifest.name !== name) {
     throw new Error(`Source manifest name mismatch: expected "${name}", found "${manifest.name}".`);
   }
-  validateSourceName(manifest.name);
   return manifest;
 }
 async function writeRefreshState(name, state, options = {}) {
   const sourceDir = resolveSourceDir(name, options);
-  await writeStableJson(path9.join(sourceDir, "state.json"), state);
+  await writeStableJson(path10.join(sourceDir, "state.json"), state);
 }
 async function readRefreshState(name, options = {}) {
   const sourceDir = resolveSourceDir(name, options);
-  return readJson(path9.join(sourceDir, "state.json"));
+  return readJson(path10.join(sourceDir, "state.json"));
 }
 async function listSources(options = {}) {
   const sourcesRoot = resolveSourcesRoot(options);
   let entries;
   try {
-    entries = await fs6.readdir(sourcesRoot, { withFileTypes: true });
+    entries = await fs7.readdir(sourcesRoot, { withFileTypes: true });
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") return [];
     throw error;
@@ -1217,28 +1314,201 @@ async function listSources(options = {}) {
   const records = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
+    let manifest;
     try {
-      const manifest = await readSourceManifest(entry.name, options);
-      const state = await readRefreshStateIfExists(entry.name, options);
-      records.push({
-        name: manifest.name,
-        dir: resolveSourceDir(manifest.name, options),
-        manifest,
-        state,
-        bundleDir: resolveBundleDir(manifest, options)
-      });
-    } catch {
+      manifest = await readSourceManifest(entry.name, options);
+    } catch (error) {
+      records.push(invalidSourceRecord(sourcesRoot, entry.name, error));
       continue;
     }
+    const dir = resolveSourceDir(manifest.name, options);
+    let state;
+    let loadError;
+    try {
+      state = await readRefreshStateIfExists(entry.name, options);
+    } catch (error) {
+      loadError = errorDetails(error);
+    }
+    let bundleDir;
+    try {
+      bundleDir = resolveBundleDir(manifest, options);
+    } catch (error) {
+      bundleDir = path10.join(dir, "bundle");
+      loadError ??= errorDetails(error);
+    }
+    records.push({
+      name: manifest.name,
+      dir,
+      manifest,
+      state,
+      bundleDir,
+      loadError
+    });
   }
   return records.sort((first, second) => first.name.localeCompare(second.name));
 }
 async function removeSource(name, options = {}) {
   const sourceDir = resolveSourceDir(name, options);
-  await fs6.rm(sourceDir, { recursive: true, force: true });
+  await fs7.rm(sourceDir, { recursive: true, force: true });
 }
 function resolveSourcesRoot(options) {
-  return path9.join(resolveOkfyHome(options), "sources");
+  return path10.join(resolveOkfyHome(options), "sources");
+}
+function invalidSourceRecord(sourcesRoot, name, error) {
+  const dir = path10.join(sourcesRoot, name);
+  const sourceName = fallbackSourceName(name);
+  return {
+    name: sourceName,
+    dir,
+    manifest: fallbackSourceManifest(sourceName),
+    bundleDir: path10.join(dir, "bundle"),
+    loadError: errorDetails(error, name)
+  };
+}
+function fallbackSourceManifest(name) {
+  const timestamp = "1970-01-01T00:00:00.000Z";
+  return {
+    schemaVersion: 1,
+    okfyVersion: "unknown",
+    name,
+    kind: "website",
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    source: {
+      seedUrl: ""
+    },
+    crawl: {
+      maxPages: 0,
+      maxDepth: 0,
+      include: [],
+      exclude: [],
+      sameOrigin: true,
+      respectRobots: true,
+      concurrency: 1,
+      allowPrivateNetwork: false
+    },
+    refresh: {
+      mode: "off",
+      maxAgeSeconds: 0,
+      minIntervalSeconds: 0
+    },
+    bundle: {
+      dir: "bundle"
+    }
+  };
+}
+function fallbackSourceName(name) {
+  try {
+    return validateSourceName(name);
+  } catch {
+    const slug = name.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
+    return `invalid-${shortHash(name)}${slug ? `-${slug}` : ""}`;
+  }
+}
+function shortHash(value) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+function errorDetails(error, sourceDirName) {
+  const withSourceDir = (details) => ({
+    ...details,
+    ...sourceDirName && sourceDirName !== fallbackSourceName(sourceDirName) ? { sourceDirName } : {}
+  });
+  if (error instanceof Error) {
+    const details = { message: error.message };
+    if (isNodeError(error) && error.code) details.code = error.code;
+    return withSourceDir(details);
+  }
+  return withSourceDir({ message: String(error) });
+}
+function validateSourceManifest(value, expectedName) {
+  if (!isPlainObject(value))
+    throw new Error(`Invalid source manifest for "${expectedName}": expected object.`);
+  const name = requiredString(value, "name", expectedName);
+  validateSourceName(name);
+  if (value.schemaVersion !== 1) {
+    throw new Error(`Invalid source manifest for "${expectedName}": schemaVersion must be 1.`);
+  }
+  if (value.kind !== "website") {
+    throw new Error(`Invalid source manifest for "${expectedName}": kind must be "website".`);
+  }
+  const source = requiredObject(value, "source", expectedName);
+  const crawl = requiredObject(value, "crawl", expectedName);
+  const refresh = requiredObject(value, "refresh", expectedName);
+  const bundle = requiredObject(value, "bundle", expectedName);
+  const mode = requiredString(refresh, "mode", expectedName, "refresh");
+  if (!["off", "stale-while-refresh", "blocking"].includes(mode)) {
+    throw new Error(`Invalid source manifest for "${expectedName}": refresh.mode is invalid.`);
+  }
+  return {
+    schemaVersion: 1,
+    okfyVersion: requiredString(value, "okfyVersion", expectedName),
+    name,
+    kind: "website",
+    createdAt: requiredString(value, "createdAt", expectedName),
+    updatedAt: requiredString(value, "updatedAt", expectedName),
+    source: {
+      seedUrl: requiredString(source, "seedUrl", expectedName, "source")
+    },
+    crawl: {
+      maxPages: requiredNumber(crawl, "maxPages", expectedName, "crawl"),
+      maxDepth: requiredNumber(crawl, "maxDepth", expectedName, "crawl"),
+      include: requiredStringArray(crawl, "include", expectedName, "crawl"),
+      exclude: requiredStringArray(crawl, "exclude", expectedName, "crawl"),
+      sameOrigin: requiredBoolean(crawl, "sameOrigin", expectedName, "crawl"),
+      respectRobots: requiredBoolean(crawl, "respectRobots", expectedName, "crawl"),
+      concurrency: requiredNumber(crawl, "concurrency", expectedName, "crawl"),
+      allowPrivateNetwork: requiredBoolean(crawl, "allowPrivateNetwork", expectedName, "crawl")
+    },
+    refresh: {
+      mode,
+      maxAgeSeconds: requiredNumber(refresh, "maxAgeSeconds", expectedName, "refresh"),
+      minIntervalSeconds: requiredNumber(refresh, "minIntervalSeconds", expectedName, "refresh")
+    },
+    bundle: {
+      dir: requiredString(bundle, "dir", expectedName, "bundle")
+    }
+  };
+}
+function requiredObject(value, key, sourceName, prefix) {
+  const found = value[key];
+  if (!isPlainObject(found)) throw invalidManifestField(sourceName, key, "object", prefix);
+  return found;
+}
+function requiredString(value, key, sourceName, prefix) {
+  const found = value[key];
+  if (typeof found !== "string" || found.trim() === "") {
+    throw invalidManifestField(sourceName, key, "non-empty string", prefix);
+  }
+  return found;
+}
+function requiredNumber(value, key, sourceName, prefix) {
+  const found = value[key];
+  if (typeof found !== "number" || !Number.isFinite(found)) {
+    throw invalidManifestField(sourceName, key, "number", prefix);
+  }
+  return found;
+}
+function requiredBoolean(value, key, sourceName, prefix) {
+  const found = value[key];
+  if (typeof found !== "boolean") throw invalidManifestField(sourceName, key, "boolean", prefix);
+  return found;
+}
+function requiredStringArray(value, key, sourceName, prefix) {
+  const found = value[key];
+  if (!Array.isArray(found) || !found.every((item) => typeof item === "string")) {
+    throw invalidManifestField(sourceName, key, "string array", prefix);
+  }
+  return found;
+}
+function invalidManifestField(sourceName, key, expected, prefix) {
+  return new Error(
+    `Invalid source manifest for "${sourceName}": ${prefix ? `${prefix}.` : ""}${key} must be ${expected}.`
+  );
 }
 async function readRefreshStateIfExists(name, options) {
   try {
@@ -1249,11 +1519,11 @@ async function readRefreshStateIfExists(name, options) {
   }
 }
 async function readJson(filePath) {
-  return JSON.parse(await fs6.readFile(filePath, "utf8"));
+  return JSON.parse(await fs7.readFile(filePath, "utf8"));
 }
 async function writeStableJson(filePath, value) {
-  await fs6.mkdir(path9.dirname(filePath), { recursive: true });
-  await fs6.writeFile(filePath, `${JSON.stringify(orderJson(value), null, 2)}
+  await fs7.mkdir(path10.dirname(filePath), { recursive: true });
+  await fs7.writeFile(filePath, `${JSON.stringify(orderJson(value), null, 2)}
 `, "utf8");
 }
 function orderJson(value) {
@@ -1270,7 +1540,8 @@ function orderKeys(value) {
   if ("okfyVersion" in value) return sortByPreferredOrder(Object.keys(value), MANIFEST_KEYS);
   if (hasKeys(value, CRAWL_KEYS)) return sortByPreferredOrder(Object.keys(value), CRAWL_KEYS);
   if (hasKeys(value, REFRESH_KEYS)) return sortByPreferredOrder(Object.keys(value), REFRESH_KEYS);
-  if (hasKeys(value, STATE_BUNDLE_KEYS)) return sortByPreferredOrder(Object.keys(value), STATE_BUNDLE_KEYS);
+  if (hasKeys(value, STATE_BUNDLE_KEYS))
+    return sortByPreferredOrder(Object.keys(value), STATE_BUNDLE_KEYS);
   if ("seedUrl" in value) return sortByPreferredOrder(Object.keys(value), ["seedUrl"]);
   if ("dir" in value) return sortByPreferredOrder(Object.keys(value), ["dir"]);
   return Object.keys(value).sort((first, second) => first.localeCompare(second));
@@ -1292,16 +1563,16 @@ function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function isInsideOrEqual(parent, child) {
-  const relative = path9.relative(parent, child);
-  return relative === "" || !relative.startsWith("..") && !path9.isAbsolute(relative);
+  const relative = path10.relative(parent, child);
+  return relative === "" || !relative.startsWith("..") && !path10.isAbsolute(relative);
 }
 function isNodeError(error) {
   return error instanceof Error && "code" in error;
 }
 
 // src/workspace.ts
-import fs7 from "fs/promises";
-import path10 from "path";
+import fs8 from "fs/promises";
+import path11 from "path";
 var WorkspaceError = class extends Error {
   constructor(code, message, details = {}) {
     super(message);
@@ -1319,25 +1590,29 @@ var WorkspaceError = class extends Error {
   }
 };
 function workspaceProfilePath(name, options = {}) {
-  return path10.join(resolveOkfyHome(options), "workspaces", `${validateSourceName(name)}.json`);
+  return path11.join(resolveOkfyHome(options), "workspaces", `${validateSourceName(name)}.json`);
 }
 async function readWorkspaceProfile(name, options = {}) {
-  const profile = JSON.parse(await fs7.readFile(workspaceProfilePath(name, options), "utf8"));
+  const profile = JSON.parse(
+    await fs8.readFile(workspaceProfilePath(name, options), "utf8")
+  );
   validateWorkspaceProfile(profile, name);
   return profile;
 }
 async function writeWorkspaceProfile(profile, options = {}) {
   validateWorkspaceProfile(profile);
   const filePath = workspaceProfilePath(profile.name, options);
-  await fs7.mkdir(path10.dirname(filePath), { recursive: true });
-  await fs7.writeFile(filePath, `${JSON.stringify(profile, null, 2)}
+  await fs8.mkdir(path11.dirname(filePath), { recursive: true });
+  await fs8.writeFile(filePath, `${JSON.stringify(profile, null, 2)}
 `, "utf8");
 }
 async function resolveWorkspaceSources(selection, options = {}) {
   const hasNames = Boolean(selection.names?.length);
   const modeCount = Number(hasNames) + Number(Boolean(selection.all)) + Number(Boolean(selection.profile)) + Number(Boolean(selection.profileName));
   if (modeCount > 1) {
-    throw new Error("Choose one workspace source selection: explicit source names, --all, or one workspace profile.");
+    throw new Error(
+      "Choose one workspace source selection: explicit source names, --all, or one workspace profile."
+    );
   }
   let names = selection.names ?? [];
   let workspaceName;
@@ -1351,11 +1626,13 @@ async function resolveWorkspaceSources(selection, options = {}) {
     workspaceName = selection.profile.name;
   }
   if (selection.all) {
-    const records2 = await readAllSourcesFailVisible(options);
-    if (!records2.length) throw new WorkspaceError("no_sources", "No registered sources found for --all.");
+    const records2 = await listSources(options);
+    if (!records2.length)
+      throw new WorkspaceError("no_sources", "No registered sources found for --all.");
     return { records: records2, sourceNames: records2.map((record) => record.name) };
   }
-  if (!names.length) throw new WorkspaceError("no_sources", "Select at least one registered source.");
+  if (!names.length)
+    throw new WorkspaceError("no_sources", "Select at least one registered source.");
   assertUniqueSourceNames(names);
   const records = await Promise.all(names.map((name) => readSourceRecord(name, options)));
   return { records, sourceNames: records.map((record) => record.name), workspaceName };
@@ -1385,22 +1662,31 @@ var WorkspaceSearch = class _WorkspaceSearch {
     const limit = options.limit ?? 10;
     const sources = this.usableSources(options.source);
     return sources.flatMap(
-      (source) => source.search.search(query, { type: options.type, tags: options.tags, limit: Math.max(limit, 50) }).map(
-        (result) => this.withSourceResult(source, result)
-      )
-    ).sort((first, second) => second.score - first.score || first.sourceName.localeCompare(second.sourceName) || first.id.localeCompare(second.id)).slice(0, limit);
+      (source) => source.search.search(query, { type: options.type, tags: options.tags, limit: Math.max(limit, 50) }).map((result) => this.withSourceResult(source, result))
+    ).sort(
+      (first, second) => second.score - first.score || first.sourceName.localeCompare(second.sourceName) || first.id.localeCompare(second.id)
+    ).slice(0, limit);
   }
   getConcept(input) {
     const sources = input.source ? this.usableSources(input.source) : this.sourcesWithSearch();
-    const matches = sources.map((source) => ({ source, concept: source.search.getConcept(input.id) })).filter((row) => Boolean(row.concept));
+    const matches = sources.map((source) => ({ source, concept: source.search.getConcept(input.id) })).filter(
+      (row) => Boolean(row.concept)
+    );
     if (matches.length === 0) {
-      throw new WorkspaceError("unknown_concept", `No concept found for ${input.id}`, { id: input.id, source: input.source });
+      throw new WorkspaceError("unknown_concept", `No concept found for ${input.id}`, {
+        id: input.id,
+        source: input.source
+      });
     }
     if (!input.source && matches.length > 1) {
-      throw new WorkspaceError("ambiguous_concept", `Concept id "${input.id}" exists in multiple workspace sources.`, {
-        id: input.id,
-        candidates: matches.map(({ source, concept }) => this.conceptCandidate(source, concept))
-      });
+      throw new WorkspaceError(
+        "ambiguous_concept",
+        `Concept id "${input.id}" exists in multiple workspace sources.`,
+        {
+          id: input.id,
+          candidates: matches.map(({ source, concept }) => this.conceptCandidate(source, concept))
+        }
+      );
     }
     return matches[0];
   }
@@ -1423,16 +1709,24 @@ var WorkspaceSearch = class _WorkspaceSearch {
         for (const value of values(concept)) distribution[value] = (distribution[value] ?? 0) + 1;
       }
     }
-    return Object.fromEntries(Object.entries(distribution).sort(([first], [second]) => first.localeCompare(second)));
+    return Object.fromEntries(
+      Object.entries(distribution).sort(([first], [second]) => first.localeCompare(second))
+    );
   }
   usableSources(sourceName) {
     const sources = sourceName ? [this.sourceByName(sourceName)] : this.sources;
-    const usable = sources.filter((source) => Boolean(source.search));
+    const usable = sources.filter(
+      (source) => Boolean(source.search)
+    );
     if (!usable.length) {
-      throw new WorkspaceError("no_usable_sources", "No usable OKF bundle is available in this workspace.", {
-        source: sourceName,
-        sources: sources.map((source) => source.record.name)
-      });
+      throw new WorkspaceError(
+        "no_usable_sources",
+        "No usable OKF bundle is available in this workspace.",
+        {
+          source: sourceName,
+          sources: sources.map((source) => source.record.name)
+        }
+      );
     }
     return usable;
   }
@@ -1444,12 +1738,18 @@ var WorkspaceSearch = class _WorkspaceSearch {
       return this.sources.find((source) => source.record.name === sourceName);
     }
     if (this.availableNames.has(sourceName)) {
-      throw new WorkspaceError("source_not_in_workspace", `Source "${sourceName}" is not selected in this workspace.`, {
-        source: sourceName,
-        workspaceSources: [...this.selectedNames]
-      });
+      throw new WorkspaceError(
+        "source_not_in_workspace",
+        `Source "${sourceName}" is not selected in this workspace.`,
+        {
+          source: sourceName,
+          workspaceSources: [...this.selectedNames]
+        }
+      );
     }
-    throw new WorkspaceError("unknown_source", `Unknown source "${sourceName}".`, { source: sourceName });
+    throw new WorkspaceError("unknown_source", `Unknown source "${sourceName}".`, {
+      source: sourceName
+    });
   }
   withSourceResult(source, result) {
     return {
@@ -1477,7 +1777,9 @@ function validateWorkspaceProfile(profile, expectedName) {
   if (profile.schemaVersion !== 1) throw new Error("Workspace profile schemaVersion must be 1.");
   validateSourceName(profile.name);
   if (expectedName && profile.name !== expectedName) {
-    throw new Error(`Workspace profile name mismatch: expected "${expectedName}", found "${profile.name}".`);
+    throw new Error(
+      `Workspace profile name mismatch: expected "${expectedName}", found "${profile.name}".`
+    );
   }
   if (!Array.isArray(profile.sources) || profile.sources.length === 0) {
     throw new Error(`Workspace profile "${profile.name}" must list at least one source.`);
@@ -1489,7 +1791,10 @@ function assertUniqueSourceNames(names) {
   const seen = /* @__PURE__ */ new Set();
   for (const name of names) {
     validateSourceName(name);
-    if (seen.has(name)) throw new WorkspaceError("duplicate_source", `Duplicate workspace source "${name}".`, { source: name });
+    if (seen.has(name))
+      throw new WorkspaceError("duplicate_source", `Duplicate workspace source "${name}".`, {
+        source: name
+      });
     seen.add(name);
   }
 }
@@ -1502,17 +1807,6 @@ async function readSourceRecord(name, options) {
     state: await readRefreshStateIfExists2(manifest.name, options),
     bundleDir: resolveBundleDir(manifest, options)
   };
-}
-async function readAllSourcesFailVisible(options) {
-  const sourcesRoot = path10.join(resolveOkfyHome(options), "sources");
-  let entries;
-  try {
-    entries = (await fs7.readdir(sourcesRoot, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort((first, second) => first.localeCompare(second));
-  } catch (error) {
-    if (isNodeError2(error) && error.code === "ENOENT") return [];
-    throw error;
-  }
-  return Promise.all(entries.map((name) => readSourceRecord(name, options)));
 }
 async function readRefreshStateIfExists2(name, options) {
   try {
@@ -1547,7 +1841,9 @@ var [
   LIST_TAGS_TOOL,
   BUNDLE_SUMMARY_TOOL
 ] = MCP_TOOL_NAMES;
-var REFRESHABLE_TOOL_NAMES = new Set(MCP_TOOL_NAMES.filter((tool) => tool !== BUNDLE_SUMMARY_TOOL));
+var REFRESHABLE_TOOL_NAMES = new Set(
+  MCP_TOOL_NAMES.filter((tool) => tool !== BUNDLE_SUMMARY_TOOL)
+);
 function json(value, maxChars = 12e3) {
   let text = JSON.stringify(value, null, 2);
   if (text.length > maxChars) text = `${text.slice(0, maxChars)}
@@ -1561,12 +1857,15 @@ var searchSchema = z.object({
   limit: z.number().int().positive().max(50).optional()
 });
 var readSchema = z.object({ id: z.string(), max_chars: z.number().int().positive().optional() });
-var neighborsSchema = z.object({ id: z.string(), depth: z.number().int().min(1).max(2).optional() });
+var neighborsSchema = z.object({
+  id: z.string(),
+  depth: z.number().int().min(1).max(2).optional()
+});
 var sourceFilterSchema = z.object({ source: z.string().optional() });
 var workspaceSearchSchema = searchSchema.extend({ source: z.string().optional() });
 var workspaceReadSchema = readSchema.extend({ source: z.string().optional() });
 var workspaceNeighborsSchema = neighborsSchema.extend({ source: z.string().optional() });
-function errorDetails(error) {
+function errorDetails2(error) {
   if (error instanceof Error) return { message: error.message };
   if (typeof error === "string") return { message: error };
   if (error && typeof error === "object") {
@@ -1580,7 +1879,7 @@ function errorDetails(error) {
 }
 function nullableErrorDetails(error) {
   if (error === void 0 || error === null) return null;
-  return errorDetails(error);
+  return errorDetails2(error);
 }
 function normalizeFreshness(state) {
   return {
@@ -1609,11 +1908,11 @@ async function createMcpServer(options) {
       search = await BundleSearch.fromBundle(activeBundleDir);
     } catch (error) {
       if (!options.source) throw error;
-      lastRefreshError = errorDetails(error);
+      lastRefreshError = errorDetails2(error);
     }
   }
   const server = new Server(
-    { name: options.name ?? "okfy", version: "0.1.0" },
+    { name: options.name ?? "okfy", version: packageVersion() },
     { capabilities: { tools: {} } }
   );
   const maxResultChars = options.maxResultChars ?? 12e3;
@@ -1623,7 +1922,11 @@ async function createMcpServer(options) {
       observedFreshness = await options.refresh.getFreshness();
       return observedFreshness;
     }
-    observedFreshness ??= { freshnessStatus: search ? "fresh" : "missing", refreshInProgress: false, lastRefreshError: null };
+    observedFreshness ??= {
+      freshnessStatus: search ? "fresh" : "missing",
+      refreshInProgress: false,
+      lastRefreshError: null
+    };
     return observedFreshness;
   }
   function sourceSummaryFields() {
@@ -1643,7 +1946,7 @@ async function createMcpServer(options) {
     };
   }
   function bundleUnavailable() {
-    const details = lastRefreshError ?? errorDetails("No OKF bundle is available.");
+    const details = lastRefreshError ?? errorDetails2("No OKF bundle is available.");
     return json(
       {
         error: {
@@ -1675,7 +1978,7 @@ async function createMcpServer(options) {
         search = nextSearch;
         lastRefreshError = null;
       } catch (error) {
-        lastRefreshError = errorDetails(error);
+        lastRefreshError = errorDetails2(error);
       } finally {
         inFlightRefresh = void 0;
       }
@@ -1726,9 +2029,21 @@ async function createMcpServer(options) {
           required: ["id"]
         }
       },
-      { name: LIST_TYPES_TOOL, description: "List concept types and counts.", inputSchema: { type: "object", properties: {} } },
-      { name: LIST_TAGS_TOOL, description: "List concept tags and counts.", inputSchema: { type: "object", properties: {} } },
-      { name: BUNDLE_SUMMARY_TOOL, description: "Return bundle stats and validation status.", inputSchema: { type: "object", properties: {} } }
+      {
+        name: LIST_TYPES_TOOL,
+        description: "List concept types and counts.",
+        inputSchema: { type: "object", properties: {} }
+      },
+      {
+        name: LIST_TAGS_TOOL,
+        description: "List concept tags and counts.",
+        inputSchema: { type: "object", properties: {} }
+      },
+      {
+        name: BUNDLE_SUMMARY_TOOL,
+        description: "Return bundle stats and validation status.",
+        inputSchema: { type: "object", properties: {} }
+      }
     ]
   }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -1745,7 +2060,10 @@ async function createMcpServer(options) {
         if (!search) return bundleUnavailable();
         const parsed = readSchema.parse(args);
         const concept = search.getConcept(parsed.id);
-        if (!concept) return json({ error: { code: "unknown_concept", message: `No concept found for ${parsed.id}` } });
+        if (!concept)
+          return json({
+            error: { code: "unknown_concept", message: `No concept found for ${parsed.id}` }
+          });
         const max = parsed.max_chars ?? maxResultChars;
         return json(
           {
@@ -1763,7 +2081,10 @@ async function createMcpServer(options) {
         const currentSearch = search;
         const parsed = neighborsSchema.parse(args);
         const root = currentSearch.getConcept(parsed.id);
-        if (!root) return json({ error: { code: "unknown_concept", message: `No concept found for ${parsed.id}` } });
+        if (!root)
+          return json({
+            error: { code: "unknown_concept", message: `No concept found for ${parsed.id}` }
+          });
         const depth = parsed.depth ?? 1;
         const seen = /* @__PURE__ */ new Set([root.id]);
         let frontier = [root.id];
@@ -1772,7 +2093,12 @@ async function createMcpServer(options) {
           const next = [];
           for (const id of frontier) {
             for (const to of currentSearch.graph.outbound.get(id) ?? []) {
-              edges.push({ from: id, to, direction: "outbound", relationship_text: "Markdown link" });
+              edges.push({
+                from: id,
+                to,
+                direction: "outbound",
+                relationship_text: "Markdown link"
+              });
               if (!seen.has(to)) next.push(to);
               seen.add(to);
             }
@@ -1805,7 +2131,10 @@ async function createMcpServer(options) {
       }
       if (request.params.name === BUNDLE_SUMMARY_TOOL) {
         if (!search) return bundleUnavailable();
-        const [stats, validation] = await Promise.all([inspectBundle(activeBundleDir), validateBundle(activeBundleDir)]);
+        const [stats, validation] = await Promise.all([
+          inspectBundle(activeBundleDir),
+          validateBundle(activeBundleDir)
+        ]);
         return json({
           ...stats,
           reservedFileCount: validation.reservedFileCount,
@@ -1815,7 +2144,9 @@ async function createMcpServer(options) {
           ...sourceSummaryFields()
         });
       }
-      return json({ error: { code: "unknown_tool", message: `Unknown tool: ${request.params.name}` } });
+      return json({
+        error: { code: "unknown_tool", message: `Unknown tool: ${request.params.name}` }
+      });
     } catch (error) {
       return json({ error: { code: "tool_error", message: error?.message ?? "Tool failed." } });
     }
@@ -1830,11 +2161,15 @@ async function createWorkspaceMcpServer(options) {
         record: source.record,
         activeBundleDir: source.record.bundleDir,
         search: source.search,
-        lastRefreshError: null,
+        lastRefreshError: source.record.loadError ? errorDetails2(source.record.loadError) : null,
         refresh: source.refresh
       };
       if (!runtime.search) {
-        runtime.search = await BundleSearch.fromBundle(runtime.activeBundleDir);
+        try {
+          runtime.search = await BundleSearch.fromBundle(runtime.activeBundleDir);
+        } catch (error) {
+          runtime.lastRefreshError ??= errorDetails2(error);
+        }
       }
       return runtime;
     })
@@ -1842,18 +2177,25 @@ async function createWorkspaceMcpServer(options) {
   const selectedNames = new Set(runtimes.map((runtime) => runtime.record.name));
   const availableNames = /* @__PURE__ */ new Set([...options.availableSourceNames ?? [], ...selectedNames]);
   const server = new Server(
-    { name: options.name ?? "okfy", version: "0.1.0" },
+    { name: options.name ?? "okfy", version: packageVersion() },
     { capabilities: { tools: {} } }
   );
   function runtimeForSource(sourceName) {
-    if (selectedNames.has(sourceName)) return runtimes.find((runtime) => runtime.record.name === sourceName);
+    if (selectedNames.has(sourceName))
+      return runtimes.find((runtime) => runtime.record.name === sourceName);
     if (availableNames.has(sourceName)) {
-      throw new WorkspaceError("source_not_in_workspace", `Source "${sourceName}" is not selected in this workspace.`, {
-        source: sourceName,
-        workspaceSources: [...selectedNames]
-      });
+      throw new WorkspaceError(
+        "source_not_in_workspace",
+        `Source "${sourceName}" is not selected in this workspace.`,
+        {
+          source: sourceName,
+          workspaceSources: [...selectedNames]
+        }
+      );
     }
-    throw new WorkspaceError("unknown_source", `Unknown source "${sourceName}".`, { source: sourceName });
+    throw new WorkspaceError("unknown_source", `Unknown source "${sourceName}".`, {
+      source: sourceName
+    });
   }
   function workspaceSearch() {
     return new WorkspaceSearch(
@@ -1869,11 +2211,24 @@ async function createWorkspaceMcpServer(options) {
     );
   }
   async function getRuntimeFreshness(runtime) {
+    if (runtime.record.loadError) {
+      const freshness = runtime.observedFreshness ?? {
+        freshnessStatus: "failed",
+        refreshInProgress: false,
+        lastRefreshError: errorDetails2(runtime.record.loadError)
+      };
+      runtime.observedFreshness = freshness;
+      return freshness;
+    }
     if (runtime.refresh?.getFreshness) {
       runtime.observedFreshness = await runtime.refresh.getFreshness();
       return runtime.observedFreshness;
     }
-    runtime.observedFreshness ??= { freshnessStatus: runtime.search ? "fresh" : "missing", refreshInProgress: false, lastRefreshError: null };
+    runtime.observedFreshness ??= {
+      freshnessStatus: runtime.search ? "fresh" : "missing",
+      refreshInProgress: false,
+      lastRefreshError: null
+    };
     return runtime.observedFreshness;
   }
   function runtimeRefreshMode(runtime) {
@@ -1916,7 +2271,7 @@ async function createWorkspaceMcpServer(options) {
         runtime.activeBundleDir = nextBundleDir;
         runtime.lastRefreshError = null;
       } catch (error) {
-        runtime.lastRefreshError = errorDetails(error);
+        runtime.lastRefreshError = errorDetails2(error);
       } finally {
         runtime.inFlightRefresh = void 0;
       }
@@ -1935,14 +2290,18 @@ async function createWorkspaceMcpServer(options) {
       const shouldAwait = sourceFiltered ? mode === "blocking" || !runtime.search : !workspaceHadUsableSource && !runtime.search;
       if (shouldAwait) await refresh;
     } catch (error) {
-      runtime.lastRefreshError = errorDetails(error);
+      runtime.lastRefreshError = errorDetails2(error);
     }
   }
   async function prepareWorkspaceForTool(toolName, sourceName) {
     if (!refreshableTool(toolName)) return;
     const selected = sourceName ? [runtimeForSource(sourceName)] : runtimes;
     const workspaceHadUsableSource = selected.some((runtime) => runtime.search);
-    await Promise.all(selected.map((runtime) => prepareRuntime(runtime, toolName, Boolean(sourceName), workspaceHadUsableSource)));
+    await Promise.all(
+      selected.map(
+        (runtime) => prepareRuntime(runtime, toolName, Boolean(sourceName), workspaceHadUsableSource)
+      )
+    );
   }
   function workspaceUnavailable() {
     return json(
@@ -1960,11 +2319,26 @@ async function createWorkspaceMcpServer(options) {
       maxResultChars
     );
   }
+  function sourceUnavailable(runtime) {
+    const details = runtime.lastRefreshError ?? errorDetails2("No OKF bundle is available for this source.");
+    return json(
+      {
+        error: {
+          code: "bundle_unavailable",
+          message: details.message,
+          sourceName: runtime.record.name,
+          seedUrl: runtime.record.manifest.source.seedUrl,
+          lastRefreshError: details
+        }
+      },
+      maxResultChars
+    );
+  }
   async function sourceSummary(runtime) {
     try {
       await getRuntimeFreshness(runtime);
     } catch (error) {
-      runtime.lastRefreshError = errorDetails(error);
+      runtime.lastRefreshError = errorDetails2(error);
     }
     const freshness = sourceSummaryFields(runtime);
     if (!runtime.search) {
@@ -1973,9 +2347,12 @@ async function createWorkspaceMcpServer(options) {
     let stats;
     let validation;
     try {
-      [stats, validation] = await Promise.all([inspectBundle(runtime.activeBundleDir), validateBundle(runtime.activeBundleDir)]);
+      [stats, validation] = await Promise.all([
+        inspectBundle(runtime.activeBundleDir),
+        validateBundle(runtime.activeBundleDir)
+      ]);
     } catch (error) {
-      runtime.lastRefreshError = errorDetails(error);
+      runtime.lastRefreshError = errorDetails2(error);
       return unavailableSourceSummary(runtime);
     }
     return {
@@ -2010,7 +2387,10 @@ async function createWorkspaceMcpServer(options) {
     const sources = await Promise.all(selected.map(sourceSummary));
     const usableSourceCount = selected.filter((runtime) => runtime.search).length;
     const conceptCount = sources.reduce((sum, source) => sum + numberField(source.conceptCount), 0);
-    const reservedFileCount = sources.reduce((sum, source) => sum + numberField(source.reservedFileCount), 0);
+    const reservedFileCount = sources.reduce(
+      (sum, source) => sum + numberField(source.reservedFileCount),
+      0
+    );
     const warningCount = sources.reduce((sum, source) => sum + numberField(source.warningCount), 0);
     let typeDistribution = {};
     let tagDistribution = {};
@@ -2056,7 +2436,11 @@ async function createWorkspaceMcpServer(options) {
         description: "Read one workspace OKF concept by source and id. Id-only reads work when the id is unique.",
         inputSchema: {
           type: "object",
-          properties: { source: { type: "string" }, id: { type: "string" }, max_chars: { type: "number" } },
+          properties: {
+            source: { type: "string" },
+            id: { type: "string" },
+            max_chars: { type: "number" }
+          },
           required: ["id"]
         }
       },
@@ -2065,7 +2449,11 @@ async function createWorkspaceMcpServer(options) {
         description: "Return outbound links and backlinks for a workspace concept.",
         inputSchema: {
           type: "object",
-          properties: { source: { type: "string" }, id: { type: "string" }, depth: { type: "number", default: 1 } },
+          properties: {
+            source: { type: "string" },
+            id: { type: "string" },
+            depth: { type: "number", default: 1 }
+          },
           required: ["id"]
         }
       },
@@ -2094,6 +2482,10 @@ async function createWorkspaceMcpServer(options) {
         return json(await workspaceSummary(sourceName), maxResultChars);
       }
       await prepareWorkspaceForTool(request.params.name, sourceName);
+      if (sourceName) {
+        const runtime = runtimeForSource(sourceName);
+        if (!runtime.search) return sourceUnavailable(runtime);
+      }
       const workspace = workspaceSearch();
       if (workspace.usableSourceNames().length === 0) return workspaceUnavailable();
       if (request.params.name === SEARCH_CONCEPTS_TOOL) {
@@ -2131,12 +2523,24 @@ async function createWorkspaceMcpServer(options) {
           const next = [];
           for (const id of frontier) {
             for (const to of currentSearch.graph.outbound.get(id) ?? []) {
-              edges.push({ from: id, to, direction: "outbound", relationship_text: "Markdown link", sourceName: source.record.name });
+              edges.push({
+                from: id,
+                to,
+                direction: "outbound",
+                relationship_text: "Markdown link",
+                sourceName: source.record.name
+              });
               if (!seen.has(to)) next.push(to);
               seen.add(to);
             }
             for (const from of currentSearch.graph.backlinks.get(id) ?? []) {
-              edges.push({ from, to: id, direction: "backlink", relationship_text: "Backlink", sourceName: source.record.name });
+              edges.push({
+                from,
+                to: id,
+                direction: "backlink",
+                relationship_text: "Backlink",
+                sourceName: source.record.name
+              });
               if (!seen.has(from)) next.push(from);
               seen.add(from);
             }
@@ -2151,7 +2555,14 @@ async function createWorkspaceMcpServer(options) {
           ref: `${source.record.name}:${root.id}`,
           concepts: [...seen].map((id) => {
             const concept = currentSearch.graph.concepts.get(id);
-            return { sourceName: source.record.name, id, ref: `${source.record.name}:${id}`, title: concept?.title, type: concept?.type, resource: concept?.resource };
+            return {
+              sourceName: source.record.name,
+              id,
+              ref: `${source.record.name}:${id}`,
+              title: concept?.title,
+              type: concept?.type,
+              resource: concept?.resource
+            };
           }),
           edges
         });
@@ -2164,10 +2575,15 @@ async function createWorkspaceMcpServer(options) {
         const parsed = sourceFilterSchema.parse(args);
         return json(workspace.listTags(parsed.source), maxResultChars);
       }
-      return json({ error: { code: "unknown_tool", message: `Unknown tool: ${request.params.name}` } });
+      return json({
+        error: { code: "unknown_tool", message: `Unknown tool: ${request.params.name}` }
+      });
     } catch (error) {
       if (error instanceof WorkspaceError) return json({ error: error.toJSON() }, maxResultChars);
-      return json({ error: { code: "tool_error", message: error?.message ?? "Tool failed." } }, maxResultChars);
+      return json(
+        { error: { code: "tool_error", message: error?.message ?? "Tool failed." } },
+        maxResultChars
+      );
     }
   });
   return server;
@@ -2187,13 +2603,13 @@ async function serveWorkspaceMcpStdio(options) {
 }
 
 // src/refresh.ts
-import fs8 from "fs/promises";
-import path11 from "path";
+import fs9 from "fs/promises";
+import path12 from "path";
 import { randomUUID } from "crypto";
 var DEFAULT_STALE_LOCK_TIMEOUT_MS = 30 * 60 * 1e3;
 async function pathExists2(target) {
   try {
-    await fs8.access(target);
+    await fs9.access(target);
     return true;
   } catch (error) {
     if (error?.code === "ENOENT") return false;
@@ -2214,40 +2630,40 @@ function isBeforeNextRefreshAllowed(state, now) {
   return new Date(state.nextRefreshAllowedAt).getTime() > now.getTime();
 }
 function tempBundleDir(sourceDir) {
-  return path11.join(sourceDir, `bundle.tmp-${process.pid}-${randomUUID()}`);
+  return path12.join(sourceDir, `bundle.tmp-${process.pid}-${randomUUID()}`);
 }
 function lockfilePath(sourceDir) {
-  return path11.join(sourceDir, ".refresh.lock");
+  return path12.join(sourceDir, ".refresh.lock");
 }
 async function isLockStale(lockPath, now, staleLockTimeoutMs) {
   try {
-    const raw = await fs8.readFile(lockPath, "utf8");
+    const raw = await fs9.readFile(lockPath, "utf8");
     const parsed = JSON.parse(raw);
     const createdAt = parsed.createdAt ? Date.parse(parsed.createdAt) : Number.NaN;
     if (Number.isFinite(createdAt)) return now.getTime() - createdAt > staleLockTimeoutMs;
   } catch {
   }
-  const stat = await fs8.stat(lockPath);
+  const stat = await fs9.stat(lockPath);
   return now.getTime() - stat.mtimeMs > staleLockTimeoutMs;
 }
 async function acquireRefreshLock(sourceDir, now, staleLockTimeoutMs) {
   const lockPath = lockfilePath(sourceDir);
-  await fs8.mkdir(sourceDir, { recursive: true });
+  await fs9.mkdir(sourceDir, { recursive: true });
   try {
-    const handle = await fs8.open(lockPath, "wx");
+    const handle = await fs9.open(lockPath, "wx");
     await handle.writeFile(JSON.stringify({ pid: process.pid, createdAt: iso(now) }, null, 2));
     await handle.close();
     return {
       acquired: true,
       release: async () => {
-        await fs8.rm(lockPath, { force: true });
+        await fs9.rm(lockPath, { force: true });
       }
     };
   } catch (error) {
     if (error?.code !== "EEXIST") throw error;
   }
   if (await isLockStale(lockPath, now, staleLockTimeoutMs)) {
-    await fs8.rm(lockPath, { force: true });
+    await fs9.rm(lockPath, { force: true });
     return acquireRefreshLock(sourceDir, now, staleLockTimeoutMs);
   }
   return { acquired: false };
@@ -2332,16 +2748,16 @@ async function replaceActiveBundle(tempDir, bundleDir) {
   const backupDir = `${bundleDir}.backup-${process.pid}-${randomUUID()}`;
   let movedActiveToBackup = false;
   try {
-    await fs8.mkdir(path11.dirname(bundleDir), { recursive: true });
+    await fs9.mkdir(path12.dirname(bundleDir), { recursive: true });
     if (await pathExists2(bundleDir)) {
-      await fs8.rename(bundleDir, backupDir);
+      await fs9.rename(bundleDir, backupDir);
       movedActiveToBackup = true;
     }
-    await fs8.rename(tempDir, bundleDir);
-    if (movedActiveToBackup) await fs8.rm(backupDir, { recursive: true, force: true });
+    await fs9.rename(tempDir, bundleDir);
+    if (movedActiveToBackup) await fs9.rm(backupDir, { recursive: true, force: true });
   } catch (error) {
     if (movedActiveToBackup && !await pathExists2(bundleDir) && await pathExists2(backupDir)) {
-      await fs8.rename(backupDir, bundleDir);
+      await fs9.rename(backupDir, bundleDir);
     }
     throw error;
   }
@@ -2413,10 +2829,14 @@ async function refreshSource(options) {
       });
       return { status: freshness.status, skipped: false, dryRun: true, crawlResult };
     } finally {
-      await fs8.rm(tempDir, { recursive: true, force: true });
+      await fs9.rm(tempDir, { recursive: true, force: true });
     }
   }
-  const lock = await acquireRefreshLock(options.sourceDir, now, options.staleLockTimeoutMs ?? DEFAULT_STALE_LOCK_TIMEOUT_MS);
+  const lock = await acquireRefreshLock(
+    options.sourceDir,
+    now,
+    options.staleLockTimeoutMs ?? DEFAULT_STALE_LOCK_TIMEOUT_MS
+  );
   if (!lock.acquired) {
     const lockedState = stateForLockedRefresh(options.state, now);
     await options.writeState(lockedState);
@@ -2460,10 +2880,15 @@ async function refreshSource(options) {
     await options.writeState(nextState);
     return { status: "fresh", skipped: false, state: nextState, crawlResult };
   } catch (error) {
-    await fs8.rm(tempDir, { recursive: true, force: true });
+    await fs9.rm(tempDir, { recursive: true, force: true });
     const failedState = stateForRefreshFailure(options.state, options.manifest, error, now);
     await options.writeState(failedState);
-    return { status: "failed", skipped: false, state: failedState, error: failedState.lastError ?? void 0 };
+    return {
+      status: "failed",
+      skipped: false,
+      state: failedState,
+      error: failedState.lastError ?? void 0
+    };
   } finally {
     await lock.release();
   }
@@ -2478,6 +2903,10 @@ export {
   descriptionFromMarkdown,
   assertSafeForceOutDir,
   writeOkfBundle,
+  runtimePackageRoot,
+  packageMetadata,
+  packageVersion,
+  okfyUserAgent,
   crawlWebsite,
   parseDurationSeconds,
   hashBundleContents,

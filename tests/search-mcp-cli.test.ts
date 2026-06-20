@@ -1,12 +1,13 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { createMcpServer, createWorkspaceMcpServer } from "../src/mcp.js";
 import { BundleSearch } from "../src/search.js";
 import type { SourceRecord } from "../src/source-store.js";
+import { withBuiltCliMcpSession } from "./support/mcp-session.js";
 
 const execFileAsync = promisify(execFile);
 const bundleDir = path.resolve("test-fixtures/okf-valid");
@@ -89,7 +90,9 @@ function sourceRecord(name: string, bundleDir: string, state: SourceRecord["stat
   };
 }
 
-function sourceState(partial: Partial<NonNullable<SourceRecord["state"]>> = {}): NonNullable<SourceRecord["state"]> {
+function sourceState(
+  partial: Partial<NonNullable<SourceRecord["state"]>> = {}
+): NonNullable<SourceRecord["state"]> {
   return {
     schemaVersion: 1,
     status: "fresh",
@@ -116,15 +119,24 @@ describe("search", () => {
 
     const results = search.search("MCP tool", { type: "API Reference", tags: ["mcp"], limit: 1 });
     expect(results).toHaveLength(1);
-    expect(results[0]).toMatchObject({ id: "reference/api", title: "API Reference", type: "API Reference" });
+    expect(results[0]).toMatchObject({
+      id: "reference/api",
+      title: "API Reference",
+      type: "API Reference"
+    });
     expect(results[0]?.snippet).toContain("search_concepts");
 
     expect(search.getConcept("guides/quickstart.md")?.id).toBe("guides/quickstart");
     expect(search.getConcept("index")).toBeUndefined();
-    expect(search.search("Okfy Fixture", { limit: 10 }).map((item) => item.id)).not.toContain("index");
+    expect(search.search("Okfy Fixture", { limit: 10 }).map((item) => item.id)).not.toContain(
+      "index"
+    );
     expect(search.graph.outbound.get("guides/quickstart")).toEqual(["reference/api"]);
     expect(search.graph.backlinks.get("reference/api")).toEqual(["guides/quickstart"]);
-    expect([...search.graph.concepts.keys()].sort()).toEqual(["guides/quickstart", "reference/api"]);
+    expect([...search.graph.concepts.keys()].sort()).toEqual([
+      "guides/quickstart",
+      "reference/api"
+    ]);
   });
 });
 
@@ -186,8 +198,18 @@ describe("MCP server", () => {
         method: "tools/call",
         params: { name: "bundle_summary", arguments: {} }
       })
-    ) as { conceptCount: number; reservedFileCount: number; warningCount: number; validationStatus: string };
-    expect(summary).toMatchObject({ conceptCount: 2, reservedFileCount: 3, warningCount: 0, validationStatus: "valid" });
+    ) as {
+      conceptCount: number;
+      reservedFileCount: number;
+      warningCount: number;
+      validationStatus: string;
+    };
+    expect(summary).toMatchObject({
+      conceptCount: 2,
+      reservedFileCount: 3,
+      warningCount: 0,
+      validationStatus: "valid"
+    });
   });
 
   it("adds registered source freshness fields to bundle_summary without changing tools", async () => {
@@ -293,15 +315,27 @@ describe("MCP server", () => {
       "list_tags",
       "bundle_summary"
     ]);
-    expect(listed.tools.find((tool) => tool.name === "search_concepts")?.inputSchema.properties.source).toBeTruthy();
+    expect(
+      listed.tools.find((tool) => tool.name === "search_concepts")?.inputSchema.properties.source
+    ).toBeTruthy();
 
     const filteredSearch = parseText(
       await callTool({
         method: "tools/call",
-        params: { name: "search_concepts", arguments: { query: "quickstart", source: "stripe", limit: 10 } }
+        params: {
+          name: "search_concepts",
+          arguments: { query: "quickstart", source: "stripe", limit: 10 }
+        }
       })
     ) as Array<{ sourceName: string; id: string; ref: string; seedUrl: string }>;
-    expect(filteredSearch).toMatchObject([{ sourceName: "stripe", id: "concept", ref: "stripe:concept", seedUrl: "https://docs.example.com/stripe" }]);
+    expect(filteredSearch).toMatchObject([
+      {
+        sourceName: "stripe",
+        id: "concept",
+        ref: "stripe:concept",
+        seedUrl: "https://docs.example.com/stripe"
+      }
+    ]);
 
     const ambiguousRead = parseText(
       await callTool({
@@ -320,7 +354,10 @@ describe("MCP server", () => {
     const stripeRead = parseText(
       await callTool({
         method: "tools/call",
-        params: { name: "read_concept", arguments: { source: "stripe", id: "concept", max_chars: 80 } }
+        params: {
+          name: "read_concept",
+          arguments: { source: "stripe", id: "concept", max_chars: 80 }
+        }
       })
     ) as { sourceName: string; ref: string; markdown_body: string; source_resource: string };
     expect(stripeRead).toMatchObject({
@@ -357,9 +394,20 @@ describe("MCP server", () => {
       usableSourceCount: number;
       conceptCount: number;
       validationStatus: string;
-      sources: Array<{ sourceName: string; validationStatus: string; freshnessStatus: string; refreshInProgress: boolean; lastRefreshError: unknown }>;
+      sources: Array<{
+        sourceName: string;
+        validationStatus: string;
+        freshnessStatus: string;
+        refreshInProgress: boolean;
+        lastRefreshError: unknown;
+      }>;
     };
-    expect(summary).toMatchObject({ workspace: true, sourceCount: 2, usableSourceCount: 2, conceptCount: 2 });
+    expect(summary).toMatchObject({
+      workspace: true,
+      sourceCount: 2,
+      usableSourceCount: 2,
+      conceptCount: 2
+    });
     expect(summary.validationStatus).toBe("valid");
     expect(summary.sources[0]).toMatchObject({
       sourceName: "stripe",
@@ -386,7 +434,11 @@ describe("MCP server", () => {
       })
     ) as { sourceName: string; ref: string; concepts: Array<{ sourceName: string; ref: string }> };
     expect(neighbors).toMatchObject({ sourceName: "stripe", ref: "stripe:concept" });
-    expect(neighbors.concepts).toEqual(expect.arrayContaining([expect.objectContaining({ sourceName: "stripe", ref: "stripe:concept" })]));
+    expect(neighbors.concepts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sourceName: "stripe", ref: "stripe:concept" })
+      ])
+    );
 
     const unselected = parseText(
       await callTool({
@@ -402,17 +454,79 @@ describe("MCP server", () => {
         params: { name: "bundle_summary", arguments: { source: "supabase" } }
       })
     ) as { error: { code: string; source: string } };
-    expect(unselectedSummary.error).toMatchObject({ code: "source_not_in_workspace", source: "supabase" });
+    expect(unselectedSummary.error).toMatchObject({
+      code: "source_not_in_workspace",
+      source: "supabase"
+    });
   });
 
-  it("rejects unreadable selected workspace bundles before MCP readiness", async () => {
+  it("keeps workspace MCP usable when one selected bundle is unavailable", async () => {
     const root = await tempRoot();
+    const stripeBundle = path.join(root, "stripe-bundle");
+    await writeSingleConceptBundle(stripeBundle, {
+      title: "Stripe Concept",
+      type: "Guide",
+      body: "stripe-only-token"
+    });
 
-    await expect(
-      createWorkspaceMcpServer({
-        sources: [{ record: sourceRecord("missing", path.join(root, "missing-bundle"), sourceState()) }]
+    const server = await createWorkspaceMcpServer({
+      maxResultChars: 4000,
+      sources: [
+        { record: sourceRecord("stripe", stripeBundle, sourceState()) },
+        {
+          record: {
+            ...sourceRecord("missing", path.join(root, "missing-bundle"), sourceState()),
+            loadError: { code: "ENOENT", message: "source.json is missing" }
+          }
+        }
+      ]
+    });
+    const callTool = handler(server, "tools/call");
+
+    const result = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "search_concepts", arguments: { query: "stripe-only-token", limit: 10 } }
       })
-    ).rejects.toThrow();
+    ) as Array<{ sourceName: string; title: string }>;
+    expect(result).toMatchObject([{ sourceName: "stripe", title: "Stripe Concept" }]);
+
+    const summary = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "bundle_summary", arguments: {} }
+      })
+    ) as {
+      sourceCount: number;
+      usableSourceCount: number;
+      validationStatus: string;
+      sources: Array<{
+        sourceName: string;
+        validationStatus: string;
+        lastRefreshError: { message: string } | null;
+      }>;
+    };
+    expect(summary).toMatchObject({
+      sourceCount: 2,
+      usableSourceCount: 1,
+      validationStatus: "invalid"
+    });
+    expect(summary.sources.find((source) => source.sourceName === "missing")).toMatchObject({
+      validationStatus: "unavailable",
+      lastRefreshError: { code: "ENOENT", message: "source.json is missing" }
+    });
+
+    const missingSearch = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "search_concepts", arguments: { query: "anything", source: "missing" } }
+      })
+    ) as { error: { code: string; sourceName: string } };
+    expect(missingSearch.error).toMatchObject({
+      code: "bundle_unavailable",
+      sourceName: "missing",
+      message: "source.json is missing"
+    });
   });
 
   it("keeps healthy workspace sources usable when another source freshness check fails", async () => {
@@ -460,7 +574,13 @@ describe("MCP server", () => {
         method: "tools/call",
         params: { name: "bundle_summary", arguments: {} }
       })
-    ) as { sources: Array<{ sourceName: string; freshnessStatus: string; lastRefreshError: { message: string } | null }> };
+    ) as {
+      sources: Array<{
+        sourceName: string;
+        freshnessStatus: string;
+        lastRefreshError: { message: string } | null;
+      }>;
+    };
     expect(summary.sources.find((source) => source.sourceName === "clerk")).toMatchObject({
       freshnessStatus: "failed",
       lastRefreshError: { message: "state file unreadable" }
@@ -497,7 +617,14 @@ describe("MCP server", () => {
         method: "tools/call",
         params: { name: "bundle_summary", arguments: {} }
       })
-    ) as { validationStatus: string; sources: Array<{ sourceName: string; validationStatus: string; lastRefreshError: { message: string } | null }> };
+    ) as {
+      validationStatus: string;
+      sources: Array<{
+        sourceName: string;
+        validationStatus: string;
+        lastRefreshError: { message: string } | null;
+      }>;
+    };
 
     expect(summary.validationStatus).toBe("invalid");
     expect(summary.sources.find((source) => source.sourceName === "stripe")).toMatchObject({
@@ -509,7 +636,9 @@ describe("MCP server", () => {
       sourceName: "clerk",
       validationStatus: "unavailable"
     });
-    expect(summary.sources.find((source) => source.sourceName === "clerk")?.lastRefreshError?.message).toBeTruthy();
+    expect(
+      summary.sources.find((source) => source.sourceName === "clerk")?.lastRefreshError?.message
+    ).toBeTruthy();
   });
 
   it("serves usable workspace sources while stale sources refresh in the background", async () => {
@@ -567,7 +696,11 @@ describe("MCP server", () => {
           record: sourceRecord("clerk", clerkBundle, sourceState()),
           refresh: {
             mode: "stale-while-refresh",
-            getFreshness: async () => ({ freshnessStatus: "fresh", refreshInProgress: false, lastRefreshError: null })
+            getFreshness: async () => ({
+              freshnessStatus: "fresh",
+              refreshInProgress: false,
+              lastRefreshError: null
+            })
           }
         }
       ]
@@ -592,7 +725,10 @@ describe("MCP server", () => {
     const refreshedSearch = parseText(
       await callTool({
         method: "tools/call",
-        params: { name: "search_concepts", arguments: { query: "new-stripe-token", source: "stripe", limit: 10 } }
+        params: {
+          name: "search_concepts",
+          arguments: { query: "new-stripe-token", source: "stripe", limit: 10 }
+        }
       })
     ) as Array<{ title: string; sourceName: string }>;
     expect(refreshedSearch).toMatchObject([{ title: "New Stripe Concept", sourceName: "stripe" }]);
@@ -622,7 +758,11 @@ describe("MCP server", () => {
           record: sourceRecord("stripe", stripeBundle, sourceState({ status: "stale" })),
           refresh: {
             mode: "blocking",
-            getFreshness: async () => ({ freshnessStatus: "stale", refreshInProgress: false, lastRefreshError: null }),
+            getFreshness: async () => ({
+              freshnessStatus: "stale",
+              refreshInProgress: false,
+              lastRefreshError: null
+            }),
             refreshIfNeeded: async () => {
               stripeRefreshCount += 1;
               await writeSingleConceptBundle(stripeBundle, {
@@ -638,7 +778,11 @@ describe("MCP server", () => {
           record: sourceRecord("clerk", clerkBundle, sourceState({ status: "stale" })),
           refresh: {
             mode: "blocking",
-            getFreshness: async () => ({ freshnessStatus: "stale", refreshInProgress: false, lastRefreshError: null }),
+            getFreshness: async () => ({
+              freshnessStatus: "stale",
+              refreshInProgress: false,
+              lastRefreshError: null
+            }),
             refreshIfNeeded: async () => {
               clerkRefreshCount += 1;
               await writeSingleConceptBundle(clerkBundle, {
@@ -657,7 +801,10 @@ describe("MCP server", () => {
     const result = parseText(
       await callTool({
         method: "tools/call",
-        params: { name: "search_concepts", arguments: { query: "new-clerk-token", source: "clerk", limit: 10 } }
+        params: {
+          name: "search_concepts",
+          arguments: { query: "new-clerk-token", source: "clerk", limit: 10 }
+        }
       })
     ) as Array<{ title: string; sourceName: string }>;
 
@@ -682,7 +829,11 @@ describe("MCP server", () => {
           record: sourceRecord("stripe", stripeBundle, sourceState({ status: "stale" })),
           refresh: {
             mode: "blocking",
-            getFreshness: async () => ({ freshnessStatus: "stale", refreshInProgress: false, lastRefreshError: null }),
+            getFreshness: async () => ({
+              freshnessStatus: "stale",
+              refreshInProgress: false,
+              lastRefreshError: null
+            }),
             refreshIfNeeded: async () => {
               throw new Error("network offline");
             }
@@ -695,7 +846,10 @@ describe("MCP server", () => {
     const cachedSearch = parseText(
       await callTool({
         method: "tools/call",
-        params: { name: "search_concepts", arguments: { query: "cached-stripe-token", source: "stripe", limit: 10 } }
+        params: {
+          name: "search_concepts",
+          arguments: { query: "cached-stripe-token", source: "stripe", limit: 10 }
+        }
       })
     ) as Array<{ title: string; sourceName: string }>;
     expect(cachedSearch).toMatchObject([{ title: "Cached Stripe Concept", sourceName: "stripe" }]);
@@ -706,7 +860,10 @@ describe("MCP server", () => {
         params: { name: "bundle_summary", arguments: { source: "stripe" } }
       })
     ) as { sources: Array<{ freshnessStatus: string; lastRefreshError: { message: string } }> };
-    expect(summary.sources[0]).toMatchObject({ freshnessStatus: "failed", lastRefreshError: { message: "network offline" } });
+    expect(summary.sources[0]).toMatchObject({
+      freshnessStatus: "failed",
+      lastRefreshError: { message: "network offline" }
+    });
   });
 
   it("serves stale results while a background refresh reloads search for later calls", async () => {
@@ -792,7 +949,11 @@ describe("MCP server", () => {
       source: { name: "stripe", kind: "website", seedUrl: "https://docs.stripe.com/checkout" },
       refresh: {
         mode: "blocking",
-        getFreshness: async () => ({ freshnessStatus, refreshInProgress: false, lastRefreshError: null }),
+        getFreshness: async () => ({
+          freshnessStatus,
+          refreshInProgress: false,
+          lastRefreshError: null
+        }),
         refreshIfNeeded: async () => {
           await writeSingleConceptBundle(reloadedBundle, {
             title: "New Concept",
@@ -954,7 +1115,12 @@ describe("CLI smoke", () => {
       return;
     }
 
-    const { stdout, stderr } = await execFileAsync(process.execPath, [cli, "validate", bundleDir, "--json"]);
+    const { stdout, stderr } = await execFileAsync(process.execPath, [
+      cli,
+      "validate",
+      bundleDir,
+      "--json"
+    ]);
     const report = JSON.parse(stdout) as { valid: boolean; conceptCount: number };
     expect(report).toMatchObject({ valid: true, conceptCount: 2 });
     expect(stderr).toContain("okfy validate: checking");
@@ -964,74 +1130,46 @@ describe("CLI smoke", () => {
   it("serves MCP over stdio as JSON-RPC only from built CLI", async () => {
     const cli = path.resolve("dist/cli.js");
     await fs.access(cli);
-
-    const child = spawn(process.execPath, [cli, "serve", "examples/bundles/okfy-docs", "--mcp"], {
-      stdio: ["pipe", "pipe", "pipe"]
-    });
-    const stdoutLines: string[] = [];
-    let stdoutBuffer = "";
-    let stderr = "";
-
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdoutBuffer += chunk.toString("utf8");
-      let newlineIndex = stdoutBuffer.indexOf("\n");
-      while (newlineIndex >= 0) {
-        const line = stdoutBuffer.slice(0, newlineIndex).trim();
-        stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
-        if (line) stdoutLines.push(line);
-        newlineIndex = stdoutBuffer.indexOf("\n");
-      }
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8");
-    });
-
-    const send = (id: number, method: string, params: Record<string, unknown> = {}) => {
-      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+    const packageJson = JSON.parse(await fs.readFile("package.json", "utf8")) as {
+      version: string;
     };
-    const waitFor = async (id: number) => {
-      const deadline = Date.now() + 5000;
-      while (Date.now() < deadline) {
+
+    await withBuiltCliMcpSession(
+      ["serve", "examples/bundles/okfy-docs", "--mcp"],
+      {},
+      async ({ initializeResponse, stdoutLines, stderr, send, waitFor }) => {
+        const serverInfo = (
+          initializeResponse.result as { serverInfo?: { version?: string } } | undefined
+        )?.serverInfo;
+        expect(serverInfo?.version).toBe(packageJson.version);
+
+        send(2, "tools/list");
+        const toolsResponse = (await waitFor(2)) as { result: { tools: Array<{ name: string }> } };
+        expect(toolsResponse.result.tools.map((tool) => tool.name)).toContain("bundle_summary");
+
+        send(3, "tools/call", { name: "bundle_summary", arguments: {} });
+        const summaryResponse = (await waitFor(3)) as {
+          result: { content: Array<{ text: string }> };
+        };
+        const summary = JSON.parse(summaryResponse.result.content[0]?.text ?? "{}") as {
+          conceptCount: number;
+          reservedFileCount: number;
+          validationStatus: string;
+        };
+        expect(summary).toMatchObject({
+          conceptCount: 6,
+          reservedFileCount: 4,
+          validationStatus: "valid"
+        });
+
         for (const line of stdoutLines) {
-          const parsed = JSON.parse(line) as { id?: number } & Record<string, unknown>;
-          if (parsed.id === id) return parsed;
+          const parsed = JSON.parse(line) as { jsonrpc?: string };
+          expect(parsed.jsonrpc).toBe("2.0");
         }
-        await new Promise((resolve) => setTimeout(resolve, 25));
+        expect(stderr()).toContain("okfy serve: loading examples/bundles/okfy-docs");
+        expect(stderr()).toContain("okfy serve: ready on stdio");
       }
-      throw new Error(`Timed out waiting for MCP response ${id}; stdout=${stdoutLines.join("\n")} stderr=${stderr}`);
-    };
-
-    try {
-      send(1, "initialize", {
-        protocolVersion: "2025-06-18",
-        capabilities: {},
-        clientInfo: { name: "okfy-vitest", version: "0.1.0" }
-      });
-      await waitFor(1);
-      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} })}\n`);
-
-      send(2, "tools/list");
-      const toolsResponse = (await waitFor(2)) as { result: { tools: Array<{ name: string }> } };
-      expect(toolsResponse.result.tools.map((tool) => tool.name)).toContain("bundle_summary");
-
-      send(3, "tools/call", { name: "bundle_summary", arguments: {} });
-      const summaryResponse = (await waitFor(3)) as { result: { content: Array<{ text: string }> } };
-      const summary = JSON.parse(summaryResponse.result.content[0]?.text ?? "{}") as {
-        conceptCount: number;
-        reservedFileCount: number;
-        validationStatus: string;
-      };
-      expect(summary).toMatchObject({ conceptCount: 6, reservedFileCount: 4, validationStatus: "valid" });
-
-      for (const line of stdoutLines) {
-        const parsed = JSON.parse(line) as { jsonrpc?: string };
-        expect(parsed.jsonrpc).toBe("2.0");
-      }
-      expect(stderr).toContain("okfy serve: loading examples/bundles/okfy-docs");
-      expect(stderr).toContain("okfy serve: ready on stdio");
-    } finally {
-      child.kill("SIGTERM");
-    }
+    );
   });
 
   it("requires dangerous override for unsafe force output paths", async () => {
@@ -1043,7 +1181,17 @@ describe("CLI smoke", () => {
     const sourceFile = path.join(input, "guide.md");
     await fs.writeFile(sourceFile, "# Guide\n\nHello.", "utf8");
 
-    await expect(execFileAsync(process.execPath, [cli, "import", input, "--out", root, "--force", "--stable-timestamps"])).rejects.toMatchObject({
+    await expect(
+      execFileAsync(process.execPath, [
+        cli,
+        "import",
+        input,
+        "--out",
+        root,
+        "--force",
+        "--stable-timestamps"
+      ])
+    ).rejects.toMatchObject({
       stderr: expect.stringMatching(/Unsafe output directory for --force/i)
     });
     await expect(fs.readFile(sourceFile, "utf8")).resolves.toContain("Hello.");
@@ -1060,7 +1208,9 @@ describe("CLI smoke", () => {
     ]);
 
     expect(stdout).toContain("okfy import");
-    await expect(fs.readFile(path.join(root, "guide.md"), "utf8")).resolves.toContain('type: "Guide"');
+    await expect(fs.readFile(path.join(root, "guide.md"), "utf8")).resolves.toContain(
+      'type: "Guide"'
+    );
     await expect(fs.access(sourceFile)).rejects.toThrow();
   });
 });
