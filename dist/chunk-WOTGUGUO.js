@@ -1117,6 +1117,415 @@ async function inspectBundle(bundleDir) {
   };
 }
 
+// src/source-store.ts
+import fs6 from "fs/promises";
+import os2 from "os";
+import path9 from "path";
+var SOURCE_NAME_PATTERN = /^[a-z0-9._-]+$/;
+var MANIFEST_KEYS = [
+  "schemaVersion",
+  "okfyVersion",
+  "name",
+  "kind",
+  "createdAt",
+  "updatedAt",
+  "source",
+  "crawl",
+  "refresh",
+  "bundle"
+];
+var CRAWL_KEYS = ["maxPages", "maxDepth", "include", "exclude", "sameOrigin", "respectRobots", "concurrency", "allowPrivateNetwork"];
+var REFRESH_KEYS = ["mode", "maxAgeSeconds", "minIntervalSeconds"];
+var STATE_KEYS = [
+  "schemaVersion",
+  "status",
+  "lastCheckedAt",
+  "lastRefreshStartedAt",
+  "lastRefreshCompletedAt",
+  "lastSuccessfulRefreshAt",
+  "nextRefreshAllowedAt",
+  "refreshInProgress",
+  "lastError",
+  "bundle"
+];
+var STATE_BUNDLE_KEYS = ["conceptCount", "warningCount", "valid", "contentHash"];
+function resolveOkfyHome(options = {}) {
+  const configured = options.okfyHome ?? options.env?.OKFY_HOME ?? process.env.OKFY_HOME;
+  if (configured && configured.trim() !== "") return path9.resolve(configured);
+  return path9.join(os2.homedir(), ".okfy");
+}
+function validateSourceName(name) {
+  if (!name || name === "." || name === ".." || !SOURCE_NAME_PATTERN.test(name)) {
+    throw new Error(
+      `Invalid source name "${name}". Use lowercase letters, numbers, dash, underscore, or dot without path separators.`
+    );
+  }
+  return name;
+}
+function resolveSourceDir(name, options = {}) {
+  const safeName = validateSourceName(name);
+  const sourcesRoot = resolveSourcesRoot(options);
+  const sourceDir = path9.resolve(sourcesRoot, safeName);
+  if (!isInsideOrEqual(sourcesRoot, sourceDir)) {
+    throw new Error(`Invalid source name "${name}". Source directory escapes OKFY_HOME.`);
+  }
+  return sourceDir;
+}
+function resolveBundleDir(manifest, options = {}) {
+  const sourceDir = resolveSourceDir(manifest.name, options);
+  const bundleDir = manifest.bundle.dir;
+  if (!bundleDir || bundleDir.trim() === "") {
+    throw new Error(`Invalid bundle directory for source "${manifest.name}".`);
+  }
+  if (path9.isAbsolute(bundleDir)) return path9.normalize(bundleDir);
+  const resolved = path9.resolve(sourceDir, bundleDir);
+  if (resolved === sourceDir || !isInsideOrEqual(sourceDir, resolved)) {
+    throw new Error(`Invalid bundle directory for source "${manifest.name}". Relative bundle paths must stay inside the source directory.`);
+  }
+  return resolved;
+}
+async function writeSourceManifest(manifest, options = {}) {
+  const sourceDir = resolveSourceDir(manifest.name, options);
+  await writeStableJson(path9.join(sourceDir, "source.json"), manifest);
+}
+async function readSourceManifest(name, options = {}) {
+  const sourceDir = resolveSourceDir(name, options);
+  const manifest = await readJson(path9.join(sourceDir, "source.json"));
+  if (manifest.name !== name) {
+    throw new Error(`Source manifest name mismatch: expected "${name}", found "${manifest.name}".`);
+  }
+  validateSourceName(manifest.name);
+  return manifest;
+}
+async function writeRefreshState(name, state, options = {}) {
+  const sourceDir = resolveSourceDir(name, options);
+  await writeStableJson(path9.join(sourceDir, "state.json"), state);
+}
+async function readRefreshState(name, options = {}) {
+  const sourceDir = resolveSourceDir(name, options);
+  return readJson(path9.join(sourceDir, "state.json"));
+}
+async function listSources(options = {}) {
+  const sourcesRoot = resolveSourcesRoot(options);
+  let entries;
+  try {
+    entries = await fs6.readdir(sourcesRoot, { withFileTypes: true });
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return [];
+    throw error;
+  }
+  const records = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    try {
+      const manifest = await readSourceManifest(entry.name, options);
+      const state = await readRefreshStateIfExists(entry.name, options);
+      records.push({
+        name: manifest.name,
+        dir: resolveSourceDir(manifest.name, options),
+        manifest,
+        state,
+        bundleDir: resolveBundleDir(manifest, options)
+      });
+    } catch {
+      continue;
+    }
+  }
+  return records.sort((first, second) => first.name.localeCompare(second.name));
+}
+async function removeSource(name, options = {}) {
+  const sourceDir = resolveSourceDir(name, options);
+  await fs6.rm(sourceDir, { recursive: true, force: true });
+}
+function resolveSourcesRoot(options) {
+  return path9.join(resolveOkfyHome(options), "sources");
+}
+async function readRefreshStateIfExists(name, options) {
+  try {
+    return await readRefreshState(name, options);
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return void 0;
+    throw error;
+  }
+}
+async function readJson(filePath) {
+  return JSON.parse(await fs6.readFile(filePath, "utf8"));
+}
+async function writeStableJson(filePath, value) {
+  await fs6.mkdir(path9.dirname(filePath), { recursive: true });
+  await fs6.writeFile(filePath, `${JSON.stringify(orderJson(value), null, 2)}
+`, "utf8");
+}
+function orderJson(value) {
+  if (Array.isArray(value)) return value.map(orderJson);
+  if (!isPlainObject(value)) return value;
+  const ordered = {};
+  for (const key of orderKeys(value)) {
+    ordered[key] = orderJson(value[key]);
+  }
+  return ordered;
+}
+function orderKeys(value) {
+  if ("status" in value) return sortByPreferredOrder(Object.keys(value), STATE_KEYS);
+  if ("okfyVersion" in value) return sortByPreferredOrder(Object.keys(value), MANIFEST_KEYS);
+  if (hasKeys(value, CRAWL_KEYS)) return sortByPreferredOrder(Object.keys(value), CRAWL_KEYS);
+  if (hasKeys(value, REFRESH_KEYS)) return sortByPreferredOrder(Object.keys(value), REFRESH_KEYS);
+  if (hasKeys(value, STATE_BUNDLE_KEYS)) return sortByPreferredOrder(Object.keys(value), STATE_BUNDLE_KEYS);
+  if ("seedUrl" in value) return sortByPreferredOrder(Object.keys(value), ["seedUrl"]);
+  if ("dir" in value) return sortByPreferredOrder(Object.keys(value), ["dir"]);
+  return Object.keys(value).sort((first, second) => first.localeCompare(second));
+}
+function hasKeys(value, keys) {
+  return keys.some((key) => key in value);
+}
+function sortByPreferredOrder(keys, preferredOrder) {
+  return keys.sort((first, second) => {
+    const firstIndex = preferredOrder.indexOf(first);
+    const secondIndex = preferredOrder.indexOf(second);
+    if (firstIndex === -1 && secondIndex === -1) return first.localeCompare(second);
+    if (firstIndex === -1) return 1;
+    if (secondIndex === -1) return -1;
+    return firstIndex - secondIndex;
+  });
+}
+function isPlainObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isInsideOrEqual(parent, child) {
+  const relative = path9.relative(parent, child);
+  return relative === "" || !relative.startsWith("..") && !path9.isAbsolute(relative);
+}
+function isNodeError(error) {
+  return error instanceof Error && "code" in error;
+}
+
+// src/workspace.ts
+import fs7 from "fs/promises";
+import path10 from "path";
+var WorkspaceError = class extends Error {
+  constructor(code, message, details = {}) {
+    super(message);
+    this.code = code;
+    this.details = details;
+  }
+  code;
+  details;
+  toJSON() {
+    return {
+      code: this.code,
+      message: this.message,
+      ...this.details
+    };
+  }
+};
+function workspaceProfilePath(name, options = {}) {
+  return path10.join(resolveOkfyHome(options), "workspaces", `${validateSourceName(name)}.json`);
+}
+async function readWorkspaceProfile(name, options = {}) {
+  const profile = JSON.parse(await fs7.readFile(workspaceProfilePath(name, options), "utf8"));
+  validateWorkspaceProfile(profile, name);
+  return profile;
+}
+async function writeWorkspaceProfile(profile, options = {}) {
+  validateWorkspaceProfile(profile);
+  const filePath = workspaceProfilePath(profile.name, options);
+  await fs7.mkdir(path10.dirname(filePath), { recursive: true });
+  await fs7.writeFile(filePath, `${JSON.stringify(profile, null, 2)}
+`, "utf8");
+}
+async function resolveWorkspaceSources(selection, options = {}) {
+  const hasNames = Boolean(selection.names?.length);
+  const modeCount = Number(hasNames) + Number(Boolean(selection.all)) + Number(Boolean(selection.profile)) + Number(Boolean(selection.profileName));
+  if (modeCount > 1) {
+    throw new Error("Choose one workspace source selection: explicit source names, --all, or one workspace profile.");
+  }
+  let names = selection.names ?? [];
+  let workspaceName;
+  if (selection.profileName) {
+    const profile = await readWorkspaceProfile(selection.profileName, options);
+    names = profile.sources;
+    workspaceName = profile.name;
+  } else if (selection.profile) {
+    validateWorkspaceProfile(selection.profile);
+    names = selection.profile.sources;
+    workspaceName = selection.profile.name;
+  }
+  if (selection.all) {
+    const records2 = await readAllSourcesFailVisible(options);
+    if (!records2.length) throw new WorkspaceError("no_sources", "No registered sources found for --all.");
+    return { records: records2, sourceNames: records2.map((record) => record.name) };
+  }
+  if (!names.length) throw new WorkspaceError("no_sources", "Select at least one registered source.");
+  assertUniqueSourceNames(names);
+  const records = await Promise.all(names.map((name) => readSourceRecord(name, options)));
+  return { records, sourceNames: records.map((record) => record.name), workspaceName };
+}
+var WorkspaceSearch = class _WorkspaceSearch {
+  sources;
+  selectedNames;
+  availableNames;
+  constructor(sources, options = {}) {
+    if (!sources.length) throw new WorkspaceError("no_sources", "Workspace contains no sources.");
+    assertUniqueSourceNames(sources.map((source) => source.record.name));
+    this.sources = [...sources];
+    this.selectedNames = new Set(sources.map((source) => source.record.name));
+    this.availableNames = /* @__PURE__ */ new Set([...options.availableSourceNames ?? [], ...this.selectedNames]);
+  }
+  static async fromSourceRecords(records, options = {}) {
+    const sources = await Promise.all(
+      records.map(async (record) => ({
+        record,
+        bundleDir: record.bundleDir,
+        search: await BundleSearch.fromBundle(record.bundleDir)
+      }))
+    );
+    return new _WorkspaceSearch(sources, options);
+  }
+  search(query, options = {}) {
+    const limit = options.limit ?? 10;
+    const sources = this.usableSources(options.source);
+    return sources.flatMap(
+      (source) => source.search.search(query, { type: options.type, tags: options.tags, limit: Math.max(limit, 50) }).map(
+        (result) => this.withSourceResult(source, result)
+      )
+    ).sort((first, second) => second.score - first.score || first.sourceName.localeCompare(second.sourceName) || first.id.localeCompare(second.id)).slice(0, limit);
+  }
+  getConcept(input) {
+    const sources = input.source ? this.usableSources(input.source) : this.sourcesWithSearch();
+    const matches = sources.map((source) => ({ source, concept: source.search.getConcept(input.id) })).filter((row) => Boolean(row.concept));
+    if (matches.length === 0) {
+      throw new WorkspaceError("unknown_concept", `No concept found for ${input.id}`, { id: input.id, source: input.source });
+    }
+    if (!input.source && matches.length > 1) {
+      throw new WorkspaceError("ambiguous_concept", `Concept id "${input.id}" exists in multiple workspace sources.`, {
+        id: input.id,
+        candidates: matches.map(({ source, concept }) => this.conceptCandidate(source, concept))
+      });
+    }
+    return matches[0];
+  }
+  listTypes(source) {
+    return this.distribution(source, (concept) => [concept.type]);
+  }
+  listTags(source) {
+    return this.distribution(source, (concept) => concept.tags);
+  }
+  sourceNames() {
+    return this.sources.map((source) => source.record.name);
+  }
+  usableSourceNames() {
+    return this.sourcesWithSearch().map((source) => source.record.name);
+  }
+  distribution(sourceName, values) {
+    const distribution = {};
+    for (const source of this.usableSources(sourceName)) {
+      for (const concept of source.search.graph.concepts.values()) {
+        for (const value of values(concept)) distribution[value] = (distribution[value] ?? 0) + 1;
+      }
+    }
+    return Object.fromEntries(Object.entries(distribution).sort(([first], [second]) => first.localeCompare(second)));
+  }
+  usableSources(sourceName) {
+    const sources = sourceName ? [this.sourceByName(sourceName)] : this.sources;
+    const usable = sources.filter((source) => Boolean(source.search));
+    if (!usable.length) {
+      throw new WorkspaceError("no_usable_sources", "No usable OKF bundle is available in this workspace.", {
+        source: sourceName,
+        sources: sources.map((source) => source.record.name)
+      });
+    }
+    return usable;
+  }
+  sourcesWithSearch() {
+    return this.sources.filter((source) => Boolean(source.search));
+  }
+  sourceByName(sourceName) {
+    if (this.selectedNames.has(sourceName)) {
+      return this.sources.find((source) => source.record.name === sourceName);
+    }
+    if (this.availableNames.has(sourceName)) {
+      throw new WorkspaceError("source_not_in_workspace", `Source "${sourceName}" is not selected in this workspace.`, {
+        source: sourceName,
+        workspaceSources: [...this.selectedNames]
+      });
+    }
+    throw new WorkspaceError("unknown_source", `Unknown source "${sourceName}".`, { source: sourceName });
+  }
+  withSourceResult(source, result) {
+    return {
+      ...result,
+      sourceName: source.record.name,
+      sourceKind: source.record.manifest.kind,
+      seedUrl: source.record.manifest.source.seedUrl,
+      ref: `${source.record.name}:${result.id}`
+    };
+  }
+  conceptCandidate(source, concept) {
+    return {
+      sourceName: source.record.name,
+      sourceKind: source.record.manifest.kind,
+      seedUrl: source.record.manifest.source.seedUrl,
+      id: concept.id,
+      ref: `${source.record.name}:${concept.id}`,
+      title: concept.title,
+      type: concept.type,
+      resource: concept.resource
+    };
+  }
+};
+function validateWorkspaceProfile(profile, expectedName) {
+  if (profile.schemaVersion !== 1) throw new Error("Workspace profile schemaVersion must be 1.");
+  validateSourceName(profile.name);
+  if (expectedName && profile.name !== expectedName) {
+    throw new Error(`Workspace profile name mismatch: expected "${expectedName}", found "${profile.name}".`);
+  }
+  if (!Array.isArray(profile.sources) || profile.sources.length === 0) {
+    throw new Error(`Workspace profile "${profile.name}" must list at least one source.`);
+  }
+  for (const source of profile.sources) validateSourceName(source);
+  assertUniqueSourceNames(profile.sources);
+}
+function assertUniqueSourceNames(names) {
+  const seen = /* @__PURE__ */ new Set();
+  for (const name of names) {
+    validateSourceName(name);
+    if (seen.has(name)) throw new WorkspaceError("duplicate_source", `Duplicate workspace source "${name}".`, { source: name });
+    seen.add(name);
+  }
+}
+async function readSourceRecord(name, options) {
+  const manifest = await readSourceManifest(name, options);
+  return {
+    name: manifest.name,
+    dir: resolveSourceDir(manifest.name, options),
+    manifest,
+    state: await readRefreshStateIfExists2(manifest.name, options),
+    bundleDir: resolveBundleDir(manifest, options)
+  };
+}
+async function readAllSourcesFailVisible(options) {
+  const sourcesRoot = path10.join(resolveOkfyHome(options), "sources");
+  let entries;
+  try {
+    entries = (await fs7.readdir(sourcesRoot, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort((first, second) => first.localeCompare(second));
+  } catch (error) {
+    if (isNodeError2(error) && error.code === "ENOENT") return [];
+    throw error;
+  }
+  return Promise.all(entries.map((name) => readSourceRecord(name, options)));
+}
+async function readRefreshStateIfExists2(name, options) {
+  try {
+    return await readRefreshState(name, options);
+  } catch (error) {
+    if (isNodeError2(error) && error.code === "ENOENT") return void 0;
+    throw error;
+  }
+}
+function isNodeError2(error) {
+  return error instanceof Error && "code" in error;
+}
+
 // src/mcp.ts
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -1153,6 +1562,10 @@ var searchSchema = z.object({
 });
 var readSchema = z.object({ id: z.string(), max_chars: z.number().int().positive().optional() });
 var neighborsSchema = z.object({ id: z.string(), depth: z.number().int().min(1).max(2).optional() });
+var sourceFilterSchema = z.object({ source: z.string().optional() });
+var workspaceSearchSchema = searchSchema.extend({ source: z.string().optional() });
+var workspaceReadSchema = readSchema.extend({ source: z.string().optional() });
+var workspaceNeighborsSchema = neighborsSchema.extend({ source: z.string().optional() });
 function errorDetails(error) {
   if (error instanceof Error) return { message: error.message };
   if (typeof error === "string") return { message: error };
@@ -1409,20 +1822,378 @@ async function createMcpServer(options) {
   });
   return server;
 }
+async function createWorkspaceMcpServer(options) {
+  const maxResultChars = options.maxResultChars ?? 12e3;
+  const runtimes = await Promise.all(
+    options.sources.map(async (source) => {
+      const runtime = {
+        record: source.record,
+        activeBundleDir: source.record.bundleDir,
+        search: source.search,
+        lastRefreshError: null,
+        refresh: source.refresh
+      };
+      if (!runtime.search) {
+        runtime.search = await BundleSearch.fromBundle(runtime.activeBundleDir);
+      }
+      return runtime;
+    })
+  );
+  const selectedNames = new Set(runtimes.map((runtime) => runtime.record.name));
+  const availableNames = /* @__PURE__ */ new Set([...options.availableSourceNames ?? [], ...selectedNames]);
+  const server = new Server(
+    { name: options.name ?? "okfy", version: "0.1.0" },
+    { capabilities: { tools: {} } }
+  );
+  function runtimeForSource(sourceName) {
+    if (selectedNames.has(sourceName)) return runtimes.find((runtime) => runtime.record.name === sourceName);
+    if (availableNames.has(sourceName)) {
+      throw new WorkspaceError("source_not_in_workspace", `Source "${sourceName}" is not selected in this workspace.`, {
+        source: sourceName,
+        workspaceSources: [...selectedNames]
+      });
+    }
+    throw new WorkspaceError("unknown_source", `Unknown source "${sourceName}".`, { source: sourceName });
+  }
+  function workspaceSearch() {
+    return new WorkspaceSearch(
+      runtimes.map(
+        (runtime) => ({
+          record: runtime.record,
+          bundleDir: runtime.activeBundleDir,
+          search: runtime.search,
+          loadError: runtime.lastRefreshError
+        })
+      ),
+      { availableSourceNames: [...availableNames] }
+    );
+  }
+  async function getRuntimeFreshness(runtime) {
+    if (runtime.refresh?.getFreshness) {
+      runtime.observedFreshness = await runtime.refresh.getFreshness();
+      return runtime.observedFreshness;
+    }
+    runtime.observedFreshness ??= { freshnessStatus: runtime.search ? "fresh" : "missing", refreshInProgress: false, lastRefreshError: null };
+    return runtime.observedFreshness;
+  }
+  function runtimeRefreshMode(runtime) {
+    return runtime.refresh?.mode ?? "stale-while-refresh";
+  }
+  function sourceSummaryFields(runtime) {
+    const normalized = normalizeFreshness(runtime.observedFreshness);
+    const lastError = runtime.lastRefreshError ?? normalized.lastRefreshError;
+    const refreshing = Boolean(runtime.inFlightRefresh) || normalized.refreshInProgress;
+    const status = refreshing ? "refreshing" : lastError ? "failed" : normalized.freshnessStatus ?? (runtime.search ? "fresh" : "missing");
+    return {
+      sourceName: runtime.record.name,
+      sourceKind: runtime.record.manifest.kind,
+      seedUrl: runtime.record.manifest.source.seedUrl,
+      freshnessStatus: status,
+      lastSuccessfulRefreshAt: normalized.lastSuccessfulRefreshAt,
+      refreshInProgress: refreshing,
+      lastRefreshError: lastError,
+      nextRefreshAllowedAt: normalized.nextRefreshAllowedAt
+    };
+  }
+  function startRuntimeRefresh(runtime, mode, freshness) {
+    if (!runtime.refresh?.refreshIfNeeded) return void 0;
+    if (runtime.inFlightRefresh) return runtime.inFlightRefresh;
+    runtime.inFlightRefresh = (async () => {
+      try {
+        const result = await runtime.refresh?.refreshIfNeeded?.({
+          mode,
+          bundleDir: runtime.activeBundleDir,
+          source: {
+            name: runtime.record.name,
+            kind: runtime.record.manifest.kind,
+            seedUrl: runtime.record.manifest.source.seedUrl
+          },
+          freshness
+        });
+        if (result?.freshness) runtime.observedFreshness = result.freshness;
+        const nextBundleDir = result?.bundleDir ?? runtime.activeBundleDir;
+        runtime.search = await BundleSearch.fromBundle(nextBundleDir);
+        runtime.activeBundleDir = nextBundleDir;
+        runtime.lastRefreshError = null;
+      } catch (error) {
+        runtime.lastRefreshError = errorDetails(error);
+      } finally {
+        runtime.inFlightRefresh = void 0;
+      }
+    })();
+    return runtime.inFlightRefresh;
+  }
+  async function prepareRuntime(runtime, toolName, sourceFiltered, workspaceHadUsableSource) {
+    try {
+      const mode = runtimeRefreshMode(runtime);
+      if (mode === "off" || !refreshableTool(toolName)) return;
+      const freshness = await getRuntimeFreshness(runtime);
+      const normalized = normalizeFreshness(freshness);
+      if (!shouldRefresh(normalized.freshnessStatus, Boolean(runtime.search))) return;
+      const refresh = startRuntimeRefresh(runtime, mode, freshness);
+      if (!refresh) return;
+      const shouldAwait = sourceFiltered ? mode === "blocking" || !runtime.search : !workspaceHadUsableSource && !runtime.search;
+      if (shouldAwait) await refresh;
+    } catch (error) {
+      runtime.lastRefreshError = errorDetails(error);
+    }
+  }
+  async function prepareWorkspaceForTool(toolName, sourceName) {
+    if (!refreshableTool(toolName)) return;
+    const selected = sourceName ? [runtimeForSource(sourceName)] : runtimes;
+    const workspaceHadUsableSource = selected.some((runtime) => runtime.search);
+    await Promise.all(selected.map((runtime) => prepareRuntime(runtime, toolName, Boolean(sourceName), workspaceHadUsableSource)));
+  }
+  function workspaceUnavailable() {
+    return json(
+      {
+        error: {
+          code: "bundle_unavailable",
+          message: "No usable OKF bundle is available in this workspace.",
+          sources: runtimes.map((runtime) => ({
+            sourceName: runtime.record.name,
+            seedUrl: runtime.record.manifest.source.seedUrl,
+            lastRefreshError: runtime.lastRefreshError
+          }))
+        }
+      },
+      maxResultChars
+    );
+  }
+  async function sourceSummary(runtime) {
+    try {
+      await getRuntimeFreshness(runtime);
+    } catch (error) {
+      runtime.lastRefreshError = errorDetails(error);
+    }
+    const freshness = sourceSummaryFields(runtime);
+    if (!runtime.search) {
+      return unavailableSourceSummary(runtime);
+    }
+    let stats;
+    let validation;
+    try {
+      [stats, validation] = await Promise.all([inspectBundle(runtime.activeBundleDir), validateBundle(runtime.activeBundleDir)]);
+    } catch (error) {
+      runtime.lastRefreshError = errorDetails(error);
+      return unavailableSourceSummary(runtime);
+    }
+    return {
+      ...freshness,
+      bundleDir: runtime.activeBundleDir,
+      conceptCount: stats.conceptCount,
+      reservedFileCount: validation.reservedFileCount,
+      warningCount: validation.warningCount,
+      validationStatus: validation.valid ? "valid" : "invalid",
+      validationIssues: validation.issues,
+      typeDistribution: stats.typeDistribution,
+      tagDistribution: stats.tagDistribution,
+      linkCount: stats.linkCount,
+      brokenLinks: stats.brokenLinks,
+      orphanConcepts: stats.orphanConcepts,
+      sourceDomains: stats.sourceDomains
+    };
+  }
+  function unavailableSourceSummary(runtime) {
+    return {
+      ...sourceSummaryFields(runtime),
+      bundleDir: runtime.activeBundleDir,
+      conceptCount: runtime.search?.graph.concepts.size ?? runtime.record.state?.bundle?.conceptCount ?? 0,
+      reservedFileCount: 0,
+      warningCount: runtime.record.state?.bundle?.warningCount ?? 0,
+      validationStatus: "unavailable",
+      validationIssues: []
+    };
+  }
+  async function workspaceSummary(sourceName) {
+    const selected = sourceName ? [runtimeForSource(sourceName)] : runtimes;
+    const sources = await Promise.all(selected.map(sourceSummary));
+    const usableSourceCount = selected.filter((runtime) => runtime.search).length;
+    const conceptCount = sources.reduce((sum, source) => sum + numberField(source.conceptCount), 0);
+    const reservedFileCount = sources.reduce((sum, source) => sum + numberField(source.reservedFileCount), 0);
+    const warningCount = sources.reduce((sum, source) => sum + numberField(source.warningCount), 0);
+    let typeDistribution = {};
+    let tagDistribution = {};
+    try {
+      const workspace = workspaceSearch();
+      typeDistribution = workspace.listTypes(sourceName);
+      tagDistribution = workspace.listTags(sourceName);
+    } catch (error) {
+      if (!(error instanceof WorkspaceError) || error.code !== "no_usable_sources") throw error;
+    }
+    return {
+      workspace: true,
+      sourceCount: selected.length,
+      usableSourceCount,
+      conceptCount,
+      reservedFileCount,
+      warningCount,
+      validationStatus: sources.some((source) => source.validationStatus !== "valid") ? "invalid" : "valid",
+      typeDistribution,
+      tagDistribution,
+      sources
+    };
+  }
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [
+      {
+        name: SEARCH_CONCEPTS_TOOL,
+        description: "Search workspace OKF concepts by query, source, type, and tags.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: { type: "string" },
+            source: { type: "string" },
+            type: { type: "string" },
+            tags: { type: "array", items: { type: "string" } },
+            limit: { type: "number", default: 10 }
+          },
+          required: ["query"]
+        }
+      },
+      {
+        name: READ_CONCEPT_TOOL,
+        description: "Read one workspace OKF concept by source and id. Id-only reads work when the id is unique.",
+        inputSchema: {
+          type: "object",
+          properties: { source: { type: "string" }, id: { type: "string" }, max_chars: { type: "number" } },
+          required: ["id"]
+        }
+      },
+      {
+        name: GET_NEIGHBORS_TOOL,
+        description: "Return outbound links and backlinks for a workspace concept.",
+        inputSchema: {
+          type: "object",
+          properties: { source: { type: "string" }, id: { type: "string" }, depth: { type: "number", default: 1 } },
+          required: ["id"]
+        }
+      },
+      {
+        name: LIST_TYPES_TOOL,
+        description: "List workspace concept types and counts.",
+        inputSchema: { type: "object", properties: { source: { type: "string" } } }
+      },
+      {
+        name: LIST_TAGS_TOOL,
+        description: "List workspace concept tags and counts.",
+        inputSchema: { type: "object", properties: { source: { type: "string" } } }
+      },
+      {
+        name: BUNDLE_SUMMARY_TOOL,
+        description: "Return workspace stats, per-source validation, and freshness status.",
+        inputSchema: { type: "object", properties: { source: { type: "string" } } }
+      }
+    ]
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const args = request.params.arguments ?? {};
+    try {
+      const sourceName = sourceFilterSchema.partial().parse(args).source;
+      if (request.params.name === BUNDLE_SUMMARY_TOOL) {
+        return json(await workspaceSummary(sourceName), maxResultChars);
+      }
+      await prepareWorkspaceForTool(request.params.name, sourceName);
+      const workspace = workspaceSearch();
+      if (workspace.usableSourceNames().length === 0) return workspaceUnavailable();
+      if (request.params.name === SEARCH_CONCEPTS_TOOL) {
+        const parsed = workspaceSearchSchema.parse(args);
+        return json(workspace.search(parsed.query, parsed), maxResultChars);
+      }
+      if (request.params.name === READ_CONCEPT_TOOL) {
+        const parsed = workspaceReadSchema.parse(args);
+        const { source, concept } = workspace.getConcept(parsed);
+        const max = parsed.max_chars ?? maxResultChars;
+        return json(
+          {
+            sourceName: source.record.name,
+            sourceKind: source.record.manifest.kind,
+            seedUrl: source.record.manifest.source.seedUrl,
+            ref: `${source.record.name}:${concept.id}`,
+            frontmatter: concept.frontmatter,
+            markdown_body: concept.body.slice(0, max),
+            outbound_links: source.search.graph.outbound.get(concept.id) ?? [],
+            backlinks: source.search.graph.backlinks.get(concept.id) ?? [],
+            source_resource: concept.resource
+          },
+          maxResultChars
+        );
+      }
+      if (request.params.name === GET_NEIGHBORS_TOOL) {
+        const parsed = workspaceNeighborsSchema.parse(args);
+        const { source, concept: root } = workspace.getConcept(parsed);
+        const currentSearch = source.search;
+        const depth = parsed.depth ?? 1;
+        const seen = /* @__PURE__ */ new Set([root.id]);
+        let frontier = [root.id];
+        const edges = [];
+        for (let level = 0; level < depth; level += 1) {
+          const next = [];
+          for (const id of frontier) {
+            for (const to of currentSearch.graph.outbound.get(id) ?? []) {
+              edges.push({ from: id, to, direction: "outbound", relationship_text: "Markdown link", sourceName: source.record.name });
+              if (!seen.has(to)) next.push(to);
+              seen.add(to);
+            }
+            for (const from of currentSearch.graph.backlinks.get(id) ?? []) {
+              edges.push({ from, to: id, direction: "backlink", relationship_text: "Backlink", sourceName: source.record.name });
+              if (!seen.has(from)) next.push(from);
+              seen.add(from);
+            }
+          }
+          frontier = next;
+        }
+        return json({
+          sourceName: source.record.name,
+          sourceKind: source.record.manifest.kind,
+          seedUrl: source.record.manifest.source.seedUrl,
+          root: root.id,
+          ref: `${source.record.name}:${root.id}`,
+          concepts: [...seen].map((id) => {
+            const concept = currentSearch.graph.concepts.get(id);
+            return { sourceName: source.record.name, id, ref: `${source.record.name}:${id}`, title: concept?.title, type: concept?.type, resource: concept?.resource };
+          }),
+          edges
+        });
+      }
+      if (request.params.name === LIST_TYPES_TOOL) {
+        const parsed = sourceFilterSchema.parse(args);
+        return json(workspace.listTypes(parsed.source), maxResultChars);
+      }
+      if (request.params.name === LIST_TAGS_TOOL) {
+        const parsed = sourceFilterSchema.parse(args);
+        return json(workspace.listTags(parsed.source), maxResultChars);
+      }
+      return json({ error: { code: "unknown_tool", message: `Unknown tool: ${request.params.name}` } });
+    } catch (error) {
+      if (error instanceof WorkspaceError) return json({ error: error.toJSON() }, maxResultChars);
+      return json({ error: { code: "tool_error", message: error?.message ?? "Tool failed." } }, maxResultChars);
+    }
+  });
+  return server;
+}
+function numberField(value) {
+  return typeof value === "number" ? value : 0;
+}
 async function serveMcpStdio(options) {
   const server = await createMcpServer(options);
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
+async function serveWorkspaceMcpStdio(options) {
+  const server = await createWorkspaceMcpServer(options);
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}
 
 // src/refresh.ts
-import fs6 from "fs/promises";
-import path9 from "path";
+import fs8 from "fs/promises";
+import path11 from "path";
 import { randomUUID } from "crypto";
 var DEFAULT_STALE_LOCK_TIMEOUT_MS = 30 * 60 * 1e3;
 async function pathExists2(target) {
   try {
-    await fs6.access(target);
+    await fs8.access(target);
     return true;
   } catch (error) {
     if (error?.code === "ENOENT") return false;
@@ -1443,40 +2214,40 @@ function isBeforeNextRefreshAllowed(state, now) {
   return new Date(state.nextRefreshAllowedAt).getTime() > now.getTime();
 }
 function tempBundleDir(sourceDir) {
-  return path9.join(sourceDir, `bundle.tmp-${process.pid}-${randomUUID()}`);
+  return path11.join(sourceDir, `bundle.tmp-${process.pid}-${randomUUID()}`);
 }
 function lockfilePath(sourceDir) {
-  return path9.join(sourceDir, ".refresh.lock");
+  return path11.join(sourceDir, ".refresh.lock");
 }
 async function isLockStale(lockPath, now, staleLockTimeoutMs) {
   try {
-    const raw = await fs6.readFile(lockPath, "utf8");
+    const raw = await fs8.readFile(lockPath, "utf8");
     const parsed = JSON.parse(raw);
     const createdAt = parsed.createdAt ? Date.parse(parsed.createdAt) : Number.NaN;
     if (Number.isFinite(createdAt)) return now.getTime() - createdAt > staleLockTimeoutMs;
   } catch {
   }
-  const stat = await fs6.stat(lockPath);
+  const stat = await fs8.stat(lockPath);
   return now.getTime() - stat.mtimeMs > staleLockTimeoutMs;
 }
 async function acquireRefreshLock(sourceDir, now, staleLockTimeoutMs) {
   const lockPath = lockfilePath(sourceDir);
-  await fs6.mkdir(sourceDir, { recursive: true });
+  await fs8.mkdir(sourceDir, { recursive: true });
   try {
-    const handle = await fs6.open(lockPath, "wx");
+    const handle = await fs8.open(lockPath, "wx");
     await handle.writeFile(JSON.stringify({ pid: process.pid, createdAt: iso(now) }, null, 2));
     await handle.close();
     return {
       acquired: true,
       release: async () => {
-        await fs6.rm(lockPath, { force: true });
+        await fs8.rm(lockPath, { force: true });
       }
     };
   } catch (error) {
     if (error?.code !== "EEXIST") throw error;
   }
   if (await isLockStale(lockPath, now, staleLockTimeoutMs)) {
-    await fs6.rm(lockPath, { force: true });
+    await fs8.rm(lockPath, { force: true });
     return acquireRefreshLock(sourceDir, now, staleLockTimeoutMs);
   }
   return { acquired: false };
@@ -1561,16 +2332,16 @@ async function replaceActiveBundle(tempDir, bundleDir) {
   const backupDir = `${bundleDir}.backup-${process.pid}-${randomUUID()}`;
   let movedActiveToBackup = false;
   try {
-    await fs6.mkdir(path9.dirname(bundleDir), { recursive: true });
+    await fs8.mkdir(path11.dirname(bundleDir), { recursive: true });
     if (await pathExists2(bundleDir)) {
-      await fs6.rename(bundleDir, backupDir);
+      await fs8.rename(bundleDir, backupDir);
       movedActiveToBackup = true;
     }
-    await fs6.rename(tempDir, bundleDir);
-    if (movedActiveToBackup) await fs6.rm(backupDir, { recursive: true, force: true });
+    await fs8.rename(tempDir, bundleDir);
+    if (movedActiveToBackup) await fs8.rm(backupDir, { recursive: true, force: true });
   } catch (error) {
     if (movedActiveToBackup && !await pathExists2(bundleDir) && await pathExists2(backupDir)) {
-      await fs6.rename(backupDir, bundleDir);
+      await fs8.rename(backupDir, bundleDir);
     }
     throw error;
   }
@@ -1642,7 +2413,7 @@ async function refreshSource(options) {
       });
       return { status: freshness.status, skipped: false, dryRun: true, crawlResult };
     } finally {
-      await fs6.rm(tempDir, { recursive: true, force: true });
+      await fs8.rm(tempDir, { recursive: true, force: true });
     }
   }
   const lock = await acquireRefreshLock(options.sourceDir, now, options.staleLockTimeoutMs ?? DEFAULT_STALE_LOCK_TIMEOUT_MS);
@@ -1689,195 +2460,13 @@ async function refreshSource(options) {
     await options.writeState(nextState);
     return { status: "fresh", skipped: false, state: nextState, crawlResult };
   } catch (error) {
-    await fs6.rm(tempDir, { recursive: true, force: true });
+    await fs8.rm(tempDir, { recursive: true, force: true });
     const failedState = stateForRefreshFailure(options.state, options.manifest, error, now);
     await options.writeState(failedState);
     return { status: "failed", skipped: false, state: failedState, error: failedState.lastError ?? void 0 };
   } finally {
     await lock.release();
   }
-}
-
-// src/source-store.ts
-import fs7 from "fs/promises";
-import os2 from "os";
-import path10 from "path";
-var SOURCE_NAME_PATTERN = /^[a-z0-9._-]+$/;
-var MANIFEST_KEYS = [
-  "schemaVersion",
-  "okfyVersion",
-  "name",
-  "kind",
-  "createdAt",
-  "updatedAt",
-  "source",
-  "crawl",
-  "refresh",
-  "bundle"
-];
-var CRAWL_KEYS = ["maxPages", "maxDepth", "include", "exclude", "sameOrigin", "respectRobots", "concurrency", "allowPrivateNetwork"];
-var REFRESH_KEYS = ["mode", "maxAgeSeconds", "minIntervalSeconds"];
-var STATE_KEYS = [
-  "schemaVersion",
-  "status",
-  "lastCheckedAt",
-  "lastRefreshStartedAt",
-  "lastRefreshCompletedAt",
-  "lastSuccessfulRefreshAt",
-  "nextRefreshAllowedAt",
-  "refreshInProgress",
-  "lastError",
-  "bundle"
-];
-var STATE_BUNDLE_KEYS = ["conceptCount", "warningCount", "valid", "contentHash"];
-function resolveOkfyHome(options = {}) {
-  const configured = options.okfyHome ?? options.env?.OKFY_HOME ?? process.env.OKFY_HOME;
-  if (configured && configured.trim() !== "") return path10.resolve(configured);
-  return path10.join(os2.homedir(), ".okfy");
-}
-function validateSourceName(name) {
-  if (!name || name === "." || name === ".." || !SOURCE_NAME_PATTERN.test(name)) {
-    throw new Error(
-      `Invalid source name "${name}". Use lowercase letters, numbers, dash, underscore, or dot without path separators.`
-    );
-  }
-  return name;
-}
-function resolveSourceDir(name, options = {}) {
-  const safeName = validateSourceName(name);
-  const sourcesRoot = resolveSourcesRoot(options);
-  const sourceDir = path10.resolve(sourcesRoot, safeName);
-  if (!isInsideOrEqual(sourcesRoot, sourceDir)) {
-    throw new Error(`Invalid source name "${name}". Source directory escapes OKFY_HOME.`);
-  }
-  return sourceDir;
-}
-function resolveBundleDir(manifest, options = {}) {
-  const sourceDir = resolveSourceDir(manifest.name, options);
-  const bundleDir = manifest.bundle.dir;
-  if (!bundleDir || bundleDir.trim() === "") {
-    throw new Error(`Invalid bundle directory for source "${manifest.name}".`);
-  }
-  if (path10.isAbsolute(bundleDir)) return path10.normalize(bundleDir);
-  const resolved = path10.resolve(sourceDir, bundleDir);
-  if (resolved === sourceDir || !isInsideOrEqual(sourceDir, resolved)) {
-    throw new Error(`Invalid bundle directory for source "${manifest.name}". Relative bundle paths must stay inside the source directory.`);
-  }
-  return resolved;
-}
-async function writeSourceManifest(manifest, options = {}) {
-  const sourceDir = resolveSourceDir(manifest.name, options);
-  await writeStableJson(path10.join(sourceDir, "source.json"), manifest);
-}
-async function readSourceManifest(name, options = {}) {
-  const sourceDir = resolveSourceDir(name, options);
-  const manifest = await readJson(path10.join(sourceDir, "source.json"));
-  if (manifest.name !== name) {
-    throw new Error(`Source manifest name mismatch: expected "${name}", found "${manifest.name}".`);
-  }
-  validateSourceName(manifest.name);
-  return manifest;
-}
-async function writeRefreshState(name, state, options = {}) {
-  const sourceDir = resolveSourceDir(name, options);
-  await writeStableJson(path10.join(sourceDir, "state.json"), state);
-}
-async function readRefreshState(name, options = {}) {
-  const sourceDir = resolveSourceDir(name, options);
-  return readJson(path10.join(sourceDir, "state.json"));
-}
-async function listSources(options = {}) {
-  const sourcesRoot = resolveSourcesRoot(options);
-  let entries;
-  try {
-    entries = await fs7.readdir(sourcesRoot, { withFileTypes: true });
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") return [];
-    throw error;
-  }
-  const records = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    try {
-      const manifest = await readSourceManifest(entry.name, options);
-      const state = await readRefreshStateIfExists(entry.name, options);
-      records.push({
-        name: manifest.name,
-        dir: resolveSourceDir(manifest.name, options),
-        manifest,
-        state,
-        bundleDir: resolveBundleDir(manifest, options)
-      });
-    } catch {
-      continue;
-    }
-  }
-  return records.sort((first, second) => first.name.localeCompare(second.name));
-}
-async function removeSource(name, options = {}) {
-  const sourceDir = resolveSourceDir(name, options);
-  await fs7.rm(sourceDir, { recursive: true, force: true });
-}
-function resolveSourcesRoot(options) {
-  return path10.join(resolveOkfyHome(options), "sources");
-}
-async function readRefreshStateIfExists(name, options) {
-  try {
-    return await readRefreshState(name, options);
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") return void 0;
-    throw error;
-  }
-}
-async function readJson(filePath) {
-  return JSON.parse(await fs7.readFile(filePath, "utf8"));
-}
-async function writeStableJson(filePath, value) {
-  await fs7.mkdir(path10.dirname(filePath), { recursive: true });
-  await fs7.writeFile(filePath, `${JSON.stringify(orderJson(value), null, 2)}
-`, "utf8");
-}
-function orderJson(value) {
-  if (Array.isArray(value)) return value.map(orderJson);
-  if (!isPlainObject(value)) return value;
-  const ordered = {};
-  for (const key of orderKeys(value)) {
-    ordered[key] = orderJson(value[key]);
-  }
-  return ordered;
-}
-function orderKeys(value) {
-  if ("status" in value) return sortByPreferredOrder(Object.keys(value), STATE_KEYS);
-  if ("okfyVersion" in value) return sortByPreferredOrder(Object.keys(value), MANIFEST_KEYS);
-  if (hasKeys(value, CRAWL_KEYS)) return sortByPreferredOrder(Object.keys(value), CRAWL_KEYS);
-  if (hasKeys(value, REFRESH_KEYS)) return sortByPreferredOrder(Object.keys(value), REFRESH_KEYS);
-  if (hasKeys(value, STATE_BUNDLE_KEYS)) return sortByPreferredOrder(Object.keys(value), STATE_BUNDLE_KEYS);
-  if ("seedUrl" in value) return sortByPreferredOrder(Object.keys(value), ["seedUrl"]);
-  if ("dir" in value) return sortByPreferredOrder(Object.keys(value), ["dir"]);
-  return Object.keys(value).sort((first, second) => first.localeCompare(second));
-}
-function hasKeys(value, keys) {
-  return keys.some((key) => key in value);
-}
-function sortByPreferredOrder(keys, preferredOrder) {
-  return keys.sort((first, second) => {
-    const firstIndex = preferredOrder.indexOf(first);
-    const secondIndex = preferredOrder.indexOf(second);
-    if (firstIndex === -1 && secondIndex === -1) return first.localeCompare(second);
-    if (firstIndex === -1) return 1;
-    if (secondIndex === -1) return -1;
-    return firstIndex - secondIndex;
-  });
-}
-function isPlainObject(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function isInsideOrEqual(parent, child) {
-  const relative = path10.relative(parent, child);
-  return relative === "" || !relative.startsWith("..") && !path10.isAbsolute(relative);
-}
-function isNodeError(error) {
-  return error instanceof Error && "code" in error;
 }
 
 export {
@@ -1900,11 +2489,6 @@ export {
   BundleSearch,
   validateBundle,
   inspectBundle,
-  MCP_TOOL_NAMES,
-  createMcpServer,
-  serveMcpStdio,
-  evaluateFreshness,
-  refreshSource,
   resolveOkfyHome,
   validateSourceName,
   resolveSourceDir,
@@ -1914,5 +2498,18 @@ export {
   writeRefreshState,
   readRefreshState,
   listSources,
-  removeSource
+  removeSource,
+  WorkspaceError,
+  workspaceProfilePath,
+  readWorkspaceProfile,
+  writeWorkspaceProfile,
+  resolveWorkspaceSources,
+  WorkspaceSearch,
+  MCP_TOOL_NAMES,
+  createMcpServer,
+  createWorkspaceMcpServer,
+  serveMcpStdio,
+  serveWorkspaceMcpStdio,
+  evaluateFreshness,
+  refreshSource
 };

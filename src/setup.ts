@@ -32,6 +32,9 @@ export interface SetupCheck {
 
 export interface SetupReport {
   sourceName: string;
+  sourceNames: string[];
+  workspace: boolean;
+  workspaceAll: boolean;
   client: SetupClient;
   serverName: string;
   codexServerName: string;
@@ -45,7 +48,9 @@ export interface SetupReport {
 }
 
 export interface SetupReportInput {
-  sourceName: string;
+  sourceName?: string;
+  sourceNames?: string[];
+  workspaceAll?: boolean;
   client: SetupClient;
   okfyHome?: string;
   checks: SetupCheck[];
@@ -101,19 +106,26 @@ export function setupStatus(checks: SetupCheck[]): SetupStatus {
 export function createSetupReport(input: SetupReportInput): SetupReport {
   const okfyHome = path.resolve(input.okfyHome ?? resolveOkfyHome());
   const defaultHome = defaultOkfyHome();
-  const serverName = mcpServerName(input.sourceName);
-  const codexServerName = codexMcpServerName(input.sourceName);
-  const command = serveCommand(input.sourceName, okfyHome, defaultHome);
+  const sourceNames = setupSourceNames(input);
+  const workspace = Boolean(input.workspaceAll) || sourceNames.length > 1;
+  const serverIdentity = input.workspaceAll ? ["all"] : sourceNames;
+  const commandTarget = input.workspaceAll ? { all: true as const } : sourceNames;
+  const serverName = mcpServerName(serverIdentity);
+  const codexServerName = codexMcpServerName(serverIdentity);
+  const command = serveCommand(commandTarget, okfyHome, defaultHome);
   return {
-    sourceName: input.sourceName,
+    sourceName: input.workspaceAll && sourceNames.length === 0 ? "--all" : sourceNames.join(", "),
+    sourceNames,
+    workspace,
+    workspaceAll: Boolean(input.workspaceAll),
     client: input.client,
     serverName,
     codexServerName,
     okfyHome,
     defaultOkfyHome: defaultHome,
     command,
-    artifacts: renderClientArtifacts({ client: input.client, sourceName: input.sourceName, okfyHome, defaultOkfyHome: defaultHome }),
-    firstPrompt: firstAgentPrompt(input.client === "codex" ? codexServerName : serverName),
+    artifacts: renderClientArtifacts({ client: input.client, sourceNames, workspaceAll: input.workspaceAll, okfyHome, defaultOkfyHome: defaultHome }),
+    firstPrompt: firstAgentPrompt(input.client === "codex" ? codexServerName : serverName, { workspace }),
     checks: input.checks,
     status: setupStatus(input.checks)
   };
@@ -121,15 +133,20 @@ export function createSetupReport(input: SetupReportInput): SetupReport {
 
 export function renderClientArtifacts(input: {
   client: SetupClient;
-  sourceName: string;
+  sourceName?: string;
+  sourceNames?: string[];
+  workspaceAll?: boolean;
   okfyHome?: string;
   defaultOkfyHome?: string;
 }): SetupArtifact[] {
   const okfyHome = path.resolve(input.okfyHome ?? resolveOkfyHome());
   const defaultHome = input.defaultOkfyHome ?? defaultOkfyHome();
-  const serverName = mcpServerName(input.sourceName);
-  const codexName = codexMcpServerName(input.sourceName);
-  const command = serveCommand(input.sourceName, okfyHome, defaultHome);
+  const sourceNames = setupSourceNames(input);
+  const serverIdentity = input.workspaceAll ? ["all"] : sourceNames;
+  const commandTarget = input.workspaceAll ? { all: true as const } : sourceNames;
+  const serverName = mcpServerName(serverIdentity);
+  const codexName = codexMcpServerName(serverIdentity);
+  const command = serveCommand(commandTarget, okfyHome, defaultHome);
   const env = Object.keys(command.env).length ? command.env : undefined;
 
   if (input.client === "claude-code") {
@@ -183,14 +200,17 @@ export function renderClientArtifacts(input: {
   ];
 }
 
-export function firstAgentPrompt(serverName: string): string {
+export function firstAgentPrompt(serverName: string, options: { workspace?: boolean } = {}): string {
+  if (options.workspace) {
+    return `Use the ${serverName} MCP server. Start with bundle_summary to understand the workspace sources and freshness. Filter by source when you know which docs apply, search before reading concepts, read only the most relevant concepts, inspect neighbors when relationships matter, and cite source_resource URLs in the final answer.`;
+  }
   return `Use the ${serverName} MCP server. Start with bundle_summary to understand the bundle and freshness. Search before reading concepts, read only the most relevant concepts, inspect neighbors when relationships matter, and cite source_resource URLs in the final answer.`;
 }
 
-export function serveCommand(sourceName: string, okfyHome: string, defaultHome = defaultOkfyHome()): ServeCommand {
-  const args = sourceName.startsWith("-")
-    ? ["-y", "okfy-ai", "serve", "--mcp", "--auto-refresh", "--", sourceName]
-    : ["-y", "okfy-ai", "serve", sourceName, "--mcp", "--auto-refresh"];
+export type ServeCommandTarget = string | string[] | { all: true };
+
+export function serveCommand(sourceNameOrNames: ServeCommandTarget, okfyHome: string, defaultHome = defaultOkfyHome()): ServeCommand {
+  const args = ["-y", "okfy-ai", ...serveCommandArgs(sourceNameOrNames)];
   const env: Record<string, string> = needsOkfyHomeEnv(okfyHome, defaultHome) ? { OKFY_HOME: path.resolve(okfyHome) } : {};
   return {
     command: "npx",
@@ -198,6 +218,20 @@ export function serveCommand(sourceName: string, okfyHome: string, defaultHome =
     env,
     display: ["npx", ...args].join(" ")
   };
+}
+
+export function serveCommandArgs(sourceNameOrNames: ServeCommandTarget): string[] {
+  if (isAllCommandTarget(sourceNameOrNames)) {
+    return ["serve", "--all", "--mcp", "--auto-refresh"];
+  }
+  const sourceNames = Array.isArray(sourceNameOrNames) ? sourceNameOrNames : [sourceNameOrNames];
+  return sourceNames.some((sourceName) => sourceName.startsWith("-"))
+    ? ["serve", "--mcp", "--auto-refresh", "--", ...sourceNames]
+    : ["serve", ...sourceNames, "--mcp", "--auto-refresh"];
+}
+
+function isAllCommandTarget(sourceNameOrNames: ServeCommandTarget): sourceNameOrNames is { all: true } {
+  return typeof sourceNameOrNames === "object" && !Array.isArray(sourceNameOrNames) && sourceNameOrNames.all;
 }
 
 export function setupCheck(
@@ -400,14 +434,29 @@ function needsOkfyHomeEnv(okfyHome: string, defaultHome: string): boolean {
   return path.resolve(okfyHome) !== path.resolve(defaultHome);
 }
 
-function mcpServerName(sourceName: string): string {
-  const safeName = sourceName.replace(/[._]+/g, "-").replace(/^-+/, "");
+function mcpServerName(sourceNameOrNames: string | string[]): string {
+  const sourceNames = Array.isArray(sourceNameOrNames) ? sourceNameOrNames : [sourceNameOrNames];
+  const safeName = sourceNames
+    .map((sourceName) => sourceName.replace(/[._]+/g, "-").replace(/^-+/, ""))
+    .filter(Boolean)
+    .join("-");
   return `${safeName || "source"}-okf`;
 }
 
-function codexMcpServerName(sourceName: string): string {
-  const safeName = sourceName.replace(/[^a-z0-9]+/g, "_").replace(/^_+/, "");
+function codexMcpServerName(sourceNameOrNames: string | string[]): string {
+  const sourceNames = Array.isArray(sourceNameOrNames) ? sourceNameOrNames : [sourceNameOrNames];
+  const safeName = sourceNames
+    .map((sourceName) => sourceName.replace(/[^a-z0-9]+/g, "_").replace(/^_+/, ""))
+    .filter(Boolean)
+    .join("_");
   return `${safeName || "source"}_okf`;
+}
+
+function setupSourceNames(input: { sourceName?: string; sourceNames?: string[]; workspaceAll?: boolean }): string[] {
+  const names = input.sourceNames ?? (input.sourceName ? [input.sourceName] : []);
+  if (input.workspaceAll) return [...names];
+  if (!names.length) throw new Error("Setup report requires at least one source name.");
+  return [...names];
 }
 
 function shellEnvArgs(env: Record<string, string>, flag: "-e" | "--env"): string {

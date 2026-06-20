@@ -51,6 +51,68 @@ This is local-first. There is no OKFY cloud registry, account, central cache, ho
 npx -y okfy-ai doctor stripe --client codex
 ```
 
+## Multi-Source Workspaces
+
+Use a workspace server when one coding session needs several docs sources. Register sources separately, then serve them through one source-aware MCP server:
+
+```bash
+npx -y okfy-ai add stripe https://docs.stripe.com/checkout --max-pages 100 --max-depth 4
+npx -y okfy-ai add clerk https://clerk.com/docs --max-pages 100 --max-depth 4
+npx -y okfy-ai doctor stripe clerk --client codex
+npx -y okfy-ai serve stripe clerk --mcp --auto-refresh
+```
+
+For project-local docs, import each Markdown folder into its own OKF bundle and serve the bundle paths together:
+
+```bash
+npx -y okfy-ai import ./docs/api --out ./okf/api-docs --source-name "API docs" --force
+npx -y okfy-ai import ./docs/product --out ./okf/product-docs --source-name "Product docs" --force
+npx -y okfy-ai serve ./okf/api-docs ./okf/product-docs --mcp
+```
+
+In local bundle workspaces, source filters use the bundle directory names, such as `api-docs` and `product-docs`.
+
+Registered-source workspace config for JSON-based clients:
+
+```json
+{
+  "mcpServers": {
+    "stripe-clerk-okf": {
+      "command": "npx",
+      "args": ["-y", "okfy-ai", "serve", "stripe", "clerk", "--mcp", "--auto-refresh"]
+    }
+  }
+}
+```
+
+Registered-source workspace config for Codex:
+
+```toml
+[mcp_servers.stripe_clerk_okf]
+command = "npx"
+args = ["-y", "okfy-ai", "serve", "stripe", "clerk", "--mcp", "--auto-refresh"]
+startup_timeout_sec = 20
+tool_timeout_sec = 60
+enabled = true
+```
+
+Use `--all` only when every readable registered source in the active `OKFY_HOME` should be exposed:
+
+```bash
+npx -y okfy-ai serve --all --mcp --auto-refresh
+```
+
+Workspace mode keeps the same read-only tools. Tool inputs can include `source` for filtering:
+
+```text
+bundle_summary
+search_concepts({ "query": "checkout sessions", "source": "stripe", "limit": 5 })
+read_concept({ "source": "stripe", "id": "guides/quickstart", "max_chars": 6000 })
+get_neighbors({ "source": "stripe", "id": "guides/quickstart", "depth": 1 })
+```
+
+`bundle_summary` returns workspace totals plus one per-source summary with validation, freshness, refresh progress, and refresh errors. `search_concepts` returns source-aware rows with `sourceName`, `seedUrl`, `ref`, `resource`, `snippet`, and `score`. If an id exists in multiple sources, `read_concept({ "id": "..." })` returns `ambiguous_concept`; pass `{ "source": "...", "id": "..." }` to disambiguate.
+
 Default refresh mode is `stale-while-refresh`: if the cached bundle is stale, MCP tools keep serving the current bundle while okfy refreshes in the background. Use blocking mode when you want stale sources refreshed before search/read/list tool calls answer:
 
 ```bash
@@ -77,7 +139,7 @@ npx -y okfy-ai validate ./docs-okf
 npx -y okfy-ai serve ./docs-okf --mcp
 ```
 
-Direct bundle paths do not use source auto-refresh. Use `add` plus `serve <source> --mcp --auto-refresh` when you want okfy to track freshness for a website source.
+Direct bundle paths, including local bundle workspaces, do not use source auto-refresh. Use `add` plus `serve <source> --mcp --auto-refresh` when you want okfy to track freshness for a website source.
 
 ## Claude Code
 
@@ -140,7 +202,7 @@ bundle_summary
 search_concepts({ "query": "Checkout Sessions", "limit": 5 })
 read_concept({ "id": "<best-result-id>" })
 get_neighbors({ "id": "<best-result-id>", "depth": 1 })
-final answer with cited resource fields
+final answer citing source_resource from read_concept output
 ```
 
 Troubleshooting:
@@ -349,7 +411,7 @@ agent calls bundle_summary
 agent calls search_concepts
 agent calls read_concept
 agent optionally calls get_neighbors
-agent answers with resource citations
+agent answers with source_resource citations
 ```
 
 Example prompt:
@@ -386,5 +448,5 @@ Recommended answering pattern:
 2. Use search_concepts for discovery.
 3. Read only top matching concepts.
 4. Use get_neighbors when relationship context matters.
-5. Cite resource fields from read_concept output.
+5. Cite source_resource from read_concept output.
 ```

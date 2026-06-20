@@ -242,6 +242,133 @@ describe("setup CLI flow", () => {
     }
   });
 
+  it("reports workspace setup commands and per-source doctor checks", async () => {
+    const okfyHome = await tempHome();
+    const docs = await startDocsServer();
+    try {
+      for (const name of ["stripe", "clerk"]) {
+        await runCli(
+          [
+            "add",
+            name,
+            `${docs.origin}/`,
+            "--max-pages",
+            "3",
+            "--max-depth",
+            "1",
+            "--allow-private-network",
+            "--no-respect-robots",
+            "--json"
+          ],
+          okfyHome
+        );
+      }
+      await markSourceOld(okfyHome, "stripe");
+
+      const report = parseJson<{
+        workspace: boolean;
+        sourceName: string;
+        sourceNames: string[];
+        status: string;
+        command: { display: string; env: Record<string, string> };
+        firstPrompt: string;
+        artifacts: Array<{ label: string; body: string }>;
+        checks: Array<{ id: string; severity: string; fix?: string }>;
+      }>((await runCli(["doctor", "stripe", "clerk", "--client", "codex", "--json"], okfyHome)).stdout);
+
+      expect(report).toMatchObject({
+        workspace: true,
+        sourceName: "stripe, clerk",
+        sourceNames: ["stripe", "clerk"],
+        status: "warning"
+      });
+      expect(report.command.display).toBe("npx -y okfy-ai serve stripe clerk --mcp --auto-refresh");
+      expect(report.command.env).toEqual({ OKFY_HOME: okfyHome });
+      expect(report.firstPrompt).toContain("workspace sources");
+      expect(report.firstPrompt).toContain("Filter by source");
+      expect(report.artifacts[0]?.body).toContain("[mcp_servers.stripe_clerk_okf]");
+      expect(report.checks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: "freshness:stripe", severity: "warn", fix: expect.stringContaining("update stripe") }),
+          expect.objectContaining({ id: "freshness:clerk", severity: "pass" }),
+          expect.objectContaining({ id: "mcp_probe", severity: "pass" })
+        ])
+      );
+
+      let missingError: { stdout?: string } | undefined;
+      try {
+        await runCli(["doctor", "stripe", "missing", "--json"], okfyHome);
+      } catch (error) {
+        missingError = error as { stdout?: string };
+      }
+      const missing = parseJson<{ workspace: boolean; sourceName: string; status: string; checks: Array<{ id: string; severity: string }> }>(
+        missingError?.stdout ?? ""
+      );
+      expect(missing).toMatchObject({ workspace: true, sourceName: "stripe, missing", status: "failed" });
+      expect(missing.checks).toEqual(expect.arrayContaining([expect.objectContaining({ id: "source", severity: "fail" })]));
+      expect(missing.checks.some((check) => check.id === "mcp_probe")).toBe(false);
+
+      const allReport = parseJson<{
+        workspace: boolean;
+        workspaceAll: boolean;
+        serverName: string;
+        command: { display: string };
+        sourceNames: string[];
+      }>((await runCli(["doctor", "--all", "--client", "codex", "--json"], okfyHome)).stdout);
+      expect(allReport).toMatchObject({
+        workspace: true,
+        workspaceAll: true,
+        serverName: "all-okf",
+        command: { display: "npx -y okfy-ai serve --all --mcp --auto-refresh" },
+        sourceNames: ["clerk", "stripe"]
+      });
+
+      let mixedAllError: { stdout?: string } | undefined;
+      try {
+        await runCli(["doctor", "--all", "stripe", "--json"], okfyHome);
+      } catch (error) {
+        mixedAllError = error as { stdout?: string };
+      }
+      const mixedAll = parseJson<{ workspace: boolean; workspaceAll: boolean; command: { display: string }; status: string }>(
+        mixedAllError?.stdout ?? ""
+      );
+      expect(mixedAll).toMatchObject({
+        workspace: true,
+        workspaceAll: true,
+        command: { display: "npx -y okfy-ai serve --all --mcp --auto-refresh" },
+        status: "failed"
+      });
+
+      const oneSourceHome = await tempHome();
+      await runCli(
+        [
+          "add",
+          "stripe",
+          `${docs.origin}/`,
+          "--max-pages",
+          "3",
+          "--max-depth",
+          "1",
+          "--allow-private-network",
+          "--no-respect-robots",
+          "--json"
+        ],
+        oneSourceHome
+      );
+      const oneSourceAll = parseJson<{ workspace: boolean; workspaceAll: boolean; command: { display: string }; sourceNames: string[] }>(
+        (await runCli(["doctor", "--all", "--json"], oneSourceHome)).stdout
+      );
+      expect(oneSourceAll).toMatchObject({
+        workspace: true,
+        workspaceAll: true,
+        command: { display: "npx -y okfy-ai serve --all --mcp --auto-refresh" },
+        sourceNames: ["stripe"]
+      });
+    } finally {
+      await docs.close();
+    }
+  });
+
   it("preserves an existing source when forced init fails before replacement", async () => {
     const okfyHome = await tempHome();
     const docs = await startDocsServer();
