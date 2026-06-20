@@ -138,10 +138,14 @@ describe("setup CLI flow", () => {
       expect(payload.firstPrompt).toContain("stripe_okf");
       expect(payload.artifacts.map((artifact) => artifact.label)).toContain("Codex config.toml");
       expect(payload.artifacts[0]?.body).toContain("[mcp_servers.stripe_okf]");
-      expect(payload.checks).toEqual(expect.arrayContaining([expect.objectContaining({ id: "mcp_probe", severity: "pass" })]));
+      expect(payload.checks).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: "mcp_probe", severity: "pass" })])
+      );
       expect(result.stderr).toContain("okfy crawl: starting");
       expect(await pathExists(path.join(userHome, ".codex", "config.toml"))).toBe(false);
-      expect(await pathExists(path.join(xdgHome, "Claude", "claude_desktop_config.json"))).toBe(false);
+      expect(await pathExists(path.join(xdgHome, "Claude", "claude_desktop_config.json"))).toBe(
+        false
+      );
       expect(await pathExists(path.join(projectCwd, ".mcp.json"))).toBe(false);
       expect(await pathExists(path.join(projectCwd, ".cursor", "mcp.json"))).toBe(false);
     } finally {
@@ -172,20 +176,29 @@ describe("setup CLI flow", () => {
       expect(hashAfterAdd).toMatch(/^sha256:/);
       await markSourceOld(okfyHome, "stripe");
 
-      const stale = parseJson<{ status: string; checks: Array<{ id: string; severity: string; fix?: string }> }>(
-        (await runCli(["doctor", "stripe", "--json"], okfyHome)).stdout
-      );
+      const stale = parseJson<{
+        status: string;
+        checks: Array<{ id: string; severity: string; fix?: string }>;
+      }>((await runCli(["doctor", "stripe", "--json"], okfyHome)).stdout);
 
       expect(stale.status).toBe("warning");
       expect(stale.checks).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ id: "freshness", severity: "warn", fix: expect.stringContaining("update stripe") })
+          expect.objectContaining({
+            id: "freshness",
+            severity: "warn",
+            fix: expect.stringContaining("update stripe")
+          })
         ])
       );
       await expect(stateHash(okfyHome, "stripe")).resolves.toBe(hashAfterAdd);
 
       const fakeBin = await tempHome();
-      await fs.writeFile(path.join(fakeBin, "npx"), "#!/bin/sh\necho broken npx >&2\nexit 42\n", "utf8");
+      await fs.writeFile(
+        path.join(fakeBin, "npx"),
+        "#!/bin/sh\necho broken npx >&2\nexit 42\n",
+        "utf8"
+      );
       await fs.chmod(path.join(fakeBin, "npx"), 0o755);
       let npxError: { stdout?: string } | undefined;
       try {
@@ -193,27 +206,36 @@ describe("setup CLI flow", () => {
       } catch (error) {
         npxError = error as { stdout?: string };
       }
-      const npxReport = parseJson<{ status: string; checks: Array<{ id: string; severity: string; message?: string }> }>(
-        npxError?.stdout ?? ""
-      );
+      const npxReport = parseJson<{
+        status: string;
+        checks: Array<{ id: string; severity: string; message?: string }>;
+      }>(npxError?.stdout ?? "");
       expect(npxReport.status).toBe("failed");
       expect(npxReport.checks).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ id: "npx", severity: "fail", message: expect.stringContaining("broken npx") }),
+          expect.objectContaining({
+            id: "npx",
+            severity: "fail",
+            message: expect.stringContaining("broken npx")
+          }),
           expect.objectContaining({ id: "mcp_probe", severity: "warn" })
         ])
       );
 
-      await fs.rm(path.join(okfyHome, "sources", "stripe", "bundle"), { recursive: true, force: true });
+      await fs.rm(path.join(okfyHome, "sources", "stripe", "bundle"), {
+        recursive: true,
+        force: true
+      });
       let missingBundleError: { stdout?: string } | undefined;
       try {
         await runCli(["doctor", "stripe", "--json"], okfyHome);
       } catch (error) {
         missingBundleError = error as { stdout?: string };
       }
-      const missingBundle = parseJson<{ status: string; checks: Array<{ id: string; severity: string }> }>(
-        missingBundleError?.stdout ?? ""
-      );
+      const missingBundle = parseJson<{
+        status: string;
+        checks: Array<{ id: string; severity: string }>;
+      }>(missingBundleError?.stdout ?? "");
       expect(missingBundle.status).toBe("failed");
       expect(missingBundle.checks).toEqual(
         expect.arrayContaining([
@@ -228,13 +250,20 @@ describe("setup CLI flow", () => {
       } catch (error) {
         missingError = error as { stdout?: string };
       }
-      const missing = parseJson<{ sourceName: string; status: string; okfyHome: string; checks: Array<{ id: string; severity: string; fix?: string }> }>(
-        missingError?.stdout ?? ""
-      );
+      const missing = parseJson<{
+        sourceName: string;
+        status: string;
+        okfyHome: string;
+        checks: Array<{ id: string; severity: string; fix?: string }>;
+      }>(missingError?.stdout ?? "");
       expect(missing).toMatchObject({ sourceName: "missing", status: "failed", okfyHome });
       expect(missing.checks).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ id: "source", severity: "fail", fix: expect.stringContaining("npx -y okfy-ai sources") })
+          expect.objectContaining({
+            id: "source",
+            severity: "fail",
+            fix: expect.stringContaining("npx -y okfy-ai sources")
+          })
         ])
       );
     } finally {
@@ -274,7 +303,10 @@ describe("setup CLI flow", () => {
         firstPrompt: string;
         artifacts: Array<{ label: string; body: string }>;
         checks: Array<{ id: string; severity: string; fix?: string }>;
-      }>((await runCli(["doctor", "stripe", "clerk", "--client", "codex", "--json"], okfyHome)).stdout);
+      }>(
+        (await runCli(["doctor", "stripe", "clerk", "--client", "codex", "--json"], okfyHome))
+          .stdout
+      );
 
       expect(report).toMatchObject({
         workspace: true,
@@ -289,7 +321,11 @@ describe("setup CLI flow", () => {
       expect(report.artifacts[0]?.body).toContain("[mcp_servers.stripe_clerk_okf]");
       expect(report.checks).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ id: "freshness:stripe", severity: "warn", fix: expect.stringContaining("update stripe") }),
+          expect.objectContaining({
+            id: "freshness:stripe",
+            severity: "warn",
+            fix: expect.stringContaining("update stripe")
+          }),
           expect.objectContaining({ id: "freshness:clerk", severity: "pass" }),
           expect.objectContaining({ id: "mcp_probe", severity: "pass" })
         ])
@@ -301,11 +337,20 @@ describe("setup CLI flow", () => {
       } catch (error) {
         missingError = error as { stdout?: string };
       }
-      const missing = parseJson<{ workspace: boolean; sourceName: string; status: string; checks: Array<{ id: string; severity: string }> }>(
-        missingError?.stdout ?? ""
+      const missing = parseJson<{
+        workspace: boolean;
+        sourceName: string;
+        status: string;
+        checks: Array<{ id: string; severity: string }>;
+      }>(missingError?.stdout ?? "");
+      expect(missing).toMatchObject({
+        workspace: true,
+        sourceName: "stripe, missing",
+        status: "failed"
+      });
+      expect(missing.checks).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: "source", severity: "fail" })])
       );
-      expect(missing).toMatchObject({ workspace: true, sourceName: "stripe, missing", status: "failed" });
-      expect(missing.checks).toEqual(expect.arrayContaining([expect.objectContaining({ id: "source", severity: "fail" })]));
       expect(missing.checks.some((check) => check.id === "mcp_probe")).toBe(false);
 
       const allReport = parseJson<{
@@ -329,9 +374,12 @@ describe("setup CLI flow", () => {
       } catch (error) {
         mixedAllError = error as { stdout?: string };
       }
-      const mixedAll = parseJson<{ workspace: boolean; workspaceAll: boolean; command: { display: string }; status: string }>(
-        mixedAllError?.stdout ?? ""
-      );
+      const mixedAll = parseJson<{
+        workspace: boolean;
+        workspaceAll: boolean;
+        command: { display: string };
+        status: string;
+      }>(mixedAllError?.stdout ?? "");
       expect(mixedAll).toMatchObject({
         workspace: true,
         workspaceAll: true,
@@ -355,15 +403,47 @@ describe("setup CLI flow", () => {
         ],
         oneSourceHome
       );
-      const oneSourceAll = parseJson<{ workspace: boolean; workspaceAll: boolean; command: { display: string }; sourceNames: string[] }>(
-        (await runCli(["doctor", "--all", "--json"], oneSourceHome)).stdout
-      );
+      const oneSourceAll = parseJson<{
+        workspace: boolean;
+        workspaceAll: boolean;
+        command: { display: string };
+        sourceNames: string[];
+      }>((await runCli(["doctor", "--all", "--json"], oneSourceHome)).stdout);
       expect(oneSourceAll).toMatchObject({
         workspace: true,
         workspaceAll: true,
         command: { display: "npx -y okfy-ai serve --all --mcp --auto-refresh" },
         sourceNames: ["stripe"]
       });
+
+      const corruptHome = await tempHome();
+      await fs.mkdir(path.join(corruptHome, "sources", "Bad Name"), { recursive: true });
+      let corruptAllError: { stdout?: string } | undefined;
+      try {
+        await runCli(["doctor", "--all", "--json"], corruptHome);
+      } catch (error) {
+        corruptAllError = error as { stdout?: string };
+      }
+      const corruptAll = parseJson<{
+        workspace: boolean;
+        status: string;
+        sourceNames: string[];
+        checks: Array<{ id: string; severity: string; message?: string }>;
+      }>(corruptAllError?.stdout ?? "");
+      expect(corruptAll).toMatchObject({
+        workspace: true,
+        status: "failed"
+      });
+      expect(corruptAll.sourceNames[0]).toMatch(/^invalid-[a-z0-9]+-bad-name$/);
+      expect(corruptAll.checks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: expect.stringMatching(/^freshness:invalid-[a-z0-9]+-bad-name$/),
+            severity: "fail"
+          })
+        ])
+      );
+      await expect(fs.readdir(path.join(corruptHome, "sources"))).resolves.toEqual(["Bad Name"]);
     } finally {
       await docs.close();
     }
@@ -396,12 +476,19 @@ describe("setup CLI flow", () => {
       } catch (error) {
         initError = error as { stdout?: string };
       }
-      const failure = parseJson<{ status: string; checks: Array<{ id: string; severity: string }> }>(initError?.stdout ?? "");
+      const failure = parseJson<{
+        status: string;
+        checks: Array<{ id: string; severity: string }>;
+      }>(initError?.stdout ?? "");
 
       expect(failure.status).toBe("failed");
-      expect(failure.checks).toEqual(expect.arrayContaining([expect.objectContaining({ id: "source", severity: "fail" })]));
+      expect(failure.checks).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: "source", severity: "fail" })])
+      );
       await expect(readSourceManifest("stripe", { okfyHome })).resolves.toEqual(before);
-      await expect(fs.access(path.join(okfyHome, "sources", "stripe", "bundle", "sessions.md"))).resolves.toBeUndefined();
+      await expect(
+        fs.access(path.join(okfyHome, "sources", "stripe", "bundle", "sessions.md"))
+      ).resolves.toBeUndefined();
     } finally {
       await docs.close();
     }

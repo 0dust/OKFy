@@ -3,59 +3,34 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { crawlWebsite as defaultCrawlWebsite } from "./crawler.js";
 import { hashBundleContents as defaultHashBundleContent } from "./hash.js";
-import { inspectBundle as defaultInspectBundle, validateBundle as defaultValidateBundle } from "./validate.js";
+import {
+  inspectBundle as defaultInspectBundle,
+  validateBundle as defaultValidateBundle
+} from "./validate.js";
 import { assertSafeForceOutDir } from "./writer.js";
 import type { CrawlOptions, CrawlResult } from "./crawler.js";
+import type {
+  RefreshErrorState,
+  RefreshState,
+  RefreshStatus,
+  SourceManifest
+} from "./source-store.js";
 import type { BundleStats, ValidationReport } from "./types.js";
 
-export type RefreshStatus = "missing" | "fresh" | "stale" | "refreshing" | "failed";
+export type {
+  RefreshErrorState,
+  RefreshMode,
+  RefreshState,
+  RefreshStatus
+} from "./source-store.js";
 
-export type RefreshMode = "off" | "stale-while-refresh" | "blocking";
-
-export type RefreshSourceManifest = {
-  schemaVersion: 1;
-  name: string;
-  kind: "website";
-  source: {
-    seedUrl: string;
-  };
-  crawl: Omit<CrawlOptions, "seedUrl" | "outDir" | "force" | "dryRun" | "timestamp" | "onProgress">;
-  refresh: {
-    mode: RefreshMode;
-    maxAgeSeconds: number;
-    minIntervalSeconds: number;
-  };
-  bundle: {
-    dir: string;
-  };
-};
-
-export type RefreshErrorState = {
-  message: string;
-  code?: string;
-  sourceName?: string;
-  seedUrl?: string;
-  occurredAt?: string;
-};
+export type RefreshSourceManifest = SourceManifest;
 
 export type RefreshBundleState = {
   conceptCount: number;
   warningCount: number;
   valid: boolean;
   contentHash: string;
-};
-
-export type RefreshState = {
-  schemaVersion: 1;
-  status: RefreshStatus;
-  lastCheckedAt: string | null;
-  lastRefreshStartedAt: string | null;
-  lastRefreshCompletedAt: string | null;
-  lastSuccessfulRefreshAt: string | null;
-  nextRefreshAllowedAt: string | null;
-  refreshInProgress: boolean;
-  lastError: RefreshErrorState | null;
-  bundle: RefreshBundleState | null;
 };
 
 export type FreshnessReason =
@@ -129,7 +104,11 @@ function lockfilePath(sourceDir: string): string {
   return path.join(sourceDir, ".refresh.lock");
 }
 
-async function isLockStale(lockPath: string, now: Date, staleLockTimeoutMs: number): Promise<boolean> {
+async function isLockStale(
+  lockPath: string,
+  now: Date,
+  staleLockTimeoutMs: number
+): Promise<boolean> {
   try {
     const raw = await fs.readFile(lockPath, "utf8");
     const parsed = JSON.parse(raw) as { createdAt?: string };
@@ -171,7 +150,11 @@ async function acquireRefreshLock(
   return { acquired: false };
 }
 
-function stateForRefreshStart(state: RefreshState | null | undefined, freshness: FreshnessDecision, startedAt: Date): RefreshState {
+function stateForRefreshStart(
+  state: RefreshState | null | undefined,
+  freshness: FreshnessDecision,
+  startedAt: Date
+): RefreshState {
   return {
     schemaVersion: 1,
     status: "refreshing",
@@ -182,11 +165,18 @@ function stateForRefreshStart(state: RefreshState | null | undefined, freshness:
     nextRefreshAllowedAt: state?.nextRefreshAllowedAt ?? null,
     refreshInProgress: true,
     lastError: state?.lastError ?? null,
-    bundle: state?.bundle ?? (freshness.validation ? bundleStateFromValidation(freshness.validation, state?.bundle?.contentHash ?? "") : null)
+    bundle:
+      state?.bundle ??
+      (freshness.validation
+        ? bundleStateFromValidation(freshness.validation, state?.bundle?.contentHash ?? "")
+        : null)
   };
 }
 
-function stateForLockedRefresh(state: RefreshState | null | undefined, checkedAt: Date): RefreshState {
+function stateForLockedRefresh(
+  state: RefreshState | null | undefined,
+  checkedAt: Date
+): RefreshState {
   return {
     schemaVersion: 1,
     status: "refreshing",
@@ -201,7 +191,11 @@ function stateForLockedRefresh(state: RefreshState | null | undefined, checkedAt
   };
 }
 
-function stateForCheckedRefresh(state: RefreshState | null | undefined, status: RefreshStatus, checkedAt: Date): RefreshState {
+function stateForCheckedRefresh(
+  state: RefreshState | null | undefined,
+  status: RefreshStatus,
+  checkedAt: Date
+): RefreshState {
   return {
     schemaVersion: 1,
     status,
@@ -220,7 +214,11 @@ function messageFromError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function errorState(manifest: RefreshSourceManifest, error: unknown, occurredAt: Date): RefreshErrorState {
+function errorState(
+  manifest: RefreshSourceManifest,
+  error: unknown,
+  occurredAt: Date
+): RefreshErrorState {
   return {
     message: messageFromError(error),
     sourceName: manifest.name,
@@ -249,7 +247,10 @@ function stateForRefreshFailure(
   };
 }
 
-function bundleStateFromValidation(validation: ValidationReport, contentHash: string): RefreshBundleState {
+function bundleStateFromValidation(
+  validation: ValidationReport,
+  contentHash: string
+): RefreshBundleState {
   return {
     conceptCount: validation.conceptCount,
     warningCount: validation.warningCount,
@@ -295,7 +296,10 @@ export async function evaluateFreshness(options: {
   if (options.state?.refreshInProgress) {
     return { status: "refreshing", reason: "refresh_in_progress" };
   }
-  if ((options.state?.status === "failed" || options.state?.lastError) && isBeforeNextRefreshAllowed(options.state, now)) {
+  if (
+    (options.state?.status === "failed" || options.state?.lastError) &&
+    isBeforeNextRefreshAllowed(options.state, now)
+  ) {
     return { status: "failed", reason: "latest_refresh_failed" };
   }
 
@@ -380,7 +384,11 @@ export async function refreshSource(options: {
     }
   }
 
-  const lock = await acquireRefreshLock(options.sourceDir, now, options.staleLockTimeoutMs ?? DEFAULT_STALE_LOCK_TIMEOUT_MS);
+  const lock = await acquireRefreshLock(
+    options.sourceDir,
+    now,
+    options.staleLockTimeoutMs ?? DEFAULT_STALE_LOCK_TIMEOUT_MS
+  );
   if (!lock.acquired) {
     const lockedState = stateForLockedRefresh(options.state, now);
     await options.writeState(lockedState);
@@ -431,7 +439,12 @@ export async function refreshSource(options: {
     await fs.rm(tempDir, { recursive: true, force: true });
     const failedState = stateForRefreshFailure(options.state, options.manifest, error, now);
     await options.writeState(failedState);
-    return { status: "failed", skipped: false, state: failedState, error: failedState.lastError ?? undefined };
+    return {
+      status: "failed",
+      skipped: false,
+      state: failedState,
+      error: failedState.lastError ?? undefined
+    };
   } finally {
     await lock.release();
   }

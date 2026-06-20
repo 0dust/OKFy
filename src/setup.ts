@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { packageVersion } from "./metadata.js";
 import { MCP_TOOL_NAMES } from "./mcp.js";
 import { resolveOkfyHome } from "./source-store.js";
 
@@ -61,7 +62,12 @@ export interface McpProbeResult {
   tools: string[];
   stderr: string;
   error?: {
-    code: "startup_failed" | "timeout" | "stdout_contamination" | "missing_tools" | "protocol_error";
+    code:
+      | "startup_failed"
+      | "timeout"
+      | "stdout_contamination"
+      | "missing_tools"
+      | "protocol_error";
     message: string;
   };
 }
@@ -81,12 +87,19 @@ const MAX_MESSAGES = 100;
 export function parseSetupClient(value: string): SetupClient {
   const normalized = value.trim().toLowerCase();
   if (normalized === "claude-code" || normalized === "claude") return "claude-code";
-  if (normalized === "claude-desktop" || normalized === "cursor" || normalized === "mcp-json" || normalized === "desktop") {
+  if (
+    normalized === "claude-desktop" ||
+    normalized === "cursor" ||
+    normalized === "mcp-json" ||
+    normalized === "desktop"
+  ) {
     return "mcp-json";
   }
   if (normalized === "codex") return "codex";
   if (normalized === "generic" || normalized === "json") return "generic";
-  throw new Error(`Invalid setup client "${value}". Use claude-code, claude-desktop, cursor, codex, or generic.`);
+  throw new Error(
+    `Invalid setup client "${value}". Use claude-code, claude-desktop, cursor, codex, or generic.`
+  );
 }
 
 export function expectedMcpTools(): string[] {
@@ -124,8 +137,16 @@ export function createSetupReport(input: SetupReportInput): SetupReport {
     okfyHome,
     defaultOkfyHome: defaultHome,
     command,
-    artifacts: renderClientArtifacts({ client: input.client, sourceNames, workspaceAll: input.workspaceAll, okfyHome, defaultOkfyHome: defaultHome }),
-    firstPrompt: firstAgentPrompt(input.client === "codex" ? codexServerName : serverName, { workspace }),
+    artifacts: renderClientArtifacts({
+      client: input.client,
+      sourceNames,
+      workspaceAll: input.workspaceAll,
+      okfyHome,
+      defaultOkfyHome: defaultHome
+    }),
+    firstPrompt: firstAgentPrompt(input.client === "codex" ? codexServerName : serverName, {
+      workspace
+    }),
     checks: input.checks,
     status: setupStatus(input.checks)
   };
@@ -177,7 +198,10 @@ export function renderClientArtifacts(input: {
     ];
   }
 
-  const label = input.client === "mcp-json" ? "Claude Desktop / Cursor mcpServers JSON" : "Generic mcpServers JSON";
+  const label =
+    input.client === "mcp-json"
+      ? "Claude Desktop / Cursor mcpServers JSON"
+      : "Generic mcpServers JSON";
   return [
     {
       client: input.client,
@@ -200,7 +224,10 @@ export function renderClientArtifacts(input: {
   ];
 }
 
-export function firstAgentPrompt(serverName: string, options: { workspace?: boolean } = {}): string {
+export function firstAgentPrompt(
+  serverName: string,
+  options: { workspace?: boolean } = {}
+): string {
   if (options.workspace) {
     return `Use the ${serverName} MCP server. Start with bundle_summary to understand the workspace sources and freshness. Filter by source when you know which docs apply, search before reading concepts, read only the most relevant concepts, inspect neighbors when relationships matter, and cite source_resource URLs in the final answer.`;
   }
@@ -209,9 +236,15 @@ export function firstAgentPrompt(serverName: string, options: { workspace?: bool
 
 export type ServeCommandTarget = string | string[] | { all: true };
 
-export function serveCommand(sourceNameOrNames: ServeCommandTarget, okfyHome: string, defaultHome = defaultOkfyHome()): ServeCommand {
+export function serveCommand(
+  sourceNameOrNames: ServeCommandTarget,
+  okfyHome: string,
+  defaultHome = defaultOkfyHome()
+): ServeCommand {
   const args = ["-y", "okfy-ai", ...serveCommandArgs(sourceNameOrNames)];
-  const env: Record<string, string> = needsOkfyHomeEnv(okfyHome, defaultHome) ? { OKFY_HOME: path.resolve(okfyHome) } : {};
+  const env: Record<string, string> = needsOkfyHomeEnv(okfyHome, defaultHome)
+    ? { OKFY_HOME: path.resolve(okfyHome) }
+    : {};
   return {
     command: "npx",
     args,
@@ -230,8 +263,14 @@ export function serveCommandArgs(sourceNameOrNames: ServeCommandTarget): string[
     : ["serve", ...sourceNames, "--mcp", "--auto-refresh"];
 }
 
-function isAllCommandTarget(sourceNameOrNames: ServeCommandTarget): sourceNameOrNames is { all: true } {
-  return typeof sourceNameOrNames === "object" && !Array.isArray(sourceNameOrNames) && sourceNameOrNames.all;
+function isAllCommandTarget(
+  sourceNameOrNames: ServeCommandTarget
+): sourceNameOrNames is { all: true } {
+  return (
+    typeof sourceNameOrNames === "object" &&
+    !Array.isArray(sourceNameOrNames) &&
+    sourceNameOrNames.all
+  );
 }
 
 export function setupCheck(
@@ -244,9 +283,13 @@ export function setupCheck(
   return { id, label, severity, message, ...(fix ? { fix } : {}) };
 }
 
-export async function executableOnPath(command: string, env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+export async function executableOnPath(
+  command: string,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<boolean> {
   const searchPath = env.PATH ?? "";
-  const extensions = process.platform === "win32" ? (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";") : [""];
+  const extensions =
+    process.platform === "win32" ? (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";") : [""];
   for (const directory of searchPath.split(path.delimiter)) {
     if (!directory) continue;
     for (const extension of extensions) {
@@ -262,11 +305,18 @@ export async function executableOnPath(command: string, env: NodeJS.ProcessEnv =
   return false;
 }
 
-export function evaluateMcpProbeMessages(messages: Array<Record<string, unknown>>): { ok: boolean; tools: string[]; missingTools: string[] } {
+export function evaluateMcpProbeMessages(messages: Array<Record<string, unknown>>): {
+  ok: boolean;
+  tools: string[];
+  missingTools: string[];
+} {
   const toolsResponse = messages.find((message) => message.id === 2) as
     | { result?: { tools?: Array<{ name?: string }> } }
     | undefined;
-  const tools = toolsResponse?.result?.tools?.map((tool) => tool.name).filter((name): name is string => Boolean(name)) ?? [];
+  const tools =
+    toolsResponse?.result?.tools
+      ?.map((tool) => tool.name)
+      .filter((name): name is string => Boolean(name)) ?? [];
   const missingTools = EXPECTED_MCP_TOOLS.filter((tool) => !tools.includes(tool));
   return { ok: missingTools.length === 0, tools, missingTools };
 }
@@ -279,7 +329,10 @@ export async function probeMcpStdio(options: McpProbeOptions): Promise<McpProbeR
   return probeChildProcess(child, options.timeoutMs ?? 5000);
 }
 
-async function probeChildProcess(child: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<McpProbeResult> {
+async function probeChildProcess(
+  child: ChildProcessWithoutNullStreams,
+  timeoutMs: number
+): Promise<McpProbeResult> {
   const messages: Array<Record<string, unknown>> = [];
   let stdoutBuffer = "";
   let stderr = "";
@@ -307,7 +360,8 @@ async function probeChildProcess(child: ChildProcessWithoutNullStreams, timeoutM
       stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
       if (line) {
         try {
-          if (messages.length >= MAX_MESSAGES) contamination = `MCP stdout exceeded ${MAX_MESSAGES} JSON-RPC messages.`;
+          if (messages.length >= MAX_MESSAGES)
+            contamination = `MCP stdout exceeded ${MAX_MESSAGES} JSON-RPC messages.`;
           else messages.push(JSON.parse(line) as Record<string, unknown>);
         } catch {
           contamination = line;
@@ -315,7 +369,8 @@ async function probeChildProcess(child: ChildProcessWithoutNullStreams, timeoutM
       }
       newlineIndex = stdoutBuffer.indexOf("\n");
     }
-    if (stdoutBuffer.length >= MAX_CAPTURE_CHARS) contamination = `MCP stdout line exceeded ${MAX_CAPTURE_CHARS} characters.`;
+    if (stdoutBuffer.length >= MAX_CAPTURE_CHARS)
+      contamination = `MCP stdout line exceeded ${MAX_CAPTURE_CHARS} characters.`;
   });
   child.stderr.on("data", (chunk: Buffer) => {
     stderr = appendBounded(stderr, chunk.toString("utf8"));
@@ -329,12 +384,30 @@ async function probeChildProcess(child: ChildProcessWithoutNullStreams, timeoutM
     send(1, "initialize", {
       protocolVersion: "2025-06-18",
       capabilities: {},
-      clientInfo: { name: "okfy-doctor", version: "0.1.0" }
+      clientInfo: { name: "okfy-doctor", version: packageVersion() }
     });
-    await waitForMessage(1, messages, () => contamination, () => spawnError, () => exit, () => stderr, timeoutMs);
-    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} })}\n`);
+    await waitForMessage(
+      1,
+      messages,
+      () => contamination,
+      () => spawnError,
+      () => exit,
+      () => stderr,
+      timeoutMs
+    );
+    child.stdin.write(
+      `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} })}\n`
+    );
     send(2, "tools/list");
-    await waitForMessage(2, messages, () => contamination, () => spawnError, () => exit, () => stderr, timeoutMs);
+    await waitForMessage(
+      2,
+      messages,
+      () => contamination,
+      () => spawnError,
+      () => exit,
+      () => stderr,
+      timeoutMs
+    );
 
     const result = evaluateMcpProbeMessages(messages);
     if (!result.ok) {
@@ -353,7 +426,15 @@ async function probeChildProcess(child: ChildProcessWithoutNullStreams, timeoutM
     if (error instanceof ProbeFailure) {
       return { ok: false, tools: [], stderr, error: { code: error.code, message: error.message } };
     }
-    return { ok: false, tools: [], stderr, error: { code: "protocol_error", message: error instanceof Error ? error.message : String(error) } };
+    return {
+      ok: false,
+      tools: [],
+      stderr,
+      error: {
+        code: "protocol_error",
+        message: error instanceof Error ? error.message : String(error)
+      }
+    };
   } finally {
     await stopChild(child, closed, () => exit);
   }
@@ -382,7 +463,11 @@ async function waitForMessage(
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const badLine = contamination();
-    if (badLine) throw new ProbeFailure("stdout_contamination", `MCP stdout contained non-JSON output: ${badLine}`);
+    if (badLine)
+      throw new ProbeFailure(
+        "stdout_contamination",
+        `MCP stdout contained non-JSON output: ${badLine}`
+      );
     const error = spawnError();
     if (error) throw new ProbeFailure("startup_failed", error.message);
     const message = messages.find((candidate) => candidate.id === id);
@@ -390,7 +475,10 @@ async function waitForMessage(
     const exit = childExit();
     if (exit) {
       const details = capturedStderr() ? ` stderr: ${truncate(capturedStderr())}` : "";
-      throw new ProbeFailure("startup_failed", `MCP subprocess exited before response ${id} (${formatExit(exit)}).${details}`);
+      throw new ProbeFailure(
+        "startup_failed",
+        `MCP subprocess exited before response ${id} (${formatExit(exit)}).${details}`
+      );
     }
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
@@ -409,7 +497,10 @@ async function stopChild(
   }
   if (childExit()) return;
   child.kill("SIGTERM");
-  const exited = await Promise.race([closed.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 500))]);
+  const exited = await Promise.race([
+    closed.then(() => true),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 500))
+  ]);
   if (!exited && !childExit()) child.kill("SIGKILL");
 }
 
@@ -452,7 +543,11 @@ function codexMcpServerName(sourceNameOrNames: string | string[]): string {
   return `${safeName || "source"}_okf`;
 }
 
-function setupSourceNames(input: { sourceName?: string; sourceNames?: string[]; workspaceAll?: boolean }): string[] {
+function setupSourceNames(input: {
+  sourceName?: string;
+  sourceNames?: string[];
+  workspaceAll?: boolean;
+}): string[] {
   const names = input.sourceNames ?? (input.sourceName ? [input.sourceName] : []);
   if (input.workspaceAll) return [...names];
   if (!names.length) throw new Error("Setup report requires at least one source name.");
@@ -470,7 +565,11 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
-function codexToml(serverName: string, command: ServeCommand, env: Record<string, string> | undefined): string {
+function codexToml(
+  serverName: string,
+  command: ServeCommand,
+  env: Record<string, string> | undefined
+): string {
   const lines = [
     `[mcp_servers.${serverName}]`,
     `command = ${JSON.stringify(command.command)}`,

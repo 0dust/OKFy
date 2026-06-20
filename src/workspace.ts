@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { BundleSearch, type SearchResult } from "./search.js";
 import {
+  listSources,
   readRefreshState,
   readSourceManifest,
   resolveBundleDir,
@@ -92,13 +93,21 @@ export function workspaceProfilePath(name: string, options: SourceStoreOptions =
   return path.join(resolveOkfyHome(options), "workspaces", `${validateSourceName(name)}.json`);
 }
 
-export async function readWorkspaceProfile(name: string, options: SourceStoreOptions = {}): Promise<WorkspaceProfile> {
-  const profile = JSON.parse(await fs.readFile(workspaceProfilePath(name, options), "utf8")) as WorkspaceProfile;
+export async function readWorkspaceProfile(
+  name: string,
+  options: SourceStoreOptions = {}
+): Promise<WorkspaceProfile> {
+  const profile = JSON.parse(
+    await fs.readFile(workspaceProfilePath(name, options), "utf8")
+  ) as WorkspaceProfile;
   validateWorkspaceProfile(profile, name);
   return profile;
 }
 
-export async function writeWorkspaceProfile(profile: WorkspaceProfile, options: SourceStoreOptions = {}): Promise<void> {
+export async function writeWorkspaceProfile(
+  profile: WorkspaceProfile,
+  options: SourceStoreOptions = {}
+): Promise<void> {
   validateWorkspaceProfile(profile);
   const filePath = workspaceProfilePath(profile.name, options);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
@@ -110,9 +119,15 @@ export async function resolveWorkspaceSources(
   options: SourceStoreOptions = {}
 ): Promise<WorkspaceSourceSet> {
   const hasNames = Boolean(selection.names?.length);
-  const modeCount = Number(hasNames) + Number(Boolean(selection.all)) + Number(Boolean(selection.profile)) + Number(Boolean(selection.profileName));
+  const modeCount =
+    Number(hasNames) +
+    Number(Boolean(selection.all)) +
+    Number(Boolean(selection.profile)) +
+    Number(Boolean(selection.profileName));
   if (modeCount > 1) {
-    throw new Error("Choose one workspace source selection: explicit source names, --all, or one workspace profile.");
+    throw new Error(
+      "Choose one workspace source selection: explicit source names, --all, or one workspace profile."
+    );
   }
 
   let names = selection.names ?? [];
@@ -128,12 +143,14 @@ export async function resolveWorkspaceSources(
   }
 
   if (selection.all) {
-    const records = await readAllSourcesFailVisible(options);
-    if (!records.length) throw new WorkspaceError("no_sources", "No registered sources found for --all.");
+    const records = await listSources(options);
+    if (!records.length)
+      throw new WorkspaceError("no_sources", "No registered sources found for --all.");
     return { records, sourceNames: records.map((record) => record.name) };
   }
 
-  if (!names.length) throw new WorkspaceError("no_sources", "Select at least one registered source.");
+  if (!names.length)
+    throw new WorkspaceError("no_sources", "Select at least one registered source.");
   assertUniqueSourceNames(names);
   const records = await Promise.all(names.map((name) => readSourceRecord(name, options)));
   return { records, sourceNames: records.map((record) => record.name), workspaceName };
@@ -152,7 +169,10 @@ export class WorkspaceSearch {
     this.availableNames = new Set([...(options.availableSourceNames ?? []), ...this.selectedNames]);
   }
 
-  static async fromSourceRecords(records: SourceRecord[], options: { availableSourceNames?: string[] } = {}): Promise<WorkspaceSearch> {
+  static async fromSourceRecords(
+    records: SourceRecord[],
+    options: { availableSourceNames?: string[] } = {}
+  ): Promise<WorkspaceSearch> {
     const sources = await Promise.all(
       records.map(async (record) => ({
         record,
@@ -163,32 +183,52 @@ export class WorkspaceSearch {
     return new WorkspaceSearch(sources, options);
   }
 
-  search(query: string, options: { source?: string; type?: string; tags?: string[]; limit?: number } = {}): WorkspaceSearchResult[] {
+  search(
+    query: string,
+    options: { source?: string; type?: string; tags?: string[]; limit?: number } = {}
+  ): WorkspaceSearchResult[] {
     const limit = options.limit ?? 10;
     const sources = this.usableSources(options.source);
     return sources
       .flatMap((source) =>
-        source.search.search(query, { type: options.type, tags: options.tags, limit: Math.max(limit, 50) }).map((result) =>
-          this.withSourceResult(source, result)
-        )
+        source.search
+          .search(query, { type: options.type, tags: options.tags, limit: Math.max(limit, 50) })
+          .map((result) => this.withSourceResult(source, result))
       )
-      .sort((first, second) => second.score - first.score || first.sourceName.localeCompare(second.sourceName) || first.id.localeCompare(second.id))
+      .sort(
+        (first, second) =>
+          second.score - first.score ||
+          first.sourceName.localeCompare(second.sourceName) ||
+          first.id.localeCompare(second.id)
+      )
       .slice(0, limit);
   }
 
-  getConcept(input: { id: string; source?: string }): { source: WorkspaceSearchSource; concept: Concept } {
+  getConcept(input: { id: string; source?: string }): {
+    source: WorkspaceSearchSource;
+    concept: Concept;
+  } {
     const sources = input.source ? this.usableSources(input.source) : this.sourcesWithSearch();
     const matches = sources
       .map((source) => ({ source, concept: source.search.getConcept(input.id) }))
-      .filter((row): row is { source: LoadedWorkspaceSource; concept: Concept } => Boolean(row.concept));
+      .filter((row): row is { source: LoadedWorkspaceSource; concept: Concept } =>
+        Boolean(row.concept)
+      );
     if (matches.length === 0) {
-      throw new WorkspaceError("unknown_concept", `No concept found for ${input.id}`, { id: input.id, source: input.source });
+      throw new WorkspaceError("unknown_concept", `No concept found for ${input.id}`, {
+        id: input.id,
+        source: input.source
+      });
     }
     if (!input.source && matches.length > 1) {
-      throw new WorkspaceError("ambiguous_concept", `Concept id "${input.id}" exists in multiple workspace sources.`, {
-        id: input.id,
-        candidates: matches.map(({ source, concept }) => this.conceptCandidate(source, concept))
-      });
+      throw new WorkspaceError(
+        "ambiguous_concept",
+        `Concept id "${input.id}" exists in multiple workspace sources.`,
+        {
+          id: input.id,
+          candidates: matches.map(({ source, concept }) => this.conceptCandidate(source, concept))
+        }
+      );
     }
     return matches[0];
   }
@@ -209,24 +249,35 @@ export class WorkspaceSearch {
     return this.sourcesWithSearch().map((source) => source.record.name);
   }
 
-  private distribution(sourceName: string | undefined, values: (concept: Concept) => string[]): Record<string, number> {
+  private distribution(
+    sourceName: string | undefined,
+    values: (concept: Concept) => string[]
+  ): Record<string, number> {
     const distribution: Record<string, number> = {};
     for (const source of this.usableSources(sourceName)) {
       for (const concept of source.search.graph.concepts.values()) {
         for (const value of values(concept)) distribution[value] = (distribution[value] ?? 0) + 1;
       }
     }
-    return Object.fromEntries(Object.entries(distribution).sort(([first], [second]) => first.localeCompare(second)));
+    return Object.fromEntries(
+      Object.entries(distribution).sort(([first], [second]) => first.localeCompare(second))
+    );
   }
 
   private usableSources(sourceName?: string): LoadedWorkspaceSource[] {
     const sources = sourceName ? [this.sourceByName(sourceName)] : this.sources;
-    const usable = sources.filter((source): source is LoadedWorkspaceSource => Boolean(source.search));
+    const usable = sources.filter((source): source is LoadedWorkspaceSource =>
+      Boolean(source.search)
+    );
     if (!usable.length) {
-      throw new WorkspaceError("no_usable_sources", "No usable OKF bundle is available in this workspace.", {
-        source: sourceName,
-        sources: sources.map((source) => source.record.name)
-      });
+      throw new WorkspaceError(
+        "no_usable_sources",
+        "No usable OKF bundle is available in this workspace.",
+        {
+          source: sourceName,
+          sources: sources.map((source) => source.record.name)
+        }
+      );
     }
     return usable;
   }
@@ -240,15 +291,24 @@ export class WorkspaceSearch {
       return this.sources.find((source) => source.record.name === sourceName)!;
     }
     if (this.availableNames.has(sourceName)) {
-      throw new WorkspaceError("source_not_in_workspace", `Source "${sourceName}" is not selected in this workspace.`, {
-        source: sourceName,
-        workspaceSources: [...this.selectedNames]
-      });
+      throw new WorkspaceError(
+        "source_not_in_workspace",
+        `Source "${sourceName}" is not selected in this workspace.`,
+        {
+          source: sourceName,
+          workspaceSources: [...this.selectedNames]
+        }
+      );
     }
-    throw new WorkspaceError("unknown_source", `Unknown source "${sourceName}".`, { source: sourceName });
+    throw new WorkspaceError("unknown_source", `Unknown source "${sourceName}".`, {
+      source: sourceName
+    });
   }
 
-  private withSourceResult(source: WorkspaceSearchSource, result: SearchResult): WorkspaceSearchResult {
+  private withSourceResult(
+    source: WorkspaceSearchSource,
+    result: SearchResult
+  ): WorkspaceSearchResult {
     return {
       ...result,
       sourceName: source.record.name,
@@ -258,7 +318,10 @@ export class WorkspaceSearch {
     };
   }
 
-  private conceptCandidate(source: WorkspaceSearchSource, concept: Concept): WorkspaceConceptCandidate {
+  private conceptCandidate(
+    source: WorkspaceSearchSource,
+    concept: Concept
+  ): WorkspaceConceptCandidate {
     return {
       sourceName: source.record.name,
       sourceKind: source.record.manifest.kind,
@@ -278,7 +341,9 @@ function validateWorkspaceProfile(profile: WorkspaceProfile, expectedName?: stri
   if (profile.schemaVersion !== 1) throw new Error("Workspace profile schemaVersion must be 1.");
   validateSourceName(profile.name);
   if (expectedName && profile.name !== expectedName) {
-    throw new Error(`Workspace profile name mismatch: expected "${expectedName}", found "${profile.name}".`);
+    throw new Error(
+      `Workspace profile name mismatch: expected "${expectedName}", found "${profile.name}".`
+    );
   }
   if (!Array.isArray(profile.sources) || profile.sources.length === 0) {
     throw new Error(`Workspace profile "${profile.name}" must list at least one source.`);
@@ -291,7 +356,10 @@ function assertUniqueSourceNames(names: string[]): void {
   const seen = new Set<string>();
   for (const name of names) {
     validateSourceName(name);
-    if (seen.has(name)) throw new WorkspaceError("duplicate_source", `Duplicate workspace source "${name}".`, { source: name });
+    if (seen.has(name))
+      throw new WorkspaceError("duplicate_source", `Duplicate workspace source "${name}".`, {
+        source: name
+      });
     seen.add(name);
   }
 }
@@ -307,23 +375,10 @@ async function readSourceRecord(name: string, options: SourceStoreOptions): Prom
   };
 }
 
-async function readAllSourcesFailVisible(options: SourceStoreOptions): Promise<SourceRecord[]> {
-  const sourcesRoot = path.join(resolveOkfyHome(options), "sources");
-  let entries: string[];
-  try {
-    entries = (await fs.readdir(sourcesRoot, { withFileTypes: true }))
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name)
-      .sort((first, second) => first.localeCompare(second));
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") return [];
-    throw error;
-  }
-
-  return Promise.all(entries.map((name) => readSourceRecord(name, options)));
-}
-
-async function readRefreshStateIfExists(name: string, options: SourceStoreOptions): Promise<SourceRecord["state"]> {
+async function readRefreshStateIfExists(
+  name: string,
+  options: SourceStoreOptions
+): Promise<SourceRecord["state"]> {
   try {
     return await readRefreshState(name, options);
   } catch (error) {

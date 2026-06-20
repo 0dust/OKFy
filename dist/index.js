@@ -20,6 +20,9 @@ import {
   inspectBundle,
   listSources,
   normalizeDocument,
+  okfyUserAgent,
+  packageMetadata,
+  packageVersion,
   parseDurationSeconds,
   readBundle,
   readConceptFile,
@@ -32,6 +35,7 @@ import {
   resolveOkfyHome,
   resolveSourceDir,
   resolveWorkspaceSources,
+  runtimePackageRoot,
   serveMcpStdio,
   serveWorkspaceMcpStdio,
   validateBundle,
@@ -41,7 +45,7 @@ import {
   writeRefreshState,
   writeSourceManifest,
   writeWorkspaceProfile
-} from "./chunk-WOTGUGUO.js";
+} from "./chunk-JSBQ5Q3Z.js";
 export {
   BundleSearch,
   MCP_TOOL_NAMES,
@@ -64,6 +68,9 @@ export {
   inspectBundle,
   listSources,
   normalizeDocument,
+  okfyUserAgent,
+  packageMetadata,
+  packageVersion,
   parseDurationSeconds,
   readBundle,
   readConceptFile,
@@ -76,6 +83,7 @@ export {
   resolveOkfyHome,
   resolveSourceDir,
   resolveWorkspaceSources,
+  runtimePackageRoot,
   serveMcpStdio,
   serveWorkspaceMcpStdio,
   validateBundle,

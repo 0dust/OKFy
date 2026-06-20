@@ -64,6 +64,37 @@ describe("importLocal filters", () => {
 });
 
 describe("crawl dry run", () => {
+  it("sends the package version in the crawler user-agent", async () => {
+    const packageJson = JSON.parse(await fs.readFile("package.json", "utf8")) as {
+      version: string;
+    };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("<main><h1>Home</h1></main>", {
+        status: 200,
+        headers: { "content-type": "text/html" }
+      })
+    );
+    const outDir = await tempOut();
+
+    await crawlWebsite({
+      seedUrl: "http://127.0.0.1:3000/",
+      outDir,
+      maxPages: 1,
+      dryRun: true,
+      allowPrivateNetwork: true,
+      respectRobots: false
+    });
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://127.0.0.1:3000/",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          "user-agent": `okfy/${packageJson.version} (+https://github.com/0dust/OKFy)`
+        })
+      })
+    );
+  });
+
   it("discovers linked pages without writing output", async () => {
     const server = http.createServer((request, response) => {
       response.setHeader("content-type", "text/html");
