@@ -855,6 +855,12 @@ function localBundleRecord(bundleDir) {
     }
   };
 }
+async function assertBundleHasConceptFiles(bundleDir) {
+  const validation = await validateBundle(bundleDir);
+  if (validation.conceptCount === 0) {
+    throw new Error(`Bundle path does not contain any OKF concept files: ${bundleDir}`);
+  }
+}
 function assertUniqueWorkspaceRecordNames(records) {
   const seen = /* @__PURE__ */ new Set();
   for (const record of records) {
@@ -1784,6 +1790,7 @@ program.command("map").argument("[targets...]", "Registered source name(s), OKF 
     const target = targets[0];
     if (!options.all && targets.length === 1 && pathLikeTarget(target)) {
       if (!await pathExists(target)) throw new Error(`Bundle path does not exist: ${target}`);
+      await assertBundleHasConceptFiles(target);
       report = await buildBundleInspectorReport(target);
     } else if (!options.all && targets.length === 1) {
       try {
@@ -1791,6 +1798,7 @@ program.command("map").argument("[targets...]", "Registered source name(s), OKF 
         report = await buildWorkspaceInspectorReport([record]);
       } catch (error) {
         if (!pathLikeTarget(target) && await pathExists(target) && !await registeredSourceDirExists(target)) {
+          await assertBundleHasConceptFiles(target);
           report = await buildBundleInspectorReport(target);
         } else {
           throw error;
@@ -1805,6 +1813,7 @@ program.command("map").argument("[targets...]", "Registered source name(s), OKF 
           if (!await pathExists(bundleTarget)) {
             throw new Error(`Workspace bundle path does not exist: ${bundleTarget}`);
           }
+          await assertBundleHasConceptFiles(bundleTarget);
           return localBundleRecord(bundleTarget);
         })
       );
