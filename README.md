@@ -23,6 +23,7 @@
 
   <p>
     <a href="#use-with-agents">Use with agents</a> |
+    <a href="#preview-the-inspector">Preview Inspector</a> |
     <a href="#project-stack-workspaces">Project stack workspaces</a> |
     <a href="#keep-sources-fresh">Keep sources fresh</a> |
     <a href="#create-a-bundle">Create a bundle</a> |
@@ -105,6 +106,30 @@ npx -y okfy-ai doctor stripe --client codex
 ```
 
 `doctor` checks the registered source, bundle validity, freshness, `npx` availability, generated command shape, MCP tool visibility, and JSON-RPC-clean stdout, then tells you the next repair command or config edit.
+
+## Preview The Inspector
+
+Preview what your agent will know before or alongside MCP setup:
+
+```bash
+npx -y okfy-ai map stripe --out okfy-inspector.html
+```
+
+`okfy map` writes a local static HTML Inspector you can open from disk. It summarizes readiness, validation warnings, source freshness, concept relationships, citation URLs, and the recommended MCP sequence: `bundle_summary`, `search_concepts`, `read_concept`, and `get_neighbors`.
+
+For a local OKF bundle path:
+
+```bash
+npx -y okfy-ai map ./docs-okf --out okfy-inspector.html
+```
+
+For a project stack workspace:
+
+```bash
+npx -y okfy-ai map stripe clerk --out stack-inspector.html
+```
+
+Use `--json` when CI or tests need the same Inspector report model without writing HTML.
 
 ## Project Stack Workspaces
 
@@ -373,6 +398,7 @@ okfy crawl <url> --out <dir>
 okfy import <path> --out <dir>
 okfy validate <bundle>
 okfy inspect <bundle>
+okfy map <name-or-bundle> [more-source-names...] --out okfy-inspector.html
 okfy serve <name-or-bundle> --mcp
 okfy demo
 ```
@@ -387,6 +413,7 @@ okfy update stripe --json
 okfy crawl https://docs.example.com --out ./docs-okf --max-pages 100 --max-depth 4
 okfy import ./docs --out ./docs-okf --source-name "Project docs" --force
 okfy validate ./docs-okf --json
+okfy map stripe --out okfy-inspector.html
 okfy serve ./docs-okf --mcp --max-result-chars 12000
 ```
 

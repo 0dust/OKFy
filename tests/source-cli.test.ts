@@ -5,7 +5,13 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import { readRefreshState } from "../src/source-store.js";
+import {
+  readRefreshState,
+  writeRefreshState,
+  writeSourceManifest,
+  type RefreshState,
+  type SourceManifest
+} from "../src/source-store.js";
 import { withBuiltCliMcpSession } from "./support/mcp-session.js";
 
 const execFileAsync = promisify(execFile);
@@ -77,6 +83,73 @@ async function stateHash(okfyHome: string, name: string): Promise<string | undef
   return (await readRefreshState(name, { okfyHome })).bundle?.contentHash;
 }
 
+function sourceManifest(name: string): SourceManifest {
+  return {
+    schemaVersion: 1,
+    okfyVersion: "0.3.0",
+    name,
+    kind: "website",
+    createdAt: "2026-06-23T00:00:00.000Z",
+    updatedAt: "2026-06-23T00:00:00.000Z",
+    source: {
+      seedUrl: `https://docs.example.com/${name}`
+    },
+    crawl: {
+      maxPages: 100,
+      maxDepth: 4,
+      include: [],
+      exclude: [],
+      sameOrigin: true,
+      respectRobots: true,
+      concurrency: 4,
+      allowPrivateNetwork: false
+    },
+    refresh: {
+      mode: "stale-while-refresh",
+      maxAgeSeconds: 86_400,
+      minIntervalSeconds: 900
+    },
+    bundle: {
+      dir: "bundle"
+    }
+  };
+}
+
+function sourceState(partial: Partial<RefreshState> = {}): RefreshState {
+  return {
+    schemaVersion: 1,
+    status: "fresh",
+    lastCheckedAt: "2026-06-23T00:00:00.000Z",
+    lastRefreshStartedAt: "2026-06-23T00:00:00.000Z",
+    lastRefreshCompletedAt: "2026-06-23T00:01:00.000Z",
+    lastSuccessfulRefreshAt: "2026-06-23T00:01:00.000Z",
+    nextRefreshAllowedAt: "2026-06-23T00:16:00.000Z",
+    refreshInProgress: false,
+    lastError: null,
+    bundle: {
+      conceptCount: 2,
+      warningCount: 0,
+      valid: true,
+      contentHash: "sha256:test"
+    },
+    ...partial
+  };
+}
+
+async function registerFixtureSource(
+  okfyHome: string,
+  name: string,
+  options: { fixtureName?: string; state?: RefreshState } = {}
+): Promise<void> {
+  await writeSourceManifest(sourceManifest(name), { okfyHome });
+  await writeRefreshState(name, options.state ?? sourceState(), { okfyHome });
+  await fs.cp(
+    path.resolve("test-fixtures", options.fixtureName ?? "okf-valid"),
+    path.join(okfyHome, "sources", name, "bundle"),
+    { recursive: true }
+  );
+}
+
 async function markSourceOld(okfyHome: string, name: string): Promise<void> {
   const statePath = path.join(okfyHome, "sources", name, "state.json");
   const parsed = JSON.parse(await fs.readFile(statePath, "utf8")) as Record<string, unknown>;
@@ -108,6 +181,96 @@ afterEach(async () => {
 });
 
 describe("registered source CLI flow", () => {
+  it("writes a local bundle Inspector HTML file", async () => {
+    const okfyHome = await tempHome();
+    const outFile = path.join(okfyHome, "inspector.html");
+
+    const result = await runCli(["map", "test-fixtures/okf-valid", "--out", outFile], okfyHome);
+
+    expect(result.stdout).toContain(outFile);
+    const html = await fs.readFile(outFile, "utf8");
+    expect(html).toContain("OKFY Inspector");
+    expect(html).toContain("Readiness Summary");
+    expect(html).toContain("Knowledge Map");
+    expect(html).toContain("Agent Preview");
+    expect(html).toContain("Quickstart");
+  });
+
+  it("prints local bundle Inspector JSON without writing HTML", async () => {
+    const okfyHome = await tempHome();
+    const outFile = path.join(okfyHome, "should-not-exist.html");
+
+    const result = await runCli(
+      ["map", "test-fixtures/okf-valid", "--json", "--out", outFile],
+      okfyHome
+    );
+
+    const report = parseJson<{
+      schemaVersion: number;
+      readiness: { conceptCount: number; validationStatus: string };
+      concepts: Array<{ ref: string }>;
+    }>(result.stdout);
+    expect(report).toMatchObject({
+      schemaVersion: 1,
+      readiness: { conceptCount: 2, validationStatus: "valid" }
+    });
+    expect(report.concepts.map((concept) => concept.ref)).toEqual([
+      "guides/quickstart",
+      "reference/api"
+    ]);
+    await expect(fs.access(outFile)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("maps multiple registered sources into source-aware Inspector HTML", async () => {
+    const okfyHome = await tempHome();
+    await registerFixtureSource(okfyHome, "stripe");
+    await registerFixtureSource(okfyHome, "clerk");
+    const outFile = path.join(okfyHome, "workspace.html");
+
+    await runCli(["map", "stripe", "clerk", "--out", outFile], okfyHome);
+
+    const html = await fs.readFile(outFile, "utf8");
+    expect(html).toContain("stripe:guides/quickstart");
+    expect(html).toContain("clerk:guides/quickstart");
+    expect(html).toContain("bundle_summary");
+    expect(html).toContain("get_neighbors");
+  });
+
+  it("prints all registered sources as Inspector JSON in deterministic order", async () => {
+    const okfyHome = await tempHome();
+    await registerFixtureSource(okfyHome, "stripe");
+    await registerFixtureSource(okfyHome, "clerk", {
+      state: sourceState({
+        status: "stale",
+        lastSuccessfulRefreshAt: "2026-06-22T00:01:00.000Z",
+        nextRefreshAllowedAt: "2026-06-23T00:16:00.000Z"
+      })
+    });
+
+    const report = parseJson<{
+      target: { kind: string; sourceNames: string[] };
+      readiness: { sourceCount: number; conceptCount: number };
+      sources: Array<{ sourceName: string; freshnessStatus: string }>;
+    }>((await runCli(["map", "--all", "--json"], okfyHome)).stdout);
+
+    expect(report.target).toMatchObject({ kind: "workspace", sourceNames: ["clerk", "stripe"] });
+    expect(report.readiness).toMatchObject({ sourceCount: 2, conceptCount: 4 });
+    expect(report.sources.map((source) => [source.sourceName, source.freshnessStatus])).toEqual([
+      ["clerk", "stale"],
+      ["stripe", "fresh"]
+    ]);
+  });
+
+  it("fails invalid map targets without creating partial output", async () => {
+    const okfyHome = await tempHome();
+    const outFile = path.join(okfyHome, "partial.html");
+
+    await expect(runCli(["map", "./missing-bundle", "--out", outFile], okfyHome)).rejects.toMatchObject({
+      stderr: expect.stringContaining("Bundle path does not exist")
+    });
+    await expect(fs.access(outFile)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("shows corrupt source directories in sources output", async () => {
     const okfyHome = await tempHome();
     await fs.mkdir(path.join(okfyHome, "sources", "broken"), { recursive: true });
@@ -368,7 +531,7 @@ describe("registered source CLI flow", () => {
           "--allow-private-network",
           "--no-respect-robots",
           "--max-age",
-          "1s",
+          "1h",
           "--json"
         ],
         okfyHome

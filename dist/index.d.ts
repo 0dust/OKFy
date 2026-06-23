@@ -459,6 +459,122 @@ type WriteBundleOptions = {
 declare function assertSafeForceOutDir(outDir: string, options: WriteBundleOptions): Promise<void>;
 declare function writeOkfBundle(docs: NormalizedDocument[], options: WriteBundleOptions): Promise<string[]>;
 
+type InspectorValidationStatus = "valid" | "invalid" | "unavailable";
+type InspectorAvailabilityStatus = "available" | "unavailable";
+interface InspectorTarget {
+    kind: "bundle" | "workspace";
+    bundleDir?: string;
+    workspaceName?: string;
+    sourceNames?: string[];
+}
+interface InspectorError {
+    message: string;
+    code?: string;
+    [key: string]: unknown;
+}
+interface InspectorReadinessSource {
+    sourceName: string;
+    name: string;
+    label: string;
+    kind: string;
+    seedUrl: string;
+    bundleDir: string;
+    availabilityStatus: InspectorAvailabilityStatus;
+    validationStatus: InspectorValidationStatus;
+    conceptCount: number;
+    warningCount: number;
+    brokenLinkCount: number;
+    orphanConcepts: string[];
+    freshnessStatus?: string;
+    refreshInProgress: boolean;
+    lastSuccessfulRefreshAt: string | null;
+    nextRefreshAllowedAt: string | null;
+    lastRefreshError: InspectorError | null;
+}
+interface InspectorReadiness {
+    availabilityStatus: InspectorAvailabilityStatus;
+    validationStatus: InspectorValidationStatus;
+    sourceCount: number;
+    usableSourceCount: number;
+    conceptCount: number;
+    warningCount: number;
+    brokenLinkCount: number;
+    brokenLinks: number;
+    orphanConcepts: string[];
+    refreshInProgress: boolean;
+    freshnessStatus?: string;
+    freshnessStatuses: Record<string, number>;
+    lastSuccessfulRefreshAt: string | null;
+    nextRefreshAllowedAt: string | null;
+    lastRefreshError: InspectorError | null;
+    sources: InspectorReadinessSource[];
+}
+interface InspectorConcept {
+    id: string;
+    ref: string;
+    path: string;
+    title?: string;
+    type: string;
+    tags: string[];
+    description?: string;
+    resource?: string;
+    resourceUrl?: string;
+    sourceName?: string;
+    sourceKind?: string;
+    seedUrl?: string;
+    outbound: string[];
+    outboundLinks: string[];
+    backlinks: string[];
+    citation: {
+        ref: string;
+        conceptPath: string;
+        sourceResource?: string;
+        sourceName?: string;
+    };
+}
+interface InspectorEdge {
+    from: string;
+    to: string;
+    kind: "internal_link";
+    label: "Markdown link";
+    sourceName?: string;
+}
+interface InspectorAgentStep {
+    tool: "bundle_summary" | "search_concepts" | "read_concept" | "get_neighbors";
+    name: "bundle_summary" | "search_concepts" | "read_concept" | "get_neighbors";
+    purpose: string;
+    example: string;
+}
+interface InspectorReport {
+    schemaVersion: 1;
+    title: string;
+    generatedBy: "okfy";
+    target: InspectorTarget;
+    readiness: InspectorReadiness;
+    sources: InspectorReadinessSource[];
+    concepts: InspectorConcept[];
+    edges: InspectorEdge[];
+    agentPreview: {
+        sequence: InspectorAgentStep[];
+        tools: Array<{
+            name: InspectorAgentStep["tool"];
+            purpose: string;
+        }>;
+        citationGuidance: string;
+        suggestedQuestions: string[];
+    };
+}
+interface BuildBundleInspectorOptions {
+    title?: string;
+}
+interface BuildWorkspaceInspectorOptions {
+    workspaceName?: string;
+    all?: boolean;
+    title?: string;
+}
+declare function buildBundleInspectorReport(bundleDir: string, options?: BuildBundleInspectorOptions): Promise<InspectorReport>;
+declare function buildWorkspaceInspectorReport(records: WorkspaceSourceRecord[], options?: BuildWorkspaceInspectorOptions): Promise<InspectorReport>;
+
 declare function parseDurationSeconds(input: string): number;
 
 declare function hashBundleContents(bundleDir: string): Promise<string>;
@@ -509,4 +625,4 @@ declare function refreshSource(options: {
     staleLockTimeoutMs?: number;
 }): Promise<RefreshResult>;
 
-export { BundleSearch, type BundleStats, type Concept, type ContentType, type CrawlOptions, type CrawlProgressEvent, type CrawlResult, type CrawlRunner, type FreshnessDecision, type FreshnessReason, type FreshnessState, type FreshnessStatus, type ImportOptions, type KnowledgeGraph, MCP_TOOL_NAMES, type NormalizedDocument, type PackageMetadata, type RawDocument, type RefreshContext, type RefreshErrorDetails, type RefreshHooks, type RefreshMode, type RefreshResult$1 as RefreshResult, type RefreshSkipReason, type RefreshSourceManifest, type SearchResult, type ServeOptions, type SourceKind, type SourceManifest, type SourceMetadata, type SourceRecord, type RefreshMode$1 as SourceRefreshMode, type RefreshResult as SourceRefreshResult, type RefreshState as SourceRefreshState, type RefreshStatus as SourceRefreshStatus, type SourceStoreOptions, type RefreshState as StoredRefreshState, type ValidationIssue, type ValidationReport, type WorkspaceConceptCandidate, WorkspaceError, type WorkspaceProfile, WorkspaceSearch, type WorkspaceSearchResult, type WorkspaceSearchSource, type WorkspaceServeOptions, type WorkspaceServeSource, type WorkspaceSourceRecord, type WorkspaceSourceSelection, type WorkspaceSourceSet, type WriteBundleOptions, assertSafeForceOutDir, buildGraph, crawlWebsite, createMcpServer, createWorkspaceMcpServer, descriptionFromMarkdown, evaluateFreshness, extractHeadings, extractInternalLinks, extractMarkdownLinks, hashBundleContents, importLocal, inferTags, inferType, inspectBundle, listSources, normalizeDocument, okfyUserAgent, packageMetadata, packageVersion, parseDurationSeconds, readBundle, readConceptFile, readRefreshState, readSourceManifest, readWorkspaceProfile, refreshSource, removeSource, resolveBundleDir, resolveOkfyHome, resolveSourceDir, resolveWorkspaceSources, runtimePackageRoot, serveMcpStdio, serveWorkspaceMcpStdio, validateBundle, validateSourceName, workspaceProfilePath, writeOkfBundle, writeRefreshState, writeSourceManifest, writeWorkspaceProfile };
+export { type BuildBundleInspectorOptions, type BuildWorkspaceInspectorOptions, BundleSearch, type BundleStats, type Concept, type ContentType, type CrawlOptions, type CrawlProgressEvent, type CrawlResult, type CrawlRunner, type FreshnessDecision, type FreshnessReason, type FreshnessState, type FreshnessStatus, type ImportOptions, type InspectorAgentStep, type InspectorAvailabilityStatus, type InspectorConcept, type InspectorEdge, type InspectorError, type InspectorReadiness, type InspectorReadinessSource, type InspectorReport, type InspectorTarget, type InspectorValidationStatus, type KnowledgeGraph, MCP_TOOL_NAMES, type NormalizedDocument, type PackageMetadata, type RawDocument, type RefreshContext, type RefreshErrorDetails, type RefreshHooks, type RefreshMode, type RefreshResult$1 as RefreshResult, type RefreshSkipReason, type RefreshSourceManifest, type SearchResult, type ServeOptions, type SourceKind, type SourceManifest, type SourceMetadata, type SourceRecord, type RefreshMode$1 as SourceRefreshMode, type RefreshResult as SourceRefreshResult, type RefreshState as SourceRefreshState, type RefreshStatus as SourceRefreshStatus, type SourceStoreOptions, type RefreshState as StoredRefreshState, type ValidationIssue, type ValidationReport, type WorkspaceConceptCandidate, WorkspaceError, type WorkspaceProfile, WorkspaceSearch, type WorkspaceSearchResult, type WorkspaceSearchSource, type WorkspaceServeOptions, type WorkspaceServeSource, type WorkspaceSourceRecord, type WorkspaceSourceSelection, type WorkspaceSourceSet, type WriteBundleOptions, assertSafeForceOutDir, buildBundleInspectorReport, buildGraph, buildWorkspaceInspectorReport, crawlWebsite, createMcpServer, createWorkspaceMcpServer, descriptionFromMarkdown, evaluateFreshness, extractHeadings, extractInternalLinks, extractMarkdownLinks, hashBundleContents, importLocal, inferTags, inferType, inspectBundle, listSources, normalizeDocument, okfyUserAgent, packageMetadata, packageVersion, parseDurationSeconds, readBundle, readConceptFile, readRefreshState, readSourceManifest, readWorkspaceProfile, refreshSource, removeSource, resolveBundleDir, resolveOkfyHome, resolveSourceDir, resolveWorkspaceSources, runtimePackageRoot, serveMcpStdio, serveWorkspaceMcpStdio, validateBundle, validateSourceName, workspaceProfilePath, writeOkfBundle, writeRefreshState, writeSourceManifest, writeWorkspaceProfile };

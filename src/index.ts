@@ -10,6 +10,22 @@ export * from "./types.js";
 export * from "./validate.js";
 export * from "./workspace.js";
 export * from "./writer.js";
+export {
+  buildBundleInspectorReport,
+  buildWorkspaceInspectorReport,
+  type BuildBundleInspectorOptions,
+  type BuildWorkspaceInspectorOptions,
+  type InspectorAgentStep,
+  type InspectorAvailabilityStatus,
+  type InspectorConcept,
+  type InspectorEdge,
+  type InspectorError,
+  type InspectorReadiness,
+  type InspectorReadinessSource,
+  type InspectorReport,
+  type InspectorTarget,
+  type InspectorValidationStatus
+} from "./inspector.js";
 export { parseDurationSeconds } from "./duration.js";
 export { hashBundleContents } from "./hash.js";
 export {

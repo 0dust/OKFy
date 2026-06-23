@@ -4,7 +4,9 @@ import {
   WorkspaceError,
   WorkspaceSearch,
   assertSafeForceOutDir,
+  buildBundleInspectorReport,
   buildGraph,
+  buildWorkspaceInspectorReport,
   crawlWebsite,
   createMcpServer,
   createWorkspaceMcpServer,
@@ -45,14 +47,16 @@ import {
   writeRefreshState,
   writeSourceManifest,
   writeWorkspaceProfile
-} from "./chunk-JSBQ5Q3Z.js";
+} from "./chunk-JRGLJVQG.js";
 export {
   BundleSearch,
   MCP_TOOL_NAMES,
   WorkspaceError,
   WorkspaceSearch,
   assertSafeForceOutDir,
+  buildBundleInspectorReport,
   buildGraph,
+  buildWorkspaceInspectorReport,
   crawlWebsite,
   createMcpServer,
   createWorkspaceMcpServer,

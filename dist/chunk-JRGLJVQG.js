@@ -1184,7 +1184,7 @@ async function inspectBundle(bundleDir) {
     title: concept.title,
     count: (graph.backlinks.get(concept.id) ?? []).length
   })).sort((a, b) => b.count - a.count || a.id.localeCompare(b.id)).slice(0, 10);
-  const linkCount = [...graph.outbound.values()].reduce((sum, links) => sum + links.length, 0);
+  const linkCount = [...graph.outbound.values()].reduce((sum2, links) => sum2 + links.length, 0);
   const validation = await validateBundle(bundleDir);
   return {
     title: path9.basename(bundleDir),
@@ -1201,10 +1201,349 @@ async function inspectBundle(bundleDir) {
   };
 }
 
+// src/inspector.ts
+import path10 from "path";
+import { pathToFileURL } from "url";
+async function buildBundleInspectorReport(bundleDir, options = {}) {
+  const resolved = path10.resolve(bundleDir);
+  const sourceName = bundleSourceName(resolved);
+  const record = localBundleRecord(resolved, sourceName);
+  return buildInspectorReport([record], {
+    target: { kind: "bundle", bundleDir: resolved },
+    title: options.title ?? `${path10.basename(resolved)} OKFY Inspector`,
+    prefixSingleSourceRefs: false
+  });
+}
+async function buildWorkspaceInspectorReport(records, options = {}) {
+  return buildInspectorReport(records, {
+    target: {
+      kind: "workspace",
+      workspaceName: options.workspaceName,
+      sourceNames: records.map((record) => record.name)
+    },
+    title: options.title ?? `${options.workspaceName ?? "Workspace"} OKFY Inspector`,
+    prefixSingleSourceRefs: true
+  });
+}
+async function buildInspectorReport(records, options) {
+  const sourceReports = await Promise.all(
+    records.map(
+      (record) => sourceReport(record, {
+        prefixRefs: options.prefixSingleSourceRefs || records.length > 1
+      })
+    )
+  );
+  const sources = sourceReports.map((report) => report.source);
+  const concepts = sourceReports.flatMap((report) => report.concepts);
+  const edges = sourceReports.flatMap((report) => report.edges);
+  const readiness = summarizeReadiness(sources);
+  return {
+    schemaVersion: 1,
+    title: options.title,
+    generatedBy: "okfy",
+    target: options.target,
+    readiness,
+    sources,
+    concepts,
+    edges,
+    agentPreview: agentPreview(sources, concepts)
+  };
+}
+async function sourceReport(record, options) {
+  const baseSource = sourceBase(record);
+  if (record.loadError) {
+    return {
+      source: unavailableSource(baseSource, record.loadError, record.state),
+      concepts: [],
+      edges: []
+    };
+  }
+  let search;
+  try {
+    search = await BundleSearch.fromBundle(record.bundleDir);
+  } catch (error) {
+    return {
+      source: unavailableSource(baseSource, error, record.state),
+      concepts: [],
+      edges: []
+    };
+  }
+  const [validation, stats] = await Promise.all([
+    validateBundle(record.bundleDir),
+    inspectBundle(record.bundleDir)
+  ]);
+  const refFor = (id) => options.prefixRefs ? `${record.name}:${id}` : id;
+  const concepts = [...search.graph.concepts.values()].sort((first, second) => first.id.localeCompare(second.id)).map((concept) => inspectorConcept(concept, search, record, refFor, options.prefixRefs));
+  return {
+    source: {
+      ...baseSource,
+      availabilityStatus: "available",
+      validationStatus: validation.valid ? "valid" : "invalid",
+      conceptCount: stats.conceptCount,
+      warningCount: validation.warningCount,
+      brokenLinkCount: brokenLinkCount(validation.issues),
+      orphanConcepts: stats.orphanConcepts.map(refFor),
+      freshnessStatus: record.state?.status ?? "fresh",
+      refreshInProgress: Boolean(record.state?.refreshInProgress),
+      lastSuccessfulRefreshAt: record.state?.lastSuccessfulRefreshAt ?? null,
+      nextRefreshAllowedAt: record.state?.nextRefreshAllowedAt ?? null,
+      lastRefreshError: normalizeError(record.state?.lastError ?? null)
+    },
+    concepts,
+    edges: collapsedEdges(search, record.name, refFor, options.prefixRefs)
+  };
+}
+function inspectorConcept(concept, search, record, refFor, includeSource) {
+  const ref = refFor(concept.id);
+  return {
+    id: concept.id,
+    ref,
+    path: concept.path,
+    title: concept.title,
+    type: concept.type,
+    tags: [...concept.tags],
+    description: concept.description,
+    resource: concept.resource,
+    resourceUrl: concept.resource,
+    ...includeSource ? {
+      sourceName: record.name,
+      sourceKind: record.manifest.kind,
+      seedUrl: record.manifest.source.seedUrl
+    } : {},
+    outbound: (search.graph.outbound.get(concept.id) ?? []).map(refFor).sort(),
+    outboundLinks: (search.graph.outbound.get(concept.id) ?? []).map(refFor).sort(),
+    backlinks: (search.graph.backlinks.get(concept.id) ?? []).map(refFor).sort(),
+    citation: {
+      ref,
+      conceptPath: concept.path,
+      sourceResource: concept.resource,
+      ...includeSource ? { sourceName: record.name } : {}
+    }
+  };
+}
+function collapsedEdges(search, sourceName, refFor, includeSource) {
+  const seen = /* @__PURE__ */ new Set();
+  const edges = [];
+  for (const concept of [...search.graph.concepts.values()].sort(
+    (a, b) => a.id.localeCompare(b.id)
+  )) {
+    for (const target of search.graph.outbound.get(concept.id) ?? []) {
+      const from = refFor(concept.id);
+      const to = refFor(target);
+      const key = [from, to].sort().join("\0");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      edges.push({
+        from,
+        to,
+        kind: "internal_link",
+        label: "Markdown link",
+        ...includeSource ? { sourceName } : {}
+      });
+    }
+  }
+  return edges.sort(
+    (first, second) => (first.sourceName ?? "").localeCompare(second.sourceName ?? "") || first.from.localeCompare(second.from) || first.to.localeCompare(second.to)
+  );
+}
+function sourceBase(record) {
+  return {
+    sourceName: record.name,
+    name: record.name,
+    label: record.name,
+    kind: record.manifest.kind,
+    seedUrl: record.manifest.source.seedUrl,
+    bundleDir: record.bundleDir
+  };
+}
+function unavailableSource(baseSource, error, state) {
+  return {
+    ...baseSource,
+    availabilityStatus: "unavailable",
+    validationStatus: "unavailable",
+    conceptCount: state?.bundle?.conceptCount ?? 0,
+    warningCount: state?.bundle?.warningCount ?? 0,
+    brokenLinkCount: 0,
+    orphanConcepts: [],
+    freshnessStatus: state?.status ?? "failed",
+    refreshInProgress: Boolean(state?.refreshInProgress),
+    lastSuccessfulRefreshAt: state?.lastSuccessfulRefreshAt ?? null,
+    nextRefreshAllowedAt: state?.nextRefreshAllowedAt ?? null,
+    lastRefreshError: normalizeError(error)
+  };
+}
+function summarizeReadiness(sources) {
+  const sourceCount = sources.length;
+  const usableSourceCount = sources.filter(
+    (source) => source.availabilityStatus === "available"
+  ).length;
+  const conceptCount = sum(sources, "conceptCount");
+  const warningCount = sum(sources, "warningCount");
+  const brokenLinkCount2 = sum(sources, "brokenLinkCount");
+  const orphanConcepts = sources.flatMap((source) => source.orphanConcepts).sort();
+  const freshnessStatuses = {};
+  for (const source of sources) {
+    if (source.freshnessStatus) {
+      freshnessStatuses[source.freshnessStatus] = (freshnessStatuses[source.freshnessStatus] ?? 0) + 1;
+    }
+  }
+  const failedSource = sources.find((source) => source.lastRefreshError);
+  return {
+    availabilityStatus: usableSourceCount > 0 ? "available" : "unavailable",
+    validationStatus: sources.some((source) => source.validationStatus !== "valid") ? "invalid" : "valid",
+    sourceCount,
+    usableSourceCount,
+    conceptCount,
+    warningCount,
+    brokenLinkCount: brokenLinkCount2,
+    brokenLinks: brokenLinkCount2,
+    orphanConcepts,
+    refreshInProgress: sources.some((source) => source.refreshInProgress),
+    freshnessStatus: aggregateFreshnessStatus(sources),
+    freshnessStatuses: Object.fromEntries(
+      Object.entries(freshnessStatuses).sort(([first], [second]) => first.localeCompare(second))
+    ),
+    lastSuccessfulRefreshAt: latest(
+      sources.map((source) => source.lastSuccessfulRefreshAt).filter(isString)
+    ),
+    nextRefreshAllowedAt: earliest(
+      sources.map((source) => source.nextRefreshAllowedAt).filter(isString)
+    ),
+    lastRefreshError: failedSource?.lastRefreshError ?? null,
+    sources
+  };
+}
+function aggregateFreshnessStatus(sources) {
+  const statuses = new Set(sources.map((source) => source.freshnessStatus).filter(isString));
+  for (const status of ["failed", "missing", "refreshing", "stale", "fresh"]) {
+    if (statuses.has(status)) return status;
+  }
+  return void 0;
+}
+function agentPreview(sources, concepts) {
+  const firstConcept = concepts[0];
+  const firstSource = sources.find((source) => source.availabilityStatus === "available");
+  const sourceHint = sources.length > 1 && firstSource ? `, "source": "${firstSource.name}"` : "";
+  const readId = firstConcept?.id ?? "concept-id";
+  const sequence = [
+    {
+      tool: "bundle_summary",
+      name: "bundle_summary",
+      purpose: "Start with validation, source freshness, and available concept counts.",
+      example: "bundle_summary({})"
+    },
+    {
+      tool: "search_concepts",
+      name: "search_concepts",
+      purpose: "Search for the docs concept that matches the task before reading.",
+      example: `search_concepts({ "query": "setup"${sourceHint}, "limit": 5 })`
+    },
+    {
+      tool: "read_concept",
+      name: "read_concept",
+      purpose: "Read only the selected concept and cite its source resource.",
+      example: `read_concept({ "id": "${readId}"${sourceHint} })`
+    },
+    {
+      tool: "get_neighbors",
+      name: "get_neighbors",
+      purpose: "Traverse outbound links and backlinks when adjacent docs matter.",
+      example: `get_neighbors({ "id": "${readId}"${sourceHint}, "depth": 1 })`
+    }
+  ];
+  return {
+    sequence,
+    tools: sequence.map((step) => ({ name: step.tool, purpose: step.purpose })),
+    citationGuidance: sources.length > 1 ? "Use source filters when the library is known, then cite source_resource URLs from read_concept results." : "Cite source_resource URLs from read_concept results when available.",
+    suggestedQuestions: suggestedQuestions(sources, concepts)
+  };
+}
+function suggestedQuestions(sources, concepts) {
+  const firstSource = sources.find((source) => source.availabilityStatus === "available");
+  const firstConcept = concepts[0];
+  const questions = [
+    firstSource ? `In ${firstSource.name}, what should I read first to get started?` : "What concepts are available in this OKF bundle?",
+    firstConcept ? `Read ${firstConcept.ref} and cite the source URL.` : "Search the OKF bundle and cite the most relevant source URL.",
+    "What related concepts should I inspect next with get_neighbors?"
+  ];
+  return [...new Set(questions)];
+}
+function localBundleRecord(bundleDir, sourceName) {
+  const timestamp = "1970-01-01T00:00:00.000Z";
+  return {
+    name: sourceName,
+    dir: bundleDir,
+    bundleDir,
+    manifest: {
+      schemaVersion: 1,
+      okfyVersion: "local",
+      name: sourceName,
+      kind: "local",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      source: {
+        seedUrl: pathToFileURL(bundleDir).href
+      },
+      crawl: {
+        maxPages: 0,
+        maxDepth: 0,
+        include: [],
+        exclude: [],
+        sameOrigin: true,
+        respectRobots: true,
+        concurrency: 1,
+        allowPrivateNetwork: false
+      },
+      refresh: {
+        mode: "off",
+        maxAgeSeconds: 0,
+        minIntervalSeconds: 0
+      },
+      bundle: {
+        dir: bundleDir
+      }
+    }
+  };
+}
+function bundleSourceName(bundleDir) {
+  return path10.basename(bundleDir).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[._-]+|[._-]+$/g, "") || "bundle";
+}
+function brokenLinkCount(issues) {
+  return issues.filter((issue2) => issue2.code === "broken_internal_link").length;
+}
+function normalizeError(error) {
+  if (!error) return null;
+  if (error instanceof Error) {
+    const details = { message: error.message };
+    if ("code" in error && typeof error.code === "string") details.code = error.code;
+    return details;
+  }
+  if (typeof error === "object") {
+    const record = error;
+    return {
+      ...record,
+      message: typeof record.message === "string" ? record.message : "Inspector source failed."
+    };
+  }
+  return { message: String(error) };
+}
+function sum(sources, key) {
+  return sources.reduce((total, source) => total + source[key], 0);
+}
+function latest(values) {
+  return values.sort().at(-1) ?? null;
+}
+function earliest(values) {
+  return values.sort()[0] ?? null;
+}
+function isString(value) {
+  return typeof value === "string" && value.length > 0;
+}
+
 // src/source-store.ts
 import fs7 from "fs/promises";
 import os2 from "os";
-import path10 from "path";
+import path11 from "path";
 var SOURCE_NAME_PATTERN = /^[a-z0-9._-]+$/;
 var MANIFEST_KEYS = [
   "schemaVersion",
@@ -1244,8 +1583,8 @@ var STATE_KEYS = [
 var STATE_BUNDLE_KEYS = ["conceptCount", "warningCount", "valid", "contentHash"];
 function resolveOkfyHome(options = {}) {
   const configured = options.okfyHome ?? options.env?.OKFY_HOME ?? process.env.OKFY_HOME;
-  if (configured && configured.trim() !== "") return path10.resolve(configured);
-  return path10.join(os2.homedir(), ".okfy");
+  if (configured && configured.trim() !== "") return path11.resolve(configured);
+  return path11.join(os2.homedir(), ".okfy");
 }
 function validateSourceName(name) {
   if (!name || name === "." || name === ".." || !SOURCE_NAME_PATTERN.test(name)) {
@@ -1258,7 +1597,7 @@ function validateSourceName(name) {
 function resolveSourceDir(name, options = {}) {
   const safeName = validateSourceName(name);
   const sourcesRoot = resolveSourcesRoot(options);
-  const sourceDir = path10.resolve(sourcesRoot, safeName);
+  const sourceDir = path11.resolve(sourcesRoot, safeName);
   if (!isInsideOrEqual(sourcesRoot, sourceDir)) {
     throw new Error(`Invalid source name "${name}". Source directory escapes OKFY_HOME.`);
   }
@@ -1270,8 +1609,8 @@ function resolveBundleDir(manifest, options = {}) {
   if (!bundleDir || bundleDir.trim() === "") {
     throw new Error(`Invalid bundle directory for source "${manifest.name}".`);
   }
-  if (path10.isAbsolute(bundleDir)) return path10.normalize(bundleDir);
-  const resolved = path10.resolve(sourceDir, bundleDir);
+  if (path11.isAbsolute(bundleDir)) return path11.normalize(bundleDir);
+  const resolved = path11.resolve(sourceDir, bundleDir);
   if (resolved === sourceDir || !isInsideOrEqual(sourceDir, resolved)) {
     throw new Error(
       `Invalid bundle directory for source "${manifest.name}". Relative bundle paths must stay inside the source directory.`
@@ -1281,12 +1620,12 @@ function resolveBundleDir(manifest, options = {}) {
 }
 async function writeSourceManifest(manifest, options = {}) {
   const sourceDir = resolveSourceDir(manifest.name, options);
-  await writeStableJson(path10.join(sourceDir, "source.json"), manifest);
+  await writeStableJson(path11.join(sourceDir, "source.json"), manifest);
 }
 async function readSourceManifest(name, options = {}) {
   const sourceDir = resolveSourceDir(name, options);
   const manifest = validateSourceManifest(
-    await readJson(path10.join(sourceDir, "source.json")),
+    await readJson(path11.join(sourceDir, "source.json")),
     name
   );
   if (manifest.name !== name) {
@@ -1296,11 +1635,11 @@ async function readSourceManifest(name, options = {}) {
 }
 async function writeRefreshState(name, state, options = {}) {
   const sourceDir = resolveSourceDir(name, options);
-  await writeStableJson(path10.join(sourceDir, "state.json"), state);
+  await writeStableJson(path11.join(sourceDir, "state.json"), state);
 }
 async function readRefreshState(name, options = {}) {
   const sourceDir = resolveSourceDir(name, options);
-  return readJson(path10.join(sourceDir, "state.json"));
+  return readJson(path11.join(sourceDir, "state.json"));
 }
 async function listSources(options = {}) {
   const sourcesRoot = resolveSourcesRoot(options);
@@ -1333,7 +1672,7 @@ async function listSources(options = {}) {
     try {
       bundleDir = resolveBundleDir(manifest, options);
     } catch (error) {
-      bundleDir = path10.join(dir, "bundle");
+      bundleDir = path11.join(dir, "bundle");
       loadError ??= errorDetails(error);
     }
     records.push({
@@ -1352,16 +1691,16 @@ async function removeSource(name, options = {}) {
   await fs7.rm(sourceDir, { recursive: true, force: true });
 }
 function resolveSourcesRoot(options) {
-  return path10.join(resolveOkfyHome(options), "sources");
+  return path11.join(resolveOkfyHome(options), "sources");
 }
 function invalidSourceRecord(sourcesRoot, name, error) {
-  const dir = path10.join(sourcesRoot, name);
+  const dir = path11.join(sourcesRoot, name);
   const sourceName = fallbackSourceName(name);
   return {
     name: sourceName,
     dir,
     manifest: fallbackSourceManifest(sourceName),
-    bundleDir: path10.join(dir, "bundle"),
+    bundleDir: path11.join(dir, "bundle"),
     loadError: errorDetails(error, name)
   };
 }
@@ -1522,7 +1861,7 @@ async function readJson(filePath) {
   return JSON.parse(await fs7.readFile(filePath, "utf8"));
 }
 async function writeStableJson(filePath, value) {
-  await fs7.mkdir(path10.dirname(filePath), { recursive: true });
+  await fs7.mkdir(path11.dirname(filePath), { recursive: true });
   await fs7.writeFile(filePath, `${JSON.stringify(orderJson(value), null, 2)}
 `, "utf8");
 }
@@ -1563,8 +1902,8 @@ function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function isInsideOrEqual(parent, child) {
-  const relative = path10.relative(parent, child);
-  return relative === "" || !relative.startsWith("..") && !path10.isAbsolute(relative);
+  const relative = path11.relative(parent, child);
+  return relative === "" || !relative.startsWith("..") && !path11.isAbsolute(relative);
 }
 function isNodeError(error) {
   return error instanceof Error && "code" in error;
@@ -1572,7 +1911,7 @@ function isNodeError(error) {
 
 // src/workspace.ts
 import fs8 from "fs/promises";
-import path11 from "path";
+import path12 from "path";
 var WorkspaceError = class extends Error {
   constructor(code, message, details = {}) {
     super(message);
@@ -1590,7 +1929,7 @@ var WorkspaceError = class extends Error {
   }
 };
 function workspaceProfilePath(name, options = {}) {
-  return path11.join(resolveOkfyHome(options), "workspaces", `${validateSourceName(name)}.json`);
+  return path12.join(resolveOkfyHome(options), "workspaces", `${validateSourceName(name)}.json`);
 }
 async function readWorkspaceProfile(name, options = {}) {
   const profile = JSON.parse(
@@ -1602,7 +1941,7 @@ async function readWorkspaceProfile(name, options = {}) {
 async function writeWorkspaceProfile(profile, options = {}) {
   validateWorkspaceProfile(profile);
   const filePath = workspaceProfilePath(profile.name, options);
-  await fs8.mkdir(path11.dirname(filePath), { recursive: true });
+  await fs8.mkdir(path12.dirname(filePath), { recursive: true });
   await fs8.writeFile(filePath, `${JSON.stringify(profile, null, 2)}
 `, "utf8");
 }
@@ -2386,12 +2725,12 @@ async function createWorkspaceMcpServer(options) {
     const selected = sourceName ? [runtimeForSource(sourceName)] : runtimes;
     const sources = await Promise.all(selected.map(sourceSummary));
     const usableSourceCount = selected.filter((runtime) => runtime.search).length;
-    const conceptCount = sources.reduce((sum, source) => sum + numberField(source.conceptCount), 0);
+    const conceptCount = sources.reduce((sum2, source) => sum2 + numberField(source.conceptCount), 0);
     const reservedFileCount = sources.reduce(
-      (sum, source) => sum + numberField(source.reservedFileCount),
+      (sum2, source) => sum2 + numberField(source.reservedFileCount),
       0
     );
-    const warningCount = sources.reduce((sum, source) => sum + numberField(source.warningCount), 0);
+    const warningCount = sources.reduce((sum2, source) => sum2 + numberField(source.warningCount), 0);
     let typeDistribution = {};
     let tagDistribution = {};
     try {
@@ -2604,7 +2943,7 @@ async function serveWorkspaceMcpStdio(options) {
 
 // src/refresh.ts
 import fs9 from "fs/promises";
-import path12 from "path";
+import path13 from "path";
 import { randomUUID } from "crypto";
 var DEFAULT_STALE_LOCK_TIMEOUT_MS = 30 * 60 * 1e3;
 async function pathExists2(target) {
@@ -2630,10 +2969,10 @@ function isBeforeNextRefreshAllowed(state, now) {
   return new Date(state.nextRefreshAllowedAt).getTime() > now.getTime();
 }
 function tempBundleDir(sourceDir) {
-  return path12.join(sourceDir, `bundle.tmp-${process.pid}-${randomUUID()}`);
+  return path13.join(sourceDir, `bundle.tmp-${process.pid}-${randomUUID()}`);
 }
 function lockfilePath(sourceDir) {
-  return path12.join(sourceDir, ".refresh.lock");
+  return path13.join(sourceDir, ".refresh.lock");
 }
 async function isLockStale(lockPath, now, staleLockTimeoutMs) {
   try {
@@ -2748,7 +3087,7 @@ async function replaceActiveBundle(tempDir, bundleDir) {
   const backupDir = `${bundleDir}.backup-${process.pid}-${randomUUID()}`;
   let movedActiveToBackup = false;
   try {
-    await fs9.mkdir(path12.dirname(bundleDir), { recursive: true });
+    await fs9.mkdir(path13.dirname(bundleDir), { recursive: true });
     if (await pathExists2(bundleDir)) {
       await fs9.rename(bundleDir, backupDir);
       movedActiveToBackup = true;
@@ -2918,6 +3257,8 @@ export {
   BundleSearch,
   validateBundle,
   inspectBundle,
+  buildBundleInspectorReport,
+  buildWorkspaceInspectorReport,
   resolveOkfyHome,
   validateSourceName,
   resolveSourceDir,
