@@ -1,5 +1,16 @@
 # Examples
 
+## Preview With Inspector
+
+Preview what your agent will know from any registered source or local OKF bundle:
+
+```bash
+npx -y okfy-ai map stripe --out okfy-inspector.html
+npx -y okfy-ai map examples/bundles/okfy-docs --out okfy-inspector.html
+```
+
+The Inspector is local static HTML for checking readiness, source freshness, citation URLs, concept relationships, and the MCP sequence before asking an agent to use the bundle.
+
 ## bundles/okfy-docs
 
 Purpose: committed offline OKF bundle used by `okfy demo`.
@@ -83,6 +94,7 @@ Validate:
 ```bash
 okfy validate ./tmp/okfy-docs
 okfy inspect ./tmp/okfy-docs
+okfy map ./tmp/okfy-docs --out okfy-inspector.html
 ```
 
 Serve through MCP:

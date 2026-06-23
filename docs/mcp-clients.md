@@ -51,6 +51,30 @@ This is local-first. There is no OKFY cloud registry, account, central cache, ho
 npx -y okfy-ai doctor stripe --client codex
 ```
 
+## Inspector Confidence Check
+
+Before or alongside MCP setup, preview what your agent will know:
+
+```bash
+npx -y okfy-ai map stripe --out okfy-inspector.html
+```
+
+The Inspector is a local static HTML file you can open from disk. It shows readiness, validation warnings, source freshness, concept relationships, citation URLs, and the MCP path an agent should follow: `bundle_summary`, `search_concepts`, `read_concept`, then `get_neighbors` when relationship context matters.
+
+For a workspace, pass the same registered source names you use with `serve`:
+
+```bash
+npx -y okfy-ai map stripe clerk --out stack-inspector.html
+```
+
+For a local OKF bundle, pass the bundle path:
+
+```bash
+npx -y okfy-ai map ./docs-okf --out okfy-inspector.html
+```
+
+Use `--json` when you need the Inspector report model on stdout without writing the HTML file.
+
 ## Multi-Source Workspaces
 
 Use a workspace server when one coding session needs several docs sources. Register sources separately, then serve them through one source-aware MCP server:

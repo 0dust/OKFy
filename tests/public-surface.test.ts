@@ -42,9 +42,14 @@ describe("public surface", () => {
     expect(readme).not.toContain("Node.js >=20");
     expect(readme).toContain("[docs/mcp-clients.md](docs/mcp-clients.md)");
     expect(readme.indexOf("## Use With Agents")).toBeGreaterThan(-1);
-    expect(readme.indexOf("## Use With Agents")).toBeLessThan(readme.indexOf("## Optional CLI Install"));
+    expect(readme.indexOf("## Use With Agents")).toBeLessThan(readme.indexOf("## Preview The Inspector"));
+    expect(readme.indexOf("## Preview The Inspector")).toBeLessThan(readme.indexOf("## Project Stack Workspaces"));
     expect(readme).toContain("npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client codex");
     expect(readme).toContain("npx -y okfy-ai doctor stripe --client codex");
+    expect(readme).toContain("Preview what your agent will know");
+    expect(readme).toContain("npx -y okfy-ai map stripe --out okfy-inspector.html");
+    expect(readme).toContain("local static HTML Inspector");
+    expect(readme).toContain("Use `--json` when CI or tests need the same Inspector report model without writing HTML.");
     expect(readme).toContain("npx -y okfy-ai doctor stripe clerk --client codex");
     expect(readme).toContain("npx -y okfy-ai serve stripe clerk --mcp --auto-refresh");
     expect(readme).toContain('npx -y okfy-ai import ./docs/api --out ./okf/api-docs --source-name "API docs" --force');
@@ -107,17 +112,23 @@ describe("public surface", () => {
     expect(files).toContain("docs/mcp-clients.md");
     expect(files).toContain("examples/bundles/okfy-docs/index.md");
     expect(files.some((file) => file.startsWith("launch/"))).toBe(false);
+    expect(files.some((file) => file.startsWith("docs/plans/"))).toBe(false);
+    expect(files.some((file) => file.startsWith("docs/brainstorms/"))).toBe(false);
+    expect(files.some((file) => file.startsWith("docs/ideation/"))).toBe(false);
+    expect(files.some((file) => file.startsWith("docs/prds/"))).toBe(false);
     expect(files).not.toContain("docs/okfy-mcp-prd.md");
   });
 
   it("documents the publishable npm package", async () => {
-    const [packageJson, readme, npmReadme, mcpDocs] = await Promise.all([
+    const [packageJson, readme, npmReadme, mcpDocs, examplesReadme] = await Promise.all([
       fs.readFile("package.json", "utf8"),
       fs.readFile("README.md", "utf8"),
       fs.readFile("scripts/npm-readme.md", "utf8"),
-      fs.readFile("docs/mcp-clients.md", "utf8")
+      fs.readFile("docs/mcp-clients.md", "utf8"),
+      fs.readFile("examples/README.md", "utf8")
     ]);
     const parsed = JSON.parse(packageJson) as { name?: string; bin?: Record<string, string> };
+    const publicCopy = `${readme}\n${npmReadme}\n${mcpDocs}\n${examplesReadme}`;
 
     expect(parsed.name).toBe("okfy-ai");
     expect(parsed.bin?.okfy).toBe("dist/cli.js");
@@ -135,7 +146,12 @@ describe("public surface", () => {
     expect(npmReadme).toContain(
       "Turn docs into agent-readable Open Knowledge Format v0.1-conformant bundles, then serve them to Claude, Codex, Cursor"
     );
+    expect(npmReadme).toContain("Preview what your agent will know");
+    expect(npmReadme).toContain("npx -y okfy-ai map stripe --out okfy-inspector.html");
+    expect(npmReadme).toContain("local static HTML Inspector");
     expect(npmReadme.indexOf("## Use With Agents")).toBeLessThan(npmReadme.indexOf("## Optional CLI Install"));
+    expect(npmReadme.indexOf("## Use With Agents")).toBeLessThan(npmReadme.indexOf("## Preview The Inspector"));
+    expect(npmReadme.indexOf("## Preview The Inspector")).toBeLessThan(npmReadme.indexOf("## Multi-Source Workspaces"));
     expect(npmReadme).toContain("npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client generic");
     expect(npmReadme).toContain("npx -y okfy-ai doctor stripe --client codex");
     expect(npmReadme).toContain("npx -y okfy-ai doctor stripe clerk --client codex");
@@ -157,6 +173,9 @@ describe("public surface", () => {
     expect(mcpDocs).toContain("The default setup uses `npx -y okfy-ai`");
     expect(mcpDocs).toContain("npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client generic");
     expect(mcpDocs).toContain("npx -y okfy-ai doctor stripe --client codex");
+    expect(mcpDocs).toContain("npx -y okfy-ai map stripe --out okfy-inspector.html");
+    expect(mcpDocs).toContain("local static HTML file");
+    expect(mcpDocs).toContain("Use `--json` when you need the Inspector report model on stdout without writing the HTML file.");
     expect(mcpDocs).toContain("npx -y okfy-ai doctor stripe clerk --client codex");
     expect(mcpDocs).toContain("npx -y okfy-ai add stripe https://docs.stripe.com/checkout");
     expect(mcpDocs).toContain("npx -y okfy-ai serve stripe --mcp --auto-refresh");
@@ -171,6 +190,21 @@ describe("public surface", () => {
     expect(mcpDocs).toContain("Workspace mode keeps the same read-only tools.");
     expect(mcpDocs).toContain("Direct bundle paths, including local bundle workspaces, do not use source auto-refresh.");
     expect(mcpDocs).toContain('args": ["-y", "okfy-ai", "serve", "./docs-okf", "--mcp"]');
+    expect(examplesReadme).toContain("Preview what your agent will know");
+    expect(examplesReadme).toContain("npx -y okfy-ai map stripe --out okfy-inspector.html");
+    expect(examplesReadme).toContain("okfy map ./tmp/okfy-docs --out okfy-inspector.html");
     expect(`${readme}\n${npmReadme}\n${mcpDocs}`).not.toMatch(/npx -y okfy(?:@|\s)/);
+    for (const forbidden of [
+      /hosted accounts?/i,
+      /hosted dashboards?/i,
+      /cloud dashboards?/i,
+      /telemetry/i,
+      /generic codebase graph/i,
+      /generic code graph/i,
+      /media graph/i,
+      /universal codebase graph/i
+    ]) {
+      expect(publicCopy).not.toMatch(forbidden);
+    }
   });
 });

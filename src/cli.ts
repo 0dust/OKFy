@@ -9,6 +9,8 @@ import { crawlWebsite, type CrawlProgressEvent } from "./crawler.js";
 import { parseDurationSeconds } from "./duration.js";
 import { hashBundleContents } from "./hash.js";
 import { importLocal } from "./importer.js";
+import { buildBundleInspectorReport, buildWorkspaceInspectorReport } from "./inspector.js";
+import { renderInspectorHtml } from "./inspector-html.js";
 import { packageVersion, runtimePackageRoot } from "./metadata.js";
 import { MCP_TOOL_NAMES, serveMcpStdio, serveWorkspaceMcpStdio, type RefreshHooks } from "./mcp.js";
 import { evaluateFreshness, refreshSource } from "./refresh.js";
@@ -174,6 +176,13 @@ function localBundleRecord(bundleDir: string): WorkspaceSourceRecord {
       }
     }
   };
+}
+
+async function assertBundleHasConceptFiles(bundleDir: string): Promise<void> {
+  const validation = await validateBundle(bundleDir);
+  if (validation.conceptCount === 0) {
+    throw new Error(`Bundle path does not contain any OKF concept files: ${bundleDir}`);
+  }
 }
 
 function assertUniqueWorkspaceRecordNames(records: WorkspaceSourceRecord[]): void {
@@ -488,6 +497,19 @@ function printStats(stats: Awaited<ReturnType<typeof inspectBundle>>): void {
 
 function printStatus(message: string): void {
   process.stderr.write(`${message}\n`);
+}
+
+async function writeFileAtomically(filePath: string, contents: string): Promise<void> {
+  const resolved = path.resolve(filePath);
+  const tempPath = `${resolved}.tmp-${process.pid}-${Date.now()}`;
+  await fs.promises.mkdir(path.dirname(resolved), { recursive: true });
+  try {
+    await fs.promises.writeFile(tempPath, contents, "utf8");
+    await fs.promises.rename(tempPath, resolved);
+  } catch (error) {
+    await fs.promises.rm(tempPath, { force: true });
+    throw error;
+  }
 }
 
 function setupHomeCheck(okfyHome: string): SetupCheck {
@@ -1274,6 +1296,85 @@ program
       printStatus(`okfy inspect: done, ${stats.conceptCount} concepts, ${stats.linkCount} links`);
     } catch (error: any) {
       console.error(pc.red(error?.message ?? "Inspect failed."));
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("map")
+  .argument("[targets...]", "Registered source name(s), OKF bundle path(s), or one OKF bundle directory")
+  .option("--all", "Map all registered sources as one source-aware workspace", false)
+  .option("--out <file>", "Inspector HTML output file", "okfy-inspector.html")
+  .option("--json", "Print Inspector report JSON without writing HTML", false)
+  .action(async (targets: string[] = [], options) => {
+    try {
+      if (options.all && targets.length > 0) {
+        throw new Error("Use either --all or explicit source names, not both.");
+      }
+      if (!options.all && targets.length === 0) {
+        throw new Error("Provide a registered source name, an OKF bundle directory, or --all.");
+      }
+
+      let report: Awaited<ReturnType<typeof buildBundleInspectorReport>>;
+      const target = targets[0];
+      if (!options.all && targets.length === 1 && pathLikeTarget(target)) {
+        if (!(await pathExists(target))) throw new Error(`Bundle path does not exist: ${target}`);
+        await assertBundleHasConceptFiles(target);
+        report = await buildBundleInspectorReport(target);
+      } else if (!options.all && targets.length === 1) {
+        try {
+          const record = await registeredRecord(target);
+          report = await buildWorkspaceInspectorReport([record]);
+        } catch (error) {
+          if (
+            !pathLikeTarget(target) &&
+            (await pathExists(target)) &&
+            !(await registeredSourceDirExists(target))
+          ) {
+            await assertBundleHasConceptFiles(target);
+            report = await buildBundleInspectorReport(target);
+          } else {
+            throw error;
+          }
+        }
+      } else {
+        const bundleTargets = options.all ? [] : targets.filter(pathLikeTarget);
+        const sourceTargets = options.all
+          ? []
+          : targets.filter((sourceName) => !pathLikeTarget(sourceName));
+        const sourceSet =
+          options.all || sourceTargets.length
+            ? await resolveWorkspaceSources({ all: options.all, names: sourceTargets })
+            : { records: [], sourceNames: [] };
+        const bundleRecords = await Promise.all(
+          bundleTargets.map(async (bundleTarget) => {
+            if (!(await pathExists(bundleTarget))) {
+              throw new Error(`Workspace bundle path does not exist: ${bundleTarget}`);
+            }
+            await assertBundleHasConceptFiles(bundleTarget);
+            return localBundleRecord(bundleTarget);
+          })
+        );
+        const records: WorkspaceSourceRecord[] = [...sourceSet.records, ...bundleRecords];
+        assertUniqueWorkspaceRecordNames(records);
+        report = await buildWorkspaceInspectorReport(records, { all: options.all });
+      }
+
+      if (options.json) {
+        printJson(report);
+        return;
+      }
+
+      const outputPath = path.resolve(options.out);
+      const html = renderInspectorHtml(report);
+      await writeFileAtomically(outputPath, html);
+      console.log(`Wrote OKFY Inspector: ${outputPath}`);
+    } catch (error: any) {
+      if (options.json) {
+        printJson({ status: "failed", error: { message: error?.message ?? "Map failed." } });
+      } else {
+        console.error(pc.red(error?.message ?? "Map failed."));
+      }
       process.exitCode = 1;
     }
   });

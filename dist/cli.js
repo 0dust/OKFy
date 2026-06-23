@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import {
   MCP_TOOL_NAMES,
+  buildBundleInspectorReport,
+  buildWorkspaceInspectorReport,
   crawlWebsite,
   evaluateFreshness,
   hashBundleContents,
@@ -24,7 +26,7 @@ import {
   validateSourceName,
   writeRefreshState,
   writeSourceManifest
-} from "./chunk-JSBQ5Q3Z.js";
+} from "./chunk-JRGLJVQG.js";
 
 // src/cli.ts
 import fs2 from "fs";
@@ -33,6 +35,344 @@ import { execFile } from "child_process";
 import { fileURLToPath, pathToFileURL } from "url";
 import { Command } from "commander";
 import pc from "picocolors";
+
+// src/inspector-html.ts
+function renderInspectorHtml(report) {
+  const normalized = normalizeReport(report);
+  const json = escapeJsonForHtml(stableStringify(report));
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(normalized.title)} - OKFY Inspector</title>
+<style>
+:root{color-scheme:light;--ink:#17211d;--muted:#60706a;--line:#d8e0dc;--surface:#f7f9f6;--paper:#ffffff;--accent:#0c7c59;--accent-2:#2846a3;--warn:#a56300;--bad:#b53636}
+*{box-sizing:border-box}
+body{margin:0;background:var(--surface);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.45}
+button,input,select{font:inherit}
+.shell{max-width:1180px;margin:0 auto;padding:32px 24px 44px}
+header{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:20px;align-items:end;padding:0 0 24px;border-bottom:1px solid var(--line)}
+.eyebrow{margin:0 0 8px;color:var(--accent);font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0}
+h1{margin:0;font-size:34px;letter-spacing:0;line-height:1.08}
+.lede{max-width:660px;margin:12px 0 0;color:var(--muted);font-size:16px}
+.status-pill{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:999px;background:var(--paper);padding:9px 13px;color:var(--muted);font-size:14px}
+.dot{width:9px;height:9px;border-radius:999px;background:var(--accent)}
+.dot.invalid,.dot.unavailable,.dot.failed{background:var(--bad)}
+.dot.warning,.dot.stale,.dot.refreshing{background:var(--warn)}
+main{display:grid;gap:22px;margin-top:24px}
+section{background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:20px}
+section h2{margin:0 0 14px;font-size:18px;letter-spacing:0}
+.metrics{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px}
+.metric{border-left:3px solid var(--accent);background:#f4faf7;padding:12px;min-height:82px}
+.metric strong{display:block;font-size:24px;line-height:1.1}
+.metric span{display:block;margin-top:7px;color:var(--muted);font-size:13px}
+.source-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:16px}
+.source{border:1px solid var(--line);border-radius:6px;padding:12px;background:#fbfcfb}
+.source b{display:block}
+.source small{display:block;margin-top:4px;color:var(--muted)}
+.workspace{display:grid;grid-template-columns:minmax(320px,0.95fr) minmax(320px,1.05fr);gap:18px;align-items:start}
+.toolbar{display:grid;grid-template-columns:minmax(180px,1fr) minmax(130px,180px) minmax(130px,180px);gap:10px;align-items:center;margin-bottom:14px}
+.toolbar input,.toolbar select{width:100%;border:1px solid var(--line);border-radius:6px;padding:10px 12px;background:var(--paper);color:var(--ink)}
+.map{position:relative;min-height:360px;border:1px solid var(--line);border-radius:8px;background:linear-gradient(#fbfcfb,#f4f7f5)}
+.edge{position:absolute;height:2px;background:#a7b5ae;transform-origin:left center}
+.node{position:absolute;min-width:150px;max-width:190px;border:1px solid #bdd0c7;border-radius:6px;background:var(--paper);padding:10px;text-align:left;box-shadow:0 3px 10px rgba(23,33,29,.08);cursor:pointer}
+.node:hover,.node.active{border-color:var(--accent);outline:2px solid rgba(12,124,89,.16)}
+.node b{display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.node small{display:block;color:var(--muted);margin-top:4px}
+.detail{border:1px solid var(--line);border-radius:8px;padding:16px;background:#fbfcfb;min-height:360px}
+.detail h3{margin:0 0 8px;font-size:18px}
+.detail dl{display:grid;grid-template-columns:112px minmax(0,1fr);gap:8px;margin:14px 0}
+.detail dt{color:var(--muted)}
+.detail dd{margin:0;word-break:break-word}
+.tags{display:flex;flex-wrap:wrap;gap:6px}
+.tag{display:inline-flex;border:1px solid var(--line);border-radius:999px;padding:3px 8px;font-size:12px;background:var(--paper)}
+.steps{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.step{border:1px solid var(--line);border-radius:6px;padding:13px;background:#fbfcfb}
+.step code{display:block;color:var(--accent-2);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.questions{margin:16px 0 0;padding-left:20px;color:var(--muted)}
+.error{color:var(--bad)}
+@media (max-width:820px){header,.workspace,.toolbar{grid-template-columns:1fr}.metrics,.steps{grid-template-columns:repeat(2,minmax(0,1fr))}.shell{padding:22px 14px}.map{min-height:460px}}
+</style>
+</head>
+<body>
+<div class="shell">
+<header>
+<div>
+<p class="eyebrow">OKFY Inspector</p>
+<h1>${escapeHtml(normalized.title)}</h1>
+<p class="lede">Preview what your agent will know: readiness, graph relationships, citation sources, and the MCP path to read this local OKF memory.</p>
+</div>
+<div class="status-pill"><span class="dot ${escapeAttribute(normalized.readiness.validationStatus)}"></span>${escapeHtml(normalized.readiness.validationStatus)}</div>
+</header>
+<main>
+<section aria-labelledby="readiness-title">
+<h2 id="readiness-title">Readiness Summary</h2>
+${renderMetrics(normalized.readiness)}
+${renderSources(normalized.sources)}
+</section>
+<section aria-labelledby="map-title">
+<h2 id="map-title">Knowledge Map</h2>
+<div class="workspace">
+<div>
+${renderToolbar(normalized.concepts)}
+${renderMap(normalized.concepts, normalized.edges)}
+</div>
+<aside class="detail" id="concept-detail">${renderConceptDetail(normalized.concepts[0])}</aside>
+</div>
+</section>
+<section aria-labelledby="agent-preview-title">
+<h2 id="agent-preview-title">Agent Preview</h2>
+${renderAgentPreview(normalized.agentPreview)}
+</section>
+</main>
+</div>
+<script id="okfy-inspector-report" type="application/json">${json}</script>
+<script>
+const report=JSON.parse(document.getElementById("okfy-inspector-report").textContent);
+const detail=document.getElementById("concept-detail");
+const nodes=[...document.querySelectorAll(".node")];
+const edges=[...document.querySelectorAll(".edge")];
+const search=document.getElementById("concept-filter");
+const sourceFilter=document.getElementById("source-filter");
+const typeFilter=document.getElementById("type-filter");
+const esc=(value)=>String(value??"").replace(/[&<>"']/g,(char)=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
+function renderDetail(concept){
+  if(!concept){detail.innerHTML="<h3>No concept selected</h3>";return}
+  const resource=concept.resourceUrl||concept.resource||"";
+  const outbound=concept.outbound||concept.outboundLinks||[];
+  const backlinks=concept.backlinks||[];
+  detail.innerHTML='<h3>'+esc(concept.title||concept.id)+'</h3><dl>'+
+    '<dt>Type</dt><dd>'+esc(concept.type||"")+'</dd>'+
+    '<dt>Reference</dt><dd><code>'+esc(concept.ref)+'</code></dd>'+
+    '<dt>Source</dt><dd>'+esc(concept.sourceName||"local bundle")+'</dd>'+
+    '<dt>Resource URL</dt><dd>'+esc(resource||"none")+'</dd>'+
+    '<dt>Tags</dt><dd>'+(concept.tags||[]).map((tag)=>'<span class="tag">'+esc(tag)+'</span>').join(" ")+'</dd>'+
+    '<dt>Outbound</dt><dd>'+esc(outbound.join(", ")||"none")+'</dd>'+
+    '<dt>Backlinks</dt><dd>'+esc(backlinks.join(", ")||"none")+'</dd>'+
+    '</dl><p>'+esc(concept.description||"")+'</p>';
+}
+nodes.forEach((node)=>node.addEventListener("click",()=>{nodes.forEach((item)=>item.classList.remove("active"));node.classList.add("active");renderDetail(report.concepts.find((concept)=>concept.ref===node.dataset.ref));}));
+function applyFilters(){
+  const query=(search&&search.value?search.value:"").toLowerCase();
+  const source=sourceFilter&&sourceFilter.value?sourceFilter.value:"";
+  const type=typeFilter&&typeFilter.value?typeFilter.value:"";
+  nodes.forEach((node)=>{
+    const textMatch=!query||node.textContent.toLowerCase().includes(query);
+    const sourceMatch=!source||node.dataset.source===source;
+    const typeMatch=!type||node.dataset.type===type;
+    node.hidden=!(textMatch&&sourceMatch&&typeMatch);
+  });
+  const visibleRefs=new Set(nodes.filter((node)=>!node.hidden).map((node)=>node.dataset.ref));
+  edges.forEach((edge)=>{edge.hidden=!visibleRefs.has(edge.dataset.from)||!visibleRefs.has(edge.dataset.to)});
+  const active=nodes.find((node)=>node.classList.contains("active")&&!node.hidden);
+  const next=active||nodes.find((node)=>!node.hidden);
+  if(next&&!active) next.click();
+}
+[search,sourceFilter,typeFilter].forEach((control)=>{if(control)control.addEventListener("input",applyFilters)});
+</script>
+</body>
+</html>
+`;
+}
+function renderToolbar(concepts) {
+  const sources = uniqueSorted(concepts.map((concept) => concept.sourceName).filter(isNonEmptyString));
+  const types = uniqueSorted(concepts.map((concept) => concept.type).filter(isNonEmptyString));
+  return `<div class="toolbar">
+<input id="concept-filter" type="search" placeholder="Filter concepts" aria-label="Filter concepts">
+<select id="source-filter" aria-label="Filter by source">
+<option value="">All sources</option>
+${sources.map((source) => `<option value="${escapeAttribute(source)}">${escapeHtml(source)}</option>`).join("")}
+</select>
+<select id="type-filter" aria-label="Filter by type">
+<option value="">All types</option>
+${types.map((type) => `<option value="${escapeAttribute(type)}">${escapeHtml(type)}</option>`).join("")}
+</select>
+</div>`;
+}
+function renderMetrics(readiness) {
+  const metrics = [
+    ["Validation status", readiness.validationStatus],
+    ["Concepts", readiness.conceptCount],
+    ["Warnings", readiness.warningCount],
+    ["Broken links", readiness.brokenLinkCount],
+    ["Orphan concepts", readiness.orphanConcepts.length],
+    ["Source freshness", readiness.freshnessStatus ?? "snapshot"]
+  ];
+  const error = readiness.lastRefreshError ? `<p class="error">${escapeHtml(errorMessage(readiness.lastRefreshError))}</p>` : "";
+  return `<div class="metrics">${metrics.map(
+    ([label, value]) => `<div class="metric"><strong>${escapeHtml(String(value))}</strong><span>${escapeHtml(String(label))}</span></div>`
+  ).join("")}</div>${error}`;
+}
+function renderSources(sources) {
+  if (!sources.length) return "";
+  return `<div class="source-grid">${sources.map(
+    (source) => `<div class="source"><b>${escapeHtml(source.label ?? source.name ?? source.sourceName ?? "source")}</b><small>${escapeHtml(source.kind ?? sourceKind(source) ?? "local")} / ${escapeHtml(source.validationStatus ?? "unknown")} / ${escapeHtml(source.freshnessStatus ?? "snapshot")}</small><small>Concepts: ${escapeHtml(String(source.conceptCount ?? 0))}</small>${source.lastRefreshError ? `<small class="error">${escapeHtml(errorMessage(source.lastRefreshError))}</small>` : ""}</div>`
+  ).join("")}</div>`;
+}
+function renderMap(concepts, edges) {
+  const positions = layout(concepts);
+  const edgeHtml = edges.map((edge) => {
+    const from = positions.get(edge.from);
+    const to = positions.get(edge.to);
+    if (!from || !to) return "";
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const length = Math.sqrt(dx * dx + dy * dy);
+    const angle = Math.atan2(dy, dx) * (180 / Math.PI);
+    return `<span class="edge" data-from="${escapeAttribute(edge.from)}" data-to="${escapeAttribute(edge.to)}" style="left:${from.x + 74}px;top:${from.y + 28}px;width:${Math.max(12, length)}px;transform:rotate(${angle.toFixed(3)}deg)" title="${escapeAttribute(edge.label ?? "Markdown link")}"></span>`;
+  }).join("");
+  const nodeHtml = concepts.map((concept, index) => {
+    const position = positions.get(concept.ref) ?? { x: 20, y: 20 };
+    return `<button class="node${index === 0 ? " active" : ""}" data-ref="${escapeAttribute(concept.ref)}" data-source="${escapeAttribute(concept.sourceName ?? "")}" data-type="${escapeAttribute(concept.type ?? "")}" style="left:${position.x}px;top:${position.y}px" type="button"><b>${escapeHtml(concept.title ?? concept.id)}</b><small>${escapeHtml([concept.sourceName, concept.type].filter(Boolean).join(" / "))}</small></button>`;
+  }).join("");
+  return `<div class="map">${edgeHtml}${nodeHtml}</div>`;
+}
+function renderConceptDetail(concept) {
+  if (!concept) return "<h3>No concept selected</h3>";
+  return `<h3>${escapeHtml(concept.title ?? concept.id)}</h3>
+<dl>
+<dt>Type</dt><dd>${escapeHtml(concept.type ?? "")}</dd>
+<dt>Reference</dt><dd><code>${escapeHtml(concept.ref)}</code></dd>
+<dt>Source</dt><dd>${escapeHtml(concept.sourceName ?? "local bundle")}</dd>
+<dt>Resource URL</dt><dd>${escapeHtml(concept.resourceUrl ?? concept.resource ?? "none")}</dd>
+<dt>Tags</dt><dd class="tags">${(concept.tags ?? []).map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("")}</dd>
+<dt>Outbound</dt><dd>${escapeHtml((concept.outbound ?? concept.outboundLinks ?? []).join(", ") || "none")}</dd>
+<dt>Backlinks</dt><dd>${escapeHtml((concept.backlinks ?? []).join(", ") || "none")}</dd>
+</dl>
+<p>${escapeHtml(concept.description ?? "")}</p>`;
+}
+function renderAgentPreview(agentPreview) {
+  const tools = agentPreview.tools.length ? agentPreview.tools : agentPreview.sequence.map((step) => ({ name: step.tool, purpose: step.purpose }));
+  return `<div class="steps">${tools.map(
+    (tool, index) => `<div class="step"><code>${index + 1}. ${escapeHtml(tool.name)}</code><p>${escapeHtml(tool.purpose)}</p></div>`
+  ).join("")}</div>
+<p>${escapeHtml(agentPreview.citationGuidance ?? "")}</p>
+<ol class="questions">${(agentPreview.suggestedQuestions ?? []).map((question) => `<li>${escapeHtml(question)}</li>`).join("")}</ol>`;
+}
+function normalizeReport(report) {
+  const readiness = report.readiness ?? {};
+  const agentPreview = report.agentPreview ?? {};
+  return {
+    title: report.title || "OKFY Inspector",
+    readiness: {
+      validationStatus: readiness.validationStatus ?? "unknown",
+      availabilityStatus: readiness.availabilityStatus ?? "available",
+      sourceCount: readiness.sourceCount ?? report.sources.length,
+      usableSourceCount: readiness.usableSourceCount ?? report.sources.length,
+      conceptCount: readiness.conceptCount ?? 0,
+      warningCount: readiness.warningCount ?? 0,
+      brokenLinkCount: readiness.brokenLinkCount ?? readiness.brokenLinks ?? 0,
+      brokenLinks: readiness.brokenLinks ?? readiness.brokenLinkCount ?? 0,
+      orphanConcepts: readiness.orphanConcepts ?? [],
+      freshnessStatus: readiness.freshnessStatus ?? "snapshot",
+      freshnessStatuses: readiness.freshnessStatuses ?? {},
+      refreshInProgress: Boolean(readiness.refreshInProgress),
+      lastSuccessfulRefreshAt: readiness.lastSuccessfulRefreshAt ?? null,
+      nextRefreshAllowedAt: readiness.nextRefreshAllowedAt ?? null,
+      lastRefreshError: readiness.lastRefreshError ?? null,
+      sources: readiness.sources ?? []
+    },
+    sources: [...report.sources ?? []].map((source) => ({
+      ...source,
+      name: source.name ?? source.sourceName,
+      label: source.label ?? source.name ?? source.sourceName ?? "source",
+      kind: source.kind ?? sourceKind(source) ?? "local"
+    })).sort(compareSources),
+    concepts: [...report.concepts ?? []].sort(compareConcepts),
+    edges: [...report.edges ?? []].sort(compareEdges),
+    agentPreview: {
+      sequence: agentPreview.sequence ?? [],
+      tools: agentPreview.tools ?? [],
+      citationGuidance: agentPreview.citationGuidance ?? "",
+      suggestedQuestions: agentPreview.suggestedQuestions ?? []
+    }
+  };
+}
+function compareSources(first, second) {
+  return compareText(first.label ?? first.name ?? "", second.label ?? second.name ?? "") || compareText(first.name ?? "", second.name ?? "");
+}
+function compareConcepts(first, second) {
+  return compareText(first.sourceName ?? "", second.sourceName ?? "") || compareText(first.type ?? "", second.type ?? "") || compareText(first.title ?? first.id, second.title ?? second.id) || compareText(first.ref, second.ref);
+}
+function compareEdges(first, second) {
+  return compareText(first.sourceName ?? "", second.sourceName ?? "") || compareText(first.from, second.from) || compareText(first.to, second.to) || compareText(first.label ?? "", second.label ?? "");
+}
+function layout(concepts) {
+  const positions = /* @__PURE__ */ new Map();
+  const groups = /* @__PURE__ */ new Map();
+  for (const concept of concepts) {
+    const group = concept.sourceName || concept.type || "bundle";
+    groups.set(group, [...groups.get(group) ?? [], concept]);
+  }
+  const columns = [...groups.entries()].sort(([first], [second]) => compareText(first, second));
+  columns.forEach(([, groupConcepts], columnIndex) => {
+    groupConcepts.sort(compareConcepts).forEach((concept, rowIndex) => {
+      positions.set(concept.ref, {
+        x: 20 + columnIndex * 230,
+        y: 20 + rowIndex * 92
+      });
+    });
+  });
+  return positions;
+}
+function uniqueSorted(values) {
+  return [...new Set(values)].sort(compareText);
+}
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function compareText(first, second) {
+  if (first < second) return -1;
+  if (first > second) return 1;
+  return 0;
+}
+function errorMessage(error) {
+  if (!error) return "";
+  if (typeof error === "string") return error;
+  if (error instanceof Error) return error.message;
+  if (typeof error === "object" && "message" in error) {
+    return String(error.message);
+  }
+  return String(error);
+}
+function escapeHtml(value) {
+  return value.replace(/[&<>"']/g, (char) => {
+    switch (char) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      default:
+        return "&#39;";
+    }
+  });
+}
+function escapeAttribute(value) {
+  return escapeHtml(value);
+}
+function stableStringify(value) {
+  return JSON.stringify(sortJson(value));
+}
+function sortJson(value) {
+  if (Array.isArray(value)) return value.map(sortJson);
+  if (!value || typeof value !== "object") return value;
+  return Object.keys(value).sort(compareText).reduce((result, key) => {
+    const item = value[key];
+    if (item !== void 0) result[key] = sortJson(item);
+    return result;
+  }, {});
+}
+function escapeJsonForHtml(value) {
+  return value.replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/&/g, "\\u0026").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+}
+function sourceKind(source) {
+  return source.sourceKind;
+}
 
 // src/setup.ts
 import fs from "fs/promises";
@@ -515,6 +855,12 @@ function localBundleRecord(bundleDir) {
     }
   };
 }
+async function assertBundleHasConceptFiles(bundleDir) {
+  const validation = await validateBundle(bundleDir);
+  if (validation.conceptCount === 0) {
+    throw new Error(`Bundle path does not contain any OKF concept files: ${bundleDir}`);
+  }
+}
 function assertUniqueWorkspaceRecordNames(records) {
   const seen = /* @__PURE__ */ new Set();
   for (const record of records) {
@@ -778,6 +1124,18 @@ function printStats(stats) {
 function printStatus(message) {
   process.stderr.write(`${message}
 `);
+}
+async function writeFileAtomically(filePath, contents) {
+  const resolved = path2.resolve(filePath);
+  const tempPath = `${resolved}.tmp-${process.pid}-${Date.now()}`;
+  await fs2.promises.mkdir(path2.dirname(resolved), { recursive: true });
+  try {
+    await fs2.promises.writeFile(tempPath, contents, "utf8");
+    await fs2.promises.rename(tempPath, resolved);
+  } catch (error) {
+    await fs2.promises.rm(tempPath, { force: true });
+    throw error;
+  }
 }
 function setupHomeCheck(okfyHome) {
   const defaultHome = defaultOkfyHome();
@@ -1417,6 +1775,66 @@ program.command("inspect").argument("<bundle>", "OKF bundle directory").action(a
     printStatus(`okfy inspect: done, ${stats.conceptCount} concepts, ${stats.linkCount} links`);
   } catch (error) {
     console.error(pc.red(error?.message ?? "Inspect failed."));
+    process.exitCode = 1;
+  }
+});
+program.command("map").argument("[targets...]", "Registered source name(s), OKF bundle path(s), or one OKF bundle directory").option("--all", "Map all registered sources as one source-aware workspace", false).option("--out <file>", "Inspector HTML output file", "okfy-inspector.html").option("--json", "Print Inspector report JSON without writing HTML", false).action(async (targets = [], options) => {
+  try {
+    if (options.all && targets.length > 0) {
+      throw new Error("Use either --all or explicit source names, not both.");
+    }
+    if (!options.all && targets.length === 0) {
+      throw new Error("Provide a registered source name, an OKF bundle directory, or --all.");
+    }
+    let report;
+    const target = targets[0];
+    if (!options.all && targets.length === 1 && pathLikeTarget(target)) {
+      if (!await pathExists(target)) throw new Error(`Bundle path does not exist: ${target}`);
+      await assertBundleHasConceptFiles(target);
+      report = await buildBundleInspectorReport(target);
+    } else if (!options.all && targets.length === 1) {
+      try {
+        const record = await registeredRecord(target);
+        report = await buildWorkspaceInspectorReport([record]);
+      } catch (error) {
+        if (!pathLikeTarget(target) && await pathExists(target) && !await registeredSourceDirExists(target)) {
+          await assertBundleHasConceptFiles(target);
+          report = await buildBundleInspectorReport(target);
+        } else {
+          throw error;
+        }
+      }
+    } else {
+      const bundleTargets = options.all ? [] : targets.filter(pathLikeTarget);
+      const sourceTargets = options.all ? [] : targets.filter((sourceName) => !pathLikeTarget(sourceName));
+      const sourceSet = options.all || sourceTargets.length ? await resolveWorkspaceSources({ all: options.all, names: sourceTargets }) : { records: [], sourceNames: [] };
+      const bundleRecords = await Promise.all(
+        bundleTargets.map(async (bundleTarget) => {
+          if (!await pathExists(bundleTarget)) {
+            throw new Error(`Workspace bundle path does not exist: ${bundleTarget}`);
+          }
+          await assertBundleHasConceptFiles(bundleTarget);
+          return localBundleRecord(bundleTarget);
+        })
+      );
+      const records = [...sourceSet.records, ...bundleRecords];
+      assertUniqueWorkspaceRecordNames(records);
+      report = await buildWorkspaceInspectorReport(records, { all: options.all });
+    }
+    if (options.json) {
+      printJson(report);
+      return;
+    }
+    const outputPath = path2.resolve(options.out);
+    const html = renderInspectorHtml(report);
+    await writeFileAtomically(outputPath, html);
+    console.log(`Wrote OKFY Inspector: ${outputPath}`);
+  } catch (error) {
+    if (options.json) {
+      printJson({ status: "failed", error: { message: error?.message ?? "Map failed." } });
+    } else {
+      console.error(pc.red(error?.message ?? "Map failed."));
+    }
     process.exitCode = 1;
   }
 });
