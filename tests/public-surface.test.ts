@@ -10,13 +10,19 @@ describe("public surface", () => {
   it("README points at public product assets and current demo output", async () => {
     const cli = path.resolve("dist/cli.js");
     await fs.access(cli);
-    const [{ stdout: demoOutput }, { stdout: versionOutput }, readme, packageJson] = await Promise.all([
-      execFileAsync(process.execPath, [cli, "demo"]),
-      execFileAsync(process.execPath, [cli, "--version"]),
-      fs.readFile("README.md", "utf8"),
-      fs.readFile("package.json", "utf8")
-    ]);
-    const parsedPackage = JSON.parse(packageJson) as { version?: string };
+    const [{ stdout: demoOutput }, { stdout: versionOutput }, readme, packageJson, manifest] =
+      await Promise.all([
+        execFileAsync(process.execPath, [cli, "demo"]),
+        execFileAsync(process.execPath, [cli, "--version"]),
+        fs.readFile("README.md", "utf8"),
+        fs.readFile("package.json", "utf8"),
+        fs.readFile(".release-please-manifest.json", "utf8")
+      ]);
+    const parsedPackage = JSON.parse(packageJson) as {
+      dependencies?: Record<string, string>;
+      version?: string;
+    };
+    const parsedManifest = JSON.parse(manifest) as Record<string, string>;
 
     for (const expected of [
       "Offline bundle: examples/bundles/okfy-docs",
@@ -27,12 +33,22 @@ describe("public surface", () => {
     ]) {
       expect(demoOutput).toContain(expected);
     }
+    expect(parsedPackage.version).not.toBe("0.3.0");
+    expect(parsedPackage.dependencies).not.toHaveProperty("gray-matter");
+    expect(parsedPackage.dependencies?.["js-yaml"]).toMatch(/^\^4\./);
     expect(versionOutput.trim()).toBe(parsedPackage.version);
+    expect(parsedManifest["."]).toBe(parsedPackage.version);
 
     expect(readme).toContain("![okfy terminal demo](assets/demo.gif)");
-    expect(readme).toContain('<source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.png">');
-    expect(readme).toContain('<source media="(prefers-color-scheme: light)" srcset="assets/logo-light.png">');
-    expect(readme).toContain('<img src="assets/logo-light.png" alt="okfy logo: hand-drawn OKFY knowledge blocks" width="520">');
+    expect(readme).toContain(
+      '<source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.png">'
+    );
+    expect(readme).toContain(
+      '<source media="(prefers-color-scheme: light)" srcset="assets/logo-light.png">'
+    );
+    expect(readme).toContain(
+      '<img src="assets/logo-light.png" alt="okfy logo: hand-drawn OKFY knowledge blocks" width="520">'
+    );
     expect(readme).toContain("Open Knowledge Format for AI agents");
     expect(readme).not.toContain("assets/logo.png");
     expect(readme).not.toContain("assets/logo.svg");
@@ -42,17 +58,27 @@ describe("public surface", () => {
     expect(readme).not.toContain("Node.js >=20");
     expect(readme).toContain("[docs/mcp-clients.md](docs/mcp-clients.md)");
     expect(readme.indexOf("## Use With Agents")).toBeGreaterThan(-1);
-    expect(readme.indexOf("## Use With Agents")).toBeLessThan(readme.indexOf("## Preview The Inspector"));
-    expect(readme.indexOf("## Preview The Inspector")).toBeLessThan(readme.indexOf("## Project Stack Workspaces"));
-    expect(readme).toContain("npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client codex");
+    expect(readme.indexOf("## Use With Agents")).toBeLessThan(
+      readme.indexOf("## Preview The Inspector")
+    );
+    expect(readme.indexOf("## Preview The Inspector")).toBeLessThan(
+      readme.indexOf("## Project Stack Workspaces")
+    );
+    expect(readme).toContain(
+      "npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client codex"
+    );
     expect(readme).toContain("npx -y okfy-ai doctor stripe --client codex");
     expect(readme).toContain("Preview what your agent will know");
     expect(readme).toContain("npx -y okfy-ai map stripe --out okfy-inspector.html");
     expect(readme).toContain("local static HTML Inspector");
-    expect(readme).toContain("Use `--json` when CI or tests need the same Inspector report model without writing HTML.");
+    expect(readme).toContain(
+      "Use `--json` when CI or tests need the same Inspector report model without writing HTML."
+    );
     expect(readme).toContain("npx -y okfy-ai doctor stripe clerk --client codex");
     expect(readme).toContain("npx -y okfy-ai serve stripe clerk --mcp --auto-refresh");
-    expect(readme).toContain('npx -y okfy-ai import ./docs/api --out ./okf/api-docs --source-name "API docs" --force');
+    expect(readme).toContain(
+      'npx -y okfy-ai import ./docs/api --out ./okf/api-docs --source-name "API docs" --force'
+    );
     expect(readme).toContain(
       'npx -y okfy-ai import ./docs/product --out ./okf/product-docs --source-name "Product docs" --force'
     );
@@ -133,14 +159,18 @@ describe("public surface", () => {
     expect(parsed.name).toBe("okfy-ai");
     expect(parsed.bin?.okfy).toBe("dist/cli.js");
     expect(parsed.bin?.["okfy-ai"]).toBe("dist/cli.js");
-    expect(readme).toContain("`okfy-ai` is the npm package name. `okfy` is the installed CLI command.");
+    expect(readme).toContain(
+      "`okfy-ai` is the npm package name. `okfy` is the installed CLI command."
+    );
     expect(readme).toContain("You do not need global install for MCP configs.");
     expect(readme).toContain("MCP clients start it as a subprocess");
     expect(readme).toContain("Preflight DNS-resolved private targets");
     expect(readme).not.toContain("including DNS-resolved hosts and redirects");
     expect(npmReadme).toContain("# okfy-ai");
     expect(npmReadme).toContain("npm install -g okfy-ai");
-    expect(npmReadme).toContain("`okfy-ai` is the npm package name. `okfy` is the installed CLI command.");
+    expect(npmReadme).toContain(
+      "`okfy-ai` is the npm package name. `okfy` is the installed CLI command."
+    );
     expect(npmReadme).toContain("Preflight DNS-resolved private targets");
     expect(npmReadme).not.toContain("including DNS-resolved hosts and redirects");
     expect(npmReadme).toContain(
@@ -149,10 +179,18 @@ describe("public surface", () => {
     expect(npmReadme).toContain("Preview what your agent will know");
     expect(npmReadme).toContain("npx -y okfy-ai map stripe --out okfy-inspector.html");
     expect(npmReadme).toContain("local static HTML Inspector");
-    expect(npmReadme.indexOf("## Use With Agents")).toBeLessThan(npmReadme.indexOf("## Optional CLI Install"));
-    expect(npmReadme.indexOf("## Use With Agents")).toBeLessThan(npmReadme.indexOf("## Preview The Inspector"));
-    expect(npmReadme.indexOf("## Preview The Inspector")).toBeLessThan(npmReadme.indexOf("## Multi-Source Workspaces"));
-    expect(npmReadme).toContain("npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client generic");
+    expect(npmReadme.indexOf("## Use With Agents")).toBeLessThan(
+      npmReadme.indexOf("## Optional CLI Install")
+    );
+    expect(npmReadme.indexOf("## Use With Agents")).toBeLessThan(
+      npmReadme.indexOf("## Preview The Inspector")
+    );
+    expect(npmReadme.indexOf("## Preview The Inspector")).toBeLessThan(
+      npmReadme.indexOf("## Multi-Source Workspaces")
+    );
+    expect(npmReadme).toContain(
+      "npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client generic"
+    );
     expect(npmReadme).toContain("npx -y okfy-ai doctor stripe --client codex");
     expect(npmReadme).toContain("npx -y okfy-ai doctor stripe clerk --client codex");
     expect(npmReadme).toContain("npx -y okfy-ai serve stripe clerk --mcp --auto-refresh");
@@ -171,24 +209,34 @@ describe("public surface", () => {
     expect(npmReadme).toContain("[mcp_servers.stripe_okf]");
     expect(npmReadme).not.toContain("assets/logo.svg");
     expect(mcpDocs).toContain("The default setup uses `npx -y okfy-ai`");
-    expect(mcpDocs).toContain("npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client generic");
+    expect(mcpDocs).toContain(
+      "npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client generic"
+    );
     expect(mcpDocs).toContain("npx -y okfy-ai doctor stripe --client codex");
     expect(mcpDocs).toContain("npx -y okfy-ai map stripe --out okfy-inspector.html");
     expect(mcpDocs).toContain("local static HTML file");
-    expect(mcpDocs).toContain("Use `--json` when you need the Inspector report model on stdout without writing the HTML file.");
+    expect(mcpDocs).toContain(
+      "Use `--json` when you need the Inspector report model on stdout without writing the HTML file."
+    );
     expect(mcpDocs).toContain("npx -y okfy-ai doctor stripe clerk --client codex");
     expect(mcpDocs).toContain("npx -y okfy-ai add stripe https://docs.stripe.com/checkout");
     expect(mcpDocs).toContain("npx -y okfy-ai serve stripe --mcp --auto-refresh");
     expect(mcpDocs).toContain("npx -y okfy-ai serve stripe clerk --mcp --auto-refresh");
-    expect(mcpDocs).toContain('npx -y okfy-ai import ./docs/api --out ./okf/api-docs --source-name "API docs" --force');
+    expect(mcpDocs).toContain(
+      'npx -y okfy-ai import ./docs/api --out ./okf/api-docs --source-name "API docs" --force'
+    );
     expect(mcpDocs).toContain(
       'npx -y okfy-ai import ./docs/product --out ./okf/product-docs --source-name "Product docs" --force'
     );
     expect(mcpDocs).toContain("npx -y okfy-ai serve ./okf/api-docs ./okf/product-docs --mcp");
-    expect(mcpDocs).toContain("search_concepts({ \"query\": \"checkout sessions\", \"source\": \"stripe\", \"limit\": 5 })");
+    expect(mcpDocs).toContain(
+      'search_concepts({ "query": "checkout sessions", "source": "stripe", "limit": 5 })'
+    );
     expect(mcpDocs).toContain("ambiguous_concept");
     expect(mcpDocs).toContain("Workspace mode keeps the same read-only tools.");
-    expect(mcpDocs).toContain("Direct bundle paths, including local bundle workspaces, do not use source auto-refresh.");
+    expect(mcpDocs).toContain(
+      "Direct bundle paths, including local bundle workspaces, do not use source auto-refresh."
+    );
     expect(mcpDocs).toContain('args": ["-y", "okfy-ai", "serve", "./docs-okf", "--mcp"]');
     expect(examplesReadme).toContain("Preview what your agent will know");
     expect(examplesReadme).toContain("npx -y okfy-ai map stripe --out okfy-inspector.html");
