@@ -6,7 +6,7 @@ import { buildGraph } from "../src/graph.js";
 import { normalizeDocument } from "../src/normalize.js";
 import { readBundle } from "../src/reader.js";
 import { validateBundle } from "../src/validate.js";
-import { writeOkfBundle } from "../src/writer.js";
+import { assertSafeForceOutDir, writeOkfBundle } from "../src/writer.js";
 import type { NormalizedDocument, RawDocument } from "../src/types.js";
 
 const fixtureRoot = path.resolve("test-fixtures");
@@ -154,6 +154,34 @@ describe("writer and validator", () => {
     );
   });
 
+  it.skipIf(process.platform === "win32")(
+    "rejects force output paths with symlink ancestors under cwd",
+    async () => {
+      const root = await tempOut();
+      const outside = await tempOut();
+      await fs.mkdir(path.join(root, "docs"));
+      await fs.symlink(outside, path.join(root, "linked-output"), "dir");
+      const previousCwd = process.cwd();
+
+      try {
+        process.chdir(root);
+        await expect(
+          assertSafeForceOutDir("linked-output/missing/bundle", {
+            outDir: "linked-output/missing/bundle",
+            force: true,
+            inputPath: "docs"
+          })
+        ).rejects.toThrow(/symlink ancestor/);
+      } finally {
+        process.chdir(previousCwd);
+      }
+
+      await expect(fs.access(path.join(outside, "missing"))).rejects.toMatchObject({
+        code: "ENOENT"
+      });
+    }
+  );
+
   it("reports only Google OKF conformance errors for malformed concept docs", async () => {
     const report = await validateBundle(path.join(fixtureRoot, "okf-invalid"));
 
@@ -204,5 +232,58 @@ describe("writer and validator", () => {
 
     expect(report).toMatchObject({ valid: true, conceptCount: 1 });
     expect(report.issues.filter((issue) => issue.severity === "error")).toEqual([]);
+  });
+
+  it("accepts UTF-8 BOM before YAML frontmatter", async () => {
+    const outDir = await tempOut();
+    await fs.mkdir(path.join(outDir, "guides"), { recursive: true });
+    await fs.writeFile(
+      path.join(outDir, "index.md"),
+      '\uFEFF---\nokf_version: "0.1"\n---\n# Docs\n\n* [Start](guides/start.md)\n',
+      "utf8"
+    );
+    await fs.writeFile(path.join(outDir, "guides/index.md"), "# Guides\n", "utf8");
+    await fs.writeFile(
+      path.join(outDir, "guides/start.md"),
+      '\uFEFF---\ntype: "guide"\ntitle: "Start"\ndescription: "Start here."\nresource: "https://docs.example.com/start"\ntags:\n  - "setup"\ntimestamp: "2026-06-14T00:00:00.000Z"\n---\n\n# Start\n\nFollow the setup guide.\n',
+      "utf8"
+    );
+
+    const report = await validateBundle(outDir);
+    const bundle = await readBundle(outDir);
+    const concept = bundle.get("guides/start");
+
+    expect(report).toMatchObject({ valid: true, conceptCount: 1 });
+    expect(report.issues.filter((issue) => issue.severity === "error")).toEqual([]);
+    expect(concept).toMatchObject({
+      type: "guide",
+      title: "Start",
+      tags: ["setup"],
+      body: "# Start\n\nFollow the setup guide."
+    });
+  });
+
+  it("treats empty YAML frontmatter as parseable metadata", async () => {
+    const outDir = await tempOut();
+    await fs.mkdir(path.join(outDir, "guides"), { recursive: true });
+    await fs.writeFile(path.join(outDir, "index.md"), "# Docs\n", "utf8");
+    await fs.writeFile(path.join(outDir, "guides/index.md"), "# Guides\n", "utf8");
+    await fs.writeFile(
+      path.join(outDir, "guides/empty.md"),
+      "---\n---\n# Empty\n\nBody without typed metadata.\n",
+      "utf8"
+    );
+
+    const report = await validateBundle(outDir);
+    const concept = (await readBundle(outDir)).get("guides/empty");
+
+    expect(report.valid).toBe(false);
+    expect(report.issues.map((issue) => issue.code)).toContain("missing_type");
+    expect(report.issues.map((issue) => issue.code)).not.toContain("malformed_frontmatter");
+    expect(concept).toMatchObject({
+      frontmatter: {},
+      type: "",
+      body: "# Empty\n\nBody without typed metadata."
+    });
   });
 });

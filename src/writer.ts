@@ -142,9 +142,39 @@ async function pathExists(target: string): Promise<boolean> {
 async function resolveForSafety(target: string): Promise<string> {
   const resolved = path.resolve(target);
   if (await pathExists(resolved)) return fs.realpath(resolved);
-  const parent = path.dirname(resolved);
-  const realParent = await fs.realpath(parent);
-  return path.join(realParent, path.basename(resolved));
+  const missingSegments = [path.basename(resolved)];
+  let ancestor = path.dirname(resolved);
+  while (!(await pathExists(ancestor))) {
+    const parent = path.dirname(ancestor);
+    if (parent === ancestor)
+      throw new Error(`Unable to resolve output path ancestor for ${target}.`);
+    missingSegments.unshift(path.basename(ancestor));
+    ancestor = parent;
+  }
+  const realAncestor = await fs.realpath(ancestor);
+  return path.join(realAncestor, ...missingSegments);
+}
+
+async function assertNoCwdSymlinkAncestor(target: string): Promise<void> {
+  const cwd = path.resolve(process.cwd());
+  const resolved = path.resolve(target);
+  const relative = path.relative(cwd, resolved);
+  if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) return;
+
+  let current = cwd;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    let stat;
+    try {
+      stat = await fs.lstat(current);
+    } catch (error: any) {
+      if (error?.code === "ENOENT") return;
+      throw error;
+    }
+    if (stat.isSymbolicLink()) {
+      throw new Error(`Unsafe output directory for --force: refusing symlink ancestor ${current}.`);
+    }
+  }
 }
 
 async function findRepoRoot(start: string): Promise<string | undefined> {
@@ -171,6 +201,7 @@ export async function assertSafeForceOutDir(
       throw new Error(`Unsafe output directory for --force: refusing symlink ${outDir}.`);
     }
   }
+  await assertNoCwdSymlinkAncestor(outDir);
   const realOutDir = await resolveForSafety(outDir);
   const forbidden = new Map<string, string>([
     [path.parse(realOutDir).root, "filesystem root"],

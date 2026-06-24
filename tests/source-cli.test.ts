@@ -181,6 +181,21 @@ afterEach(async () => {
 });
 
 describe("registered source CLI flow", () => {
+  it("imports local docs into a nested output directory when parents do not exist", async () => {
+    const okfyHome = await tempHome();
+    const outDir = path.join(okfyHome, "missing-parent", "docs-okf");
+
+    await runCli(
+      ["import", "examples/local-markdown", "--out", outDir, "--force", "--stable-timestamps"],
+      okfyHome
+    );
+
+    await expect(fs.access(path.join(outDir, "index.md"))).resolves.toBeUndefined();
+    const validation = await runCli(["validate", outDir], okfyHome);
+    expect(validation.stdout).toContain("OKF bundle valid");
+    expect(validation.stdout).toContain("Concepts: 6");
+  });
+
   it("writes a local bundle Inspector HTML file", async () => {
     const okfyHome = await tempHome();
     const outFile = path.join(okfyHome, "inspector.html");
@@ -265,7 +280,9 @@ describe("registered source CLI flow", () => {
     const okfyHome = await tempHome();
     const outFile = path.join(okfyHome, "partial.html");
 
-    await expect(runCli(["map", "./missing-bundle", "--out", outFile], okfyHome)).rejects.toMatchObject({
+    await expect(
+      runCli(["map", "./missing-bundle", "--out", outFile], okfyHome)
+    ).rejects.toMatchObject({
       stderr: expect.stringContaining("Bundle path does not exist")
     });
     await expect(fs.access(outFile)).rejects.toMatchObject({ code: "ENOENT" });

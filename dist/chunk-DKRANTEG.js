@@ -344,9 +344,37 @@ async function pathExists(target) {
 async function resolveForSafety(target) {
   const resolved = path3.resolve(target);
   if (await pathExists(resolved)) return fs.realpath(resolved);
-  const parent = path3.dirname(resolved);
-  const realParent = await fs.realpath(parent);
-  return path3.join(realParent, path3.basename(resolved));
+  const missingSegments = [path3.basename(resolved)];
+  let ancestor = path3.dirname(resolved);
+  while (!await pathExists(ancestor)) {
+    const parent = path3.dirname(ancestor);
+    if (parent === ancestor)
+      throw new Error(`Unable to resolve output path ancestor for ${target}.`);
+    missingSegments.unshift(path3.basename(ancestor));
+    ancestor = parent;
+  }
+  const realAncestor = await fs.realpath(ancestor);
+  return path3.join(realAncestor, ...missingSegments);
+}
+async function assertNoCwdSymlinkAncestor(target) {
+  const cwd = path3.resolve(process.cwd());
+  const resolved = path3.resolve(target);
+  const relative = path3.relative(cwd, resolved);
+  if (relative === "" || relative.startsWith("..") || path3.isAbsolute(relative)) return;
+  let current = cwd;
+  for (const segment of relative.split(path3.sep).filter(Boolean)) {
+    current = path3.join(current, segment);
+    let stat;
+    try {
+      stat = await fs.lstat(current);
+    } catch (error) {
+      if (error?.code === "ENOENT") return;
+      throw error;
+    }
+    if (stat.isSymbolicLink()) {
+      throw new Error(`Unsafe output directory for --force: refusing symlink ancestor ${current}.`);
+    }
+  }
 }
 async function findRepoRoot(start) {
   let current = path3.resolve(start);
@@ -368,6 +396,7 @@ async function assertSafeForceOutDir(outDir, options) {
       throw new Error(`Unsafe output directory for --force: refusing symlink ${outDir}.`);
     }
   }
+  await assertNoCwdSymlinkAncestor(outDir);
   const realOutDir = await resolveForSafety(outDir);
   const forbidden = /* @__PURE__ */ new Map([
     [path3.parse(realOutDir).root, "filesystem root"],
@@ -906,7 +935,33 @@ function buildGraph(conceptsByAnyKey) {
 // src/reader.ts
 import fs5 from "fs/promises";
 import path8 from "path";
-import matter from "gray-matter";
+
+// src/frontmatter.ts
+import { load as load3 } from "js-yaml";
+var FRONTMATTER_PATTERN = /^---[ \t]*\r?\n(?:---[ \t]*(?:\r?\n|$)|([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$))/;
+var UTF8_BOM = "\uFEFF";
+function stripLeadingBom(raw) {
+  return raw.startsWith(UTF8_BOM) ? raw.slice(1) : raw;
+}
+function hasFrontmatter(raw) {
+  return stripLeadingBom(raw).startsWith("---");
+}
+function parseFrontmatter(raw) {
+  const normalized = stripLeadingBom(raw);
+  if (!normalized.startsWith("---")) return { data: {}, content: normalized };
+  const match = normalized.match(FRONTMATTER_PATTERN);
+  if (!match) throw new Error("Malformed YAML frontmatter.");
+  const loaded = load3(match[1] ?? "");
+  return {
+    data: isRecord(loaded) ? loaded : {},
+    content: normalized.slice(match[0].length)
+  };
+}
+function isRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+// src/reader.ts
 async function listMarkdownFiles(dir) {
   const result = [];
   async function walk(current) {
@@ -925,7 +980,7 @@ function stringArray(value) {
 }
 async function readConceptFile(bundleDir, absolutePath) {
   const raw = await fs5.readFile(absolutePath, "utf8");
-  const parsed = matter(raw);
+  const parsed = parseFrontmatter(raw);
   const relPath = toPosixPath(path8.relative(bundleDir, absolutePath));
   if (isReservedOkfPath(relPath)) throw new Error(`Reserved OKF file is not a concept: ${relPath}`);
   const id = stripMdExtension(relPath);
@@ -965,6 +1020,53 @@ function snippet(concept, query, max = 240) {
   const start = Math.max(0, index - 80);
   return text.slice(start, start + max);
 }
+var STOPWORDS = /* @__PURE__ */ new Set([
+  "about",
+  "after",
+  "and",
+  "are",
+  "can",
+  "could",
+  "does",
+  "for",
+  "from",
+  "had",
+  "has",
+  "have",
+  "how",
+  "into",
+  "onto",
+  "should",
+  "that",
+  "the",
+  "their",
+  "there",
+  "this",
+  "what",
+  "when",
+  "where",
+  "who",
+  "why",
+  "with",
+  "would",
+  "you",
+  "your"
+]);
+function meaningfulQueryTerms(query) {
+  const terms = /* @__PURE__ */ new Set();
+  for (const token of query.match(/[A-Za-z0-9]+/g) ?? []) {
+    const normalized = token.toLowerCase();
+    const isAcronym = normalized.length >= 2 && ["api", "cli", "mcp", "okf", "sdk"].includes(normalized);
+    if ((normalized.length >= 4 || isAcronym) && !STOPWORDS.has(normalized)) {
+      terms.add(normalized);
+    }
+  }
+  return terms;
+}
+function matchesMeaningfulQueryTerm(hit, terms) {
+  if (terms.size === 0) return false;
+  return (hit.queryTerms ?? []).some((term) => terms.has(term.toLowerCase()));
+}
 var BundleSearch = class _BundleSearch {
   graph;
   index;
@@ -973,7 +1075,11 @@ var BundleSearch = class _BundleSearch {
     this.index = new MiniSearch({
       fields: ["title", "description", "tags", "type", "body"],
       storeFields: ["id"],
-      searchOptions: { boost: { title: 4, tags: 3, type: 2, description: 2 }, fuzzy: 0.2, prefix: true }
+      searchOptions: {
+        boost: { title: 4, tags: 3, type: 2, description: 2 },
+        fuzzy: 0.2,
+        prefix: true
+      }
     });
     this.index.addAll(
       [...this.graph.concepts.values()].map((concept) => ({
@@ -990,9 +1096,30 @@ var BundleSearch = class _BundleSearch {
     return new _BundleSearch(await readBundle(bundleDir));
   }
   search(query, options = {}) {
-    const hits = this.index.search(query || MiniSearch.wildcard, { combineWith: "AND" }).slice(0, 100);
+    const limit = options.limit ?? 10;
+    const trimmedQuery = query.trim();
+    const strict = this.resultsForHits(
+      this.index.search(trimmedQuery || MiniSearch.wildcard, { combineWith: "AND" }).slice(0, 100),
+      query,
+      options
+    );
+    if (!trimmedQuery || strict.length > 0 || trimmedQuery.split(/\s+/).length < 2)
+      return strict.slice(0, limit);
+    const fallbackTerms = meaningfulQueryTerms(trimmedQuery);
+    const fallback = this.resultsForHits(
+      this.index.search(trimmedQuery, { combineWith: "OR" }).filter((hit) => matchesMeaningfulQueryTerm(hit, fallbackTerms)).slice(0, 100),
+      query,
+      options
+    );
+    return fallback.slice(0, limit);
+  }
+  resultsForHits(hits, query, options) {
     const tagFilter = new Set(options.tags ?? []);
-    return hits.map((hit) => ({ hit, concept: this.graph.concepts.get(hit.id) })).filter((row) => Boolean(row.concept)).filter(({ concept }) => !options.type || concept.type === options.type).filter(({ concept }) => tagFilter.size === 0 || concept.tags.some((tag) => tagFilter.has(tag))).slice(0, options.limit ?? 10).map(({ hit, concept }) => ({
+    return hits.map((hit) => ({ hit, concept: this.graph.concepts.get(hit.id) })).filter(
+      (row) => Boolean(row.concept)
+    ).filter(({ concept }) => !options.type || concept.type === options.type).filter(
+      ({ concept }) => tagFilter.size === 0 || concept.tags.some((tag) => tagFilter.has(tag))
+    ).map(({ hit, concept }) => ({
       id: concept.id,
       title: concept.title,
       type: concept.type,
@@ -1012,7 +1139,6 @@ var BundleSearch = class _BundleSearch {
 // src/validate.ts
 import fs6 from "fs/promises";
 import path9 from "path";
-import matter2 from "gray-matter";
 async function listMarkdownFiles2(dir) {
   const result = [];
   async function walk(current) {
@@ -1031,48 +1157,83 @@ function issue(severity, code, message, file) {
 function firstContentLine(content) {
   return content.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? "";
 }
-function parseFrontmatter(raw) {
-  const parsed = matter2(raw);
-  return { data: parsed.data, content: parsed.content };
-}
 function validateIndexFile(raw, rel, issues) {
   let body = raw;
-  if (raw.startsWith("---")) {
+  if (hasFrontmatter(raw)) {
     if (rel !== "index.md") {
-      issues.push(issue("error", "reserved_index_frontmatter", "Only bundle-root index.md may contain okf_version frontmatter.", rel));
+      issues.push(
+        issue(
+          "error",
+          "reserved_index_frontmatter",
+          "Only bundle-root index.md may contain okf_version frontmatter.",
+          rel
+        )
+      );
       return;
     }
     let parsed;
     try {
       parsed = parseFrontmatter(raw);
     } catch (error) {
-      issues.push(issue("error", "malformed_frontmatter", error?.message ?? "Malformed YAML frontmatter.", rel));
+      issues.push(
+        issue(
+          "error",
+          "malformed_frontmatter",
+          error?.message ?? "Malformed YAML frontmatter.",
+          rel
+        )
+      );
       return;
     }
     const keys = Object.keys(parsed.data);
     if (keys.length !== 1 || keys[0] !== "okf_version" || typeof parsed.data.okf_version !== "string") {
-      issues.push(issue("error", "reserved_index_frontmatter", "Root index.md frontmatter may contain only string okf_version.", rel));
+      issues.push(
+        issue(
+          "error",
+          "reserved_index_frontmatter",
+          "Root index.md frontmatter may contain only string okf_version.",
+          rel
+        )
+      );
     }
     body = parsed.content;
   }
   const firstLine = firstContentLine(body);
   if (!firstLine.startsWith("# ")) {
-    issues.push(issue("error", "invalid_index_structure", "index.md must be a markdown directory listing headed by a section title.", rel));
+    issues.push(
+      issue(
+        "error",
+        "invalid_index_structure",
+        "index.md must be a markdown directory listing headed by a section title.",
+        rel
+      )
+    );
   }
 }
 function validateLogFile(raw, rel, issues) {
-  if (raw.startsWith("---")) {
-    issues.push(issue("error", "reserved_log_frontmatter", "log.md must not contain YAML frontmatter.", rel));
+  if (hasFrontmatter(raw)) {
+    issues.push(
+      issue("error", "reserved_log_frontmatter", "log.md must not contain YAML frontmatter.", rel)
+    );
     return;
   }
   const firstLine = firstContentLine(raw);
   if (!firstLine.startsWith("# ")) {
-    issues.push(issue("error", "invalid_log_structure", "log.md must be a markdown update log headed by a title.", rel));
+    issues.push(
+      issue(
+        "error",
+        "invalid_log_structure",
+        "log.md must be a markdown update log headed by a title.",
+        rel
+      )
+    );
   }
   for (const line of raw.split(/\r?\n/)) {
     const heading = line.match(/^##\s+(.+)$/);
     if (heading && !/^\d{4}-\d{2}-\d{2}\b/.test(heading[1] ?? "")) {
-      issues.push(issue("error", "invalid_log_date", "log.md date headings must use YYYY-MM-DD.", rel));
+      issues.push(
+        issue("error", "invalid_log_date", "log.md date headings must use YYYY-MM-DD.", rel)
+      );
     }
   }
 }
@@ -1095,8 +1256,12 @@ async function validateBundle(bundleDir) {
       warningCount: 0
     };
   }
-  const conceptFiles = files.filter((file) => isConceptMarkdownPath(path9.relative(bundleDir, file).split(path9.sep).join("/")));
-  const reservedFiles = files.filter((file) => isReservedOkfPath(path9.relative(bundleDir, file).split(path9.sep).join("/")));
+  const conceptFiles = files.filter(
+    (file) => isConceptMarkdownPath(path9.relative(bundleDir, file).split(path9.sep).join("/"))
+  );
+  const reservedFiles = files.filter(
+    (file) => isReservedOkfPath(path9.relative(bundleDir, file).split(path9.sep).join("/"))
+  );
   for (const file of reservedFiles) {
     const rel = path9.relative(bundleDir, file).split(path9.sep).join("/");
     const raw = await fs6.readFile(file, "utf8");
@@ -1109,36 +1274,60 @@ async function validateBundle(bundleDir) {
       issues.push(issue("error", "unsafe_path", "Concept path is unsafe.", rel));
     }
     const raw = await fs6.readFile(file, "utf8");
-    if (!raw.startsWith("---")) {
-      issues.push(issue("error", "missing_frontmatter", "Concept file must start with YAML frontmatter.", rel));
+    if (!hasFrontmatter(raw)) {
+      issues.push(
+        issue("error", "missing_frontmatter", "Concept file must start with YAML frontmatter.", rel)
+      );
       continue;
     }
     let parsed;
     try {
-      parsed = matter2(raw);
+      parsed = parseFrontmatter(raw);
     } catch (error) {
-      issues.push(issue("error", "malformed_frontmatter", error?.message ?? "Malformed YAML frontmatter.", rel));
+      issues.push(
+        issue(
+          "error",
+          "malformed_frontmatter",
+          error?.message ?? "Malformed YAML frontmatter.",
+          rel
+        )
+      );
       continue;
     }
     const data = parsed.data;
     if (typeof data.type !== "string" || data.type.trim() === "") {
-      issues.push(issue("error", "missing_type", "Frontmatter type must be a non-empty string.", rel));
+      issues.push(
+        issue("error", "missing_type", "Frontmatter type must be a non-empty string.", rel)
+      );
     }
     for (const key of ["title", "description", "resource", "timestamp"]) {
       if (data[key] !== void 0 && typeof data[key] !== "string") {
-        issues.push(issue("warning", "bad_field_shape", `${key} should be a string when present.`, rel));
+        issues.push(
+          issue("warning", "bad_field_shape", `${key} should be a string when present.`, rel)
+        );
       }
     }
     if (data.tags !== void 0 && (!Array.isArray(data.tags) || data.tags.some((tag) => typeof tag !== "string"))) {
-      issues.push(issue("warning", "bad_field_shape", "tags should be an array of strings when present.", rel));
+      issues.push(
+        issue("warning", "bad_field_shape", "tags should be an array of strings when present.", rel)
+      );
     }
   }
   const concepts = await readBundle(bundleDir).catch(() => /* @__PURE__ */ new Map());
   const canonicalIds = new Set([...concepts.values()].map((concept) => concept.id));
-  for (const concept of new Map([...concepts.values()].map((concept2) => [concept2.id, concept2])).values()) {
+  for (const concept of new Map(
+    [...concepts.values()].map((concept2) => [concept2.id, concept2])
+  ).values()) {
     for (const target of extractInternalLinks(concept)) {
       if (!canonicalIds.has(target)) {
-        issues.push(issue("warning", "broken_internal_link", `Broken internal link to ${target}.`, concept.path));
+        issues.push(
+          issue(
+            "warning",
+            "broken_internal_link",
+            `Broken internal link to ${target}.`,
+            concept.path
+          )
+        );
       }
     }
   }

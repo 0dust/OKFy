@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import matter from "gray-matter";
+import { hasFrontmatter, parseFrontmatter, type ParsedFrontmatter } from "./frontmatter.js";
 import { buildGraph, extractInternalLinks } from "./graph.js";
 import { isConceptMarkdownPath, isReservedOkfPath } from "./okf.js";
 import { readBundle } from "./reader.js";
@@ -19,61 +19,106 @@ async function listMarkdownFiles(dir: string): Promise<string[]> {
   return result.sort();
 }
 
-function issue(severity: "error" | "warning", code: string, message: string, file?: string): ValidationIssue {
+function issue(
+  severity: "error" | "warning",
+  code: string,
+  message: string,
+  file?: string
+): ValidationIssue {
   return { severity, code, message, path: file };
 }
 
 function firstContentLine(content: string): string {
-  return content
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find(Boolean) ?? "";
-}
-
-function parseFrontmatter(raw: string): { data: Record<string, unknown>; content: string } {
-  const parsed = matter(raw);
-  return { data: parsed.data as Record<string, unknown>, content: parsed.content };
+  return (
+    content
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean) ?? ""
+  );
 }
 
 function validateIndexFile(raw: string, rel: string, issues: ValidationIssue[]): void {
   let body = raw;
-  if (raw.startsWith("---")) {
+  if (hasFrontmatter(raw)) {
     if (rel !== "index.md") {
-      issues.push(issue("error", "reserved_index_frontmatter", "Only bundle-root index.md may contain okf_version frontmatter.", rel));
+      issues.push(
+        issue(
+          "error",
+          "reserved_index_frontmatter",
+          "Only bundle-root index.md may contain okf_version frontmatter.",
+          rel
+        )
+      );
       return;
     }
-    let parsed: { data: Record<string, unknown>; content: string };
+    let parsed: ParsedFrontmatter;
     try {
       parsed = parseFrontmatter(raw);
     } catch (error: any) {
-      issues.push(issue("error", "malformed_frontmatter", error?.message ?? "Malformed YAML frontmatter.", rel));
+      issues.push(
+        issue(
+          "error",
+          "malformed_frontmatter",
+          error?.message ?? "Malformed YAML frontmatter.",
+          rel
+        )
+      );
       return;
     }
     const keys = Object.keys(parsed.data);
-    if (keys.length !== 1 || keys[0] !== "okf_version" || typeof parsed.data.okf_version !== "string") {
-      issues.push(issue("error", "reserved_index_frontmatter", "Root index.md frontmatter may contain only string okf_version.", rel));
+    if (
+      keys.length !== 1 ||
+      keys[0] !== "okf_version" ||
+      typeof parsed.data.okf_version !== "string"
+    ) {
+      issues.push(
+        issue(
+          "error",
+          "reserved_index_frontmatter",
+          "Root index.md frontmatter may contain only string okf_version.",
+          rel
+        )
+      );
     }
     body = parsed.content;
   }
   const firstLine = firstContentLine(body);
   if (!firstLine.startsWith("# ")) {
-    issues.push(issue("error", "invalid_index_structure", "index.md must be a markdown directory listing headed by a section title.", rel));
+    issues.push(
+      issue(
+        "error",
+        "invalid_index_structure",
+        "index.md must be a markdown directory listing headed by a section title.",
+        rel
+      )
+    );
   }
 }
 
 function validateLogFile(raw: string, rel: string, issues: ValidationIssue[]): void {
-  if (raw.startsWith("---")) {
-    issues.push(issue("error", "reserved_log_frontmatter", "log.md must not contain YAML frontmatter.", rel));
+  if (hasFrontmatter(raw)) {
+    issues.push(
+      issue("error", "reserved_log_frontmatter", "log.md must not contain YAML frontmatter.", rel)
+    );
     return;
   }
   const firstLine = firstContentLine(raw);
   if (!firstLine.startsWith("# ")) {
-    issues.push(issue("error", "invalid_log_structure", "log.md must be a markdown update log headed by a title.", rel));
+    issues.push(
+      issue(
+        "error",
+        "invalid_log_structure",
+        "log.md must be a markdown update log headed by a title.",
+        rel
+      )
+    );
   }
   for (const line of raw.split(/\r?\n/)) {
     const heading = line.match(/^##\s+(.+)$/);
     if (heading && !/^\d{4}-\d{2}-\d{2}\b/.test(heading[1] ?? "")) {
-      issues.push(issue("error", "invalid_log_date", "log.md date headings must use YYYY-MM-DD.", rel));
+      issues.push(
+        issue("error", "invalid_log_date", "log.md date headings must use YYYY-MM-DD.", rel)
+      );
     }
   }
 }
@@ -99,8 +144,12 @@ export async function validateBundle(bundleDir: string): Promise<ValidationRepor
     };
   }
 
-  const conceptFiles = files.filter((file) => isConceptMarkdownPath(path.relative(bundleDir, file).split(path.sep).join("/")));
-  const reservedFiles = files.filter((file) => isReservedOkfPath(path.relative(bundleDir, file).split(path.sep).join("/")));
+  const conceptFiles = files.filter((file) =>
+    isConceptMarkdownPath(path.relative(bundleDir, file).split(path.sep).join("/"))
+  );
+  const reservedFiles = files.filter((file) =>
+    isReservedOkfPath(path.relative(bundleDir, file).split(path.sep).join("/"))
+  );
 
   for (const file of reservedFiles) {
     const rel = path.relative(bundleDir, file).split(path.sep).join("/");
@@ -115,37 +164,64 @@ export async function validateBundle(bundleDir: string): Promise<ValidationRepor
       issues.push(issue("error", "unsafe_path", "Concept path is unsafe.", rel));
     }
     const raw = await fs.readFile(file, "utf8");
-    if (!raw.startsWith("---")) {
-      issues.push(issue("error", "missing_frontmatter", "Concept file must start with YAML frontmatter.", rel));
+    if (!hasFrontmatter(raw)) {
+      issues.push(
+        issue("error", "missing_frontmatter", "Concept file must start with YAML frontmatter.", rel)
+      );
       continue;
     }
-    let parsed: matter.GrayMatterFile<string>;
+    let parsed: ParsedFrontmatter;
     try {
-      parsed = matter(raw);
+      parsed = parseFrontmatter(raw);
     } catch (error: any) {
-      issues.push(issue("error", "malformed_frontmatter", error?.message ?? "Malformed YAML frontmatter.", rel));
+      issues.push(
+        issue(
+          "error",
+          "malformed_frontmatter",
+          error?.message ?? "Malformed YAML frontmatter.",
+          rel
+        )
+      );
       continue;
     }
-    const data = parsed.data as Record<string, unknown>;
+    const data = parsed.data;
     if (typeof data.type !== "string" || data.type.trim() === "") {
-      issues.push(issue("error", "missing_type", "Frontmatter type must be a non-empty string.", rel));
+      issues.push(
+        issue("error", "missing_type", "Frontmatter type must be a non-empty string.", rel)
+      );
     }
     for (const key of ["title", "description", "resource", "timestamp"]) {
       if (data[key] !== undefined && typeof data[key] !== "string") {
-        issues.push(issue("warning", "bad_field_shape", `${key} should be a string when present.`, rel));
+        issues.push(
+          issue("warning", "bad_field_shape", `${key} should be a string when present.`, rel)
+        );
       }
     }
-    if (data.tags !== undefined && (!Array.isArray(data.tags) || data.tags.some((tag) => typeof tag !== "string"))) {
-      issues.push(issue("warning", "bad_field_shape", "tags should be an array of strings when present.", rel));
+    if (
+      data.tags !== undefined &&
+      (!Array.isArray(data.tags) || data.tags.some((tag) => typeof tag !== "string"))
+    ) {
+      issues.push(
+        issue("warning", "bad_field_shape", "tags should be an array of strings when present.", rel)
+      );
     }
   }
 
   const concepts = await readBundle(bundleDir).catch(() => new Map());
   const canonicalIds = new Set([...concepts.values()].map((concept) => concept.id));
-  for (const concept of new Map([...concepts.values()].map((concept) => [concept.id, concept])).values()) {
+  for (const concept of new Map(
+    [...concepts.values()].map((concept) => [concept.id, concept])
+  ).values()) {
     for (const target of extractInternalLinks(concept)) {
       if (!canonicalIds.has(target)) {
-        issues.push(issue("warning", "broken_internal_link", `Broken internal link to ${target}.`, concept.path));
+        issues.push(
+          issue(
+            "warning",
+            "broken_internal_link",
+            `Broken internal link to ${target}.`,
+            concept.path
+          )
+        );
       }
     }
   }

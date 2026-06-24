@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { crawlWebsite } from "../src/crawler.js";
 import { importLocal } from "../src/importer.js";
 import { matchesPattern } from "../src/util/match.js";
+import { validateBundle } from "../src/validate.js";
 
 const tempDirs: string[] = [];
 
@@ -133,6 +134,39 @@ describe("crawl dry run", () => {
       expect(progress).toContain("fetch");
       expect(progress).toContain("fetched");
       await expect(fs.readdir(outDir)).resolves.toEqual([]);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("writes crawled docs into a nested output directory when parents do not exist", async () => {
+    const server = http.createServer((_, response) => {
+      response.setHeader("content-type", "text/html");
+      response.end("<main><h1>Home</h1><p>Welcome to the local docs.</p></main>");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected TCP test server.");
+    const root = await tempOut();
+    const outDir = path.join(root, "missing-parent", "crawl-okf");
+
+    try {
+      const result = await crawlWebsite({
+        seedUrl: `http://127.0.0.1:${address.port}/`,
+        outDir,
+        maxPages: 1,
+        maxDepth: 0,
+        allowPrivateNetwork: true,
+        respectRobots: false,
+        force: true,
+        timestamp: "2026-06-14T00:00:00.000Z"
+      });
+
+      expect(result.documents).toHaveLength(1);
+      await expect(fs.access(path.join(outDir, "index.md"))).resolves.toBeUndefined();
+      const validation = await validateBundle(outDir);
+      expect(validation.valid).toBe(true);
+      expect(validation.conceptCount).toBe(1);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

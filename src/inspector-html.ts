@@ -116,12 +116,13 @@ section h2{margin:0 0 14px;font-size:18px;letter-spacing:0}
 .source{border:1px solid var(--line);border-radius:6px;padding:12px;background:#fbfcfb}
 .source b{display:block}
 .source small{display:block;margin-top:4px;color:var(--muted)}
-.workspace{display:grid;grid-template-columns:minmax(320px,0.95fr) minmax(320px,1.05fr);gap:18px;align-items:start}
+.workspace{display:grid;grid-template-columns:minmax(0,0.95fr) minmax(0,1.05fr);gap:18px;align-items:start}
 .toolbar{display:grid;grid-template-columns:minmax(180px,1fr) minmax(130px,180px) minmax(130px,180px);gap:10px;align-items:center;margin-bottom:14px}
 .toolbar input,.toolbar select{width:100%;border:1px solid var(--line);border-radius:6px;padding:10px 12px;background:var(--paper);color:var(--ink)}
-.map{position:relative;min-height:360px;border:1px solid var(--line);border-radius:8px;background:linear-gradient(#fbfcfb,#f4f7f5)}
+.map-shell{max-width:100%;overflow:auto;border:1px solid var(--line);border-radius:8px;background:linear-gradient(#fbfcfb,#f4f7f5)}
+.map{position:relative;min-width:100%;min-height:360px}
 .edge{position:absolute;height:2px;background:#a7b5ae;transform-origin:left center}
-.node{position:absolute;min-width:150px;max-width:190px;border:1px solid #bdd0c7;border-radius:6px;background:var(--paper);padding:10px;text-align:left;box-shadow:0 3px 10px rgba(23,33,29,.08);cursor:pointer}
+.node{position:absolute;min-width:0;width:clamp(132px,28vw,190px);border:1px solid #bdd0c7;border-radius:6px;background:var(--paper);padding:10px;text-align:left;box-shadow:0 3px 10px rgba(23,33,29,.08);cursor:pointer}
 .node:hover,.node.active{border-color:var(--accent);outline:2px solid rgba(12,124,89,.16)}
 .node b{display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .node small{display:block;color:var(--muted);margin-top:4px}
@@ -137,7 +138,7 @@ section h2{margin:0 0 14px;font-size:18px;letter-spacing:0}
 .step code{display:block;color:var(--accent-2);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .questions{margin:16px 0 0;padding-left:20px;color:var(--muted)}
 .error{color:var(--bad)}
-@media (max-width:820px){header,.workspace,.toolbar{grid-template-columns:1fr}.metrics,.steps{grid-template-columns:repeat(2,minmax(0,1fr))}.shell{padding:22px 14px}.map{min-height:460px}}
+@media (max-width:820px){header,.workspace,.toolbar{grid-template-columns:1fr}.metrics,.steps{grid-template-columns:repeat(2,minmax(0,1fr))}.shell{padding:22px 14px}.map{min-height:460px}.detail dl{grid-template-columns:86px minmax(0,1fr)}}
 </style>
 </head>
 <body>
@@ -222,7 +223,9 @@ function applyFilters(){
 }
 
 function renderToolbar(concepts: NormalizedReport["concepts"]): string {
-  const sources = uniqueSorted(concepts.map((concept) => concept.sourceName).filter(isNonEmptyString));
+  const sources = uniqueSorted(
+    concepts.map((concept) => concept.sourceName).filter(isNonEmptyString)
+  );
   const types = uniqueSorted(concepts.map((concept) => concept.type).filter(isNonEmptyString));
   return `<div class="toolbar">
 <input id="concept-filter" type="search" placeholder="Filter concepts" aria-label="Filter concepts">
@@ -269,8 +272,12 @@ function renderSources(sources: NormalizedReport["sources"]): string {
     .join("")}</div>`;
 }
 
-function renderMap(concepts: NormalizedReport["concepts"], edges: NormalizedReport["edges"]): string {
+function renderMap(
+  concepts: NormalizedReport["concepts"],
+  edges: NormalizedReport["edges"]
+): string {
   const positions = layout(concepts);
+  const dimensions = mapDimensions(positions);
   const edgeHtml = edges
     .map((edge) => {
       const from = positions.get(edge.from);
@@ -289,7 +296,7 @@ function renderMap(concepts: NormalizedReport["concepts"], edges: NormalizedRepo
       return `<button class="node${index === 0 ? " active" : ""}" data-ref="${escapeAttribute(concept.ref)}" data-source="${escapeAttribute(concept.sourceName ?? "")}" data-type="${escapeAttribute(concept.type ?? "")}" style="left:${position.x}px;top:${position.y}px" type="button"><b>${escapeHtml(concept.title ?? concept.id)}</b><small>${escapeHtml([concept.sourceName, concept.type].filter(Boolean).join(" / "))}</small></button>`;
     })
     .join("");
-  return `<div class="map">${edgeHtml}${nodeHtml}</div>`;
+  return `<div class="map-shell"><div class="map" style="width:${dimensions.width}px;min-height:${dimensions.height}px">${edgeHtml}${nodeHtml}</div></div>`;
 }
 
 function renderConceptDetail(concept: NormalizedReport["concepts"][number] | undefined): string {
@@ -408,16 +415,27 @@ function layout(concepts: RenderConcept[]): Map<string, { x: number; y: number }
   }
   const columns = [...groups.entries()].sort(([first], [second]) => compareText(first, second));
   columns.forEach(([, groupConcepts], columnIndex) => {
-    groupConcepts
-      .sort(compareConcepts)
-      .forEach((concept, rowIndex) => {
-        positions.set(concept.ref, {
-          x: 20 + columnIndex * 230,
-          y: 20 + rowIndex * 92
-        });
+    groupConcepts.sort(compareConcepts).forEach((concept, rowIndex) => {
+      positions.set(concept.ref, {
+        x: 20 + columnIndex * 230,
+        y: 20 + rowIndex * 92
       });
+    });
   });
   return positions;
+}
+
+function mapDimensions(positions: Map<string, { x: number; y: number }>): {
+  width: number;
+  height: number;
+} {
+  let width = 320;
+  let height = 360;
+  for (const position of positions.values()) {
+    width = Math.max(width, position.x + 220);
+    height = Math.max(height, position.y + 100);
+  }
+  return { width, height };
 }
 
 function uniqueSorted(values: string[]): string[] {

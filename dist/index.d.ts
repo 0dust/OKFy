@@ -176,6 +176,7 @@ declare class BundleSearch {
         tags?: string[];
         limit?: number;
     }): SearchResult[];
+    private resultsForHits;
     getConcept(idOrPath: string): Concept | undefined;
 }
 

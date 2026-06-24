@@ -138,6 +138,35 @@ describe("search", () => {
       "reference/api"
     ]);
   });
+
+  it("keeps useful recall for natural agent phrase queries", async () => {
+    const [okfyDocs, stripeDocs] = await Promise.all([
+      BundleSearch.fromBundle(path.resolve("examples/bundles/okfy-docs")),
+      BundleSearch.fromBundle(path.resolve("examples/bundles/stripe-checkout-small"))
+    ]);
+
+    expect(okfyDocs.search("MCP setup", { limit: 5 }).map((item) => item.id)).toContain(
+      "guides/serve-over-mcp"
+    );
+    expect(okfyDocs.search("mcp setup", { limit: 5 }).map((item) => item.id)).toContain(
+      "guides/serve-over-mcp"
+    );
+    expect(okfyDocs.search("stdio config", { limit: 5 }).map((item) => item.id)).toContain(
+      "guides/serve-over-mcp"
+    );
+    expect(okfyDocs.search("import workflow", { limit: 5 }).map((item) => item.id)).toContain(
+      "guides/import-local-markdown"
+    );
+    expect(
+      stripeDocs
+        .search("required server parameters", { type: "API Reference", limit: 5 })
+        .map((item) => item.id)
+    ).toContain("sessions");
+    expect(stripeDocs.search("how do I configure stdio for MCP", { limit: 5 })).toEqual([]);
+    expect(stripeDocs.search("chckout", { limit: 5 }).map((item) => item.id)).toContain(
+      "quickstart"
+    );
+  });
 });
 
 describe("MCP server", () => {
