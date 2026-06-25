@@ -161,6 +161,48 @@ describe("source manifest and state storage", () => {
     expect(stateJson.endsWith("\n")).toBe(true);
   });
 
+  it("rejects malformed state.json instead of trusting unchecked JSON", async () => {
+    const okfyHome = await tempHome();
+    const sourceDir = path.join(okfyHome, "sources", "stripe");
+
+    await writeSourceManifest(manifest(), { okfyHome });
+    await fs.writeFile(
+      path.join(sourceDir, "state.json"),
+      JSON.stringify({ ...state(), status: "ready" }),
+      "utf8"
+    );
+
+    await expect(readRefreshState("stripe", { okfyHome })).rejects.toThrow(
+      /Invalid refresh state.*status/i
+    );
+
+    const sources = await listSources({ okfyHome });
+    expect(sources).toHaveLength(1);
+    expect(sources[0]).toMatchObject({
+      name: "stripe",
+      state: undefined,
+      loadError: {
+        message: expect.stringMatching(/Invalid refresh state.*status/i)
+      }
+    });
+  });
+
+  it("rejects malformed state bundle summaries", async () => {
+    const okfyHome = await tempHome();
+    const sourceDir = path.join(okfyHome, "sources", "stripe");
+
+    await writeSourceManifest(manifest(), { okfyHome });
+    await fs.writeFile(
+      path.join(sourceDir, "state.json"),
+      JSON.stringify({ ...state(), bundle: { conceptCount: 25, warningCount: 0, valid: true } }),
+      "utf8"
+    );
+
+    await expect(readRefreshState("stripe", { okfyHome })).rejects.toThrow(
+      /Invalid refresh state.*bundle\.contentHash/i
+    );
+  });
+
   it("lists registered sources sorted by source name", async () => {
     const okfyHome = await tempHome();
 

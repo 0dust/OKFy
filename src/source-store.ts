@@ -207,7 +207,7 @@ export async function readRefreshState(
   options: SourceStoreOptions = {}
 ): Promise<RefreshState> {
   const sourceDir = resolveSourceDir(name, options);
-  return readJson<RefreshState>(path.join(sourceDir, "state.json"));
+  return validateRefreshState(await readJson<unknown>(path.join(sourceDir, "state.json")), name);
 }
 
 export async function listSources(options: SourceStoreOptions = {}): Promise<SourceRecord[]> {
@@ -405,6 +405,59 @@ function validateSourceManifest(value: unknown, expectedName: string): SourceMan
   };
 }
 
+function validateRefreshState(value: unknown, sourceName: string): RefreshState {
+  if (!isPlainObject(value))
+    throw new Error(`Invalid refresh state for "${sourceName}": expected object.`);
+  if (value.schemaVersion !== 1) {
+    throw new Error(`Invalid refresh state for "${sourceName}": schemaVersion must be 1.`);
+  }
+  const status = stateString(value, "status", sourceName);
+  if (!["missing", "fresh", "stale", "refreshing", "failed"].includes(status)) {
+    throw new Error(`Invalid refresh state for "${sourceName}": status is invalid.`);
+  }
+  return {
+    schemaVersion: 1,
+    status: status as RefreshStatus,
+    lastCheckedAt: stateNullableString(value, "lastCheckedAt", sourceName),
+    lastRefreshStartedAt: stateNullableString(value, "lastRefreshStartedAt", sourceName),
+    lastRefreshCompletedAt: stateNullableString(value, "lastRefreshCompletedAt", sourceName),
+    lastSuccessfulRefreshAt: stateNullableString(value, "lastSuccessfulRefreshAt", sourceName),
+    nextRefreshAllowedAt: stateNullableString(value, "nextRefreshAllowedAt", sourceName),
+    refreshInProgress: stateBoolean(value, "refreshInProgress", sourceName),
+    lastError: validateRefreshError(value.lastError, sourceName),
+    bundle: validateRefreshBundle(value.bundle, sourceName)
+  };
+}
+
+function validateRefreshError(value: unknown, sourceName: string): RefreshErrorState | null {
+  if (value === null) return null;
+  if (!isPlainObject(value))
+    throw new Error(`Invalid refresh state for "${sourceName}": lastError must be object or null.`);
+  const details: RefreshErrorState = {
+    ...value,
+    message: stateString(value, "message", sourceName, "lastError")
+  };
+  for (const key of ["code", "sourceName", "seedUrl", "occurredAt"]) {
+    const found = value[key];
+    if (found !== undefined && typeof found !== "string") {
+      throw invalidStateField(sourceName, key, "string", "lastError");
+    }
+  }
+  return details;
+}
+
+function validateRefreshBundle(value: unknown, sourceName: string): RefreshState["bundle"] {
+  if (value === null) return null;
+  if (!isPlainObject(value))
+    throw new Error(`Invalid refresh state for "${sourceName}": bundle must be object or null.`);
+  return {
+    conceptCount: stateNumber(value, "conceptCount", sourceName, "bundle"),
+    warningCount: stateNumber(value, "warningCount", sourceName, "bundle"),
+    valid: stateBoolean(value, "valid", sourceName, "bundle"),
+    contentHash: stateString(value, "contentHash", sourceName, "bundle")
+  };
+}
+
 function requiredObject(
   value: Record<string, unknown>,
   key: string,
@@ -474,6 +527,67 @@ function invalidManifestField(
 ): Error {
   return new Error(
     `Invalid source manifest for "${sourceName}": ${prefix ? `${prefix}.` : ""}${key} must be ${expected}.`
+  );
+}
+
+function stateString(
+  value: Record<string, unknown>,
+  key: string,
+  sourceName: string,
+  prefix?: string
+): string {
+  const found = value[key];
+  if (typeof found !== "string" || found.trim() === "") {
+    throw invalidStateField(sourceName, key, "non-empty string", prefix);
+  }
+  return found;
+}
+
+function stateNullableString(
+  value: Record<string, unknown>,
+  key: string,
+  sourceName: string
+): string | null {
+  const found = value[key];
+  if (found === null) return null;
+  if (typeof found !== "string" || found.trim() === "") {
+    throw invalidStateField(sourceName, key, "string or null");
+  }
+  return found;
+}
+
+function stateNumber(
+  value: Record<string, unknown>,
+  key: string,
+  sourceName: string,
+  prefix?: string
+): number {
+  const found = value[key];
+  if (typeof found !== "number" || !Number.isFinite(found)) {
+    throw invalidStateField(sourceName, key, "number", prefix);
+  }
+  return found;
+}
+
+function stateBoolean(
+  value: Record<string, unknown>,
+  key: string,
+  sourceName: string,
+  prefix?: string
+): boolean {
+  const found = value[key];
+  if (typeof found !== "boolean") throw invalidStateField(sourceName, key, "boolean", prefix);
+  return found;
+}
+
+function invalidStateField(
+  sourceName: string,
+  key: string,
+  expected: string,
+  prefix?: string
+): Error {
+  return new Error(
+    `Invalid refresh state for "${sourceName}": ${prefix ? `${prefix}.` : ""}${key} must be ${expected}.`
   );
 }
 

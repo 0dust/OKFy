@@ -457,12 +457,12 @@ Troubleshooting:
 ## Available okfy MCP Tools
 
 ```text
-search_concepts(query, type?, tags?, limit?)
-read_concept(id, max_chars?)
-get_neighbors(id, depth?)
-list_types()
-list_tags()
-bundle_summary()
+search_concepts(query, source?, type?, tags?, limit?)
+read_concept(id, source?, max_chars?)
+get_neighbors(id, source?, depth?)
+list_types(source?)
+list_tags(source?)
+bundle_summary(source?)
 ```
 
 Recommended answering pattern:

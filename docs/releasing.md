@@ -27,3 +27,9 @@ Run the `Release` workflow manually with `dry_run=true`. It builds, tests, and p
 ## Manual Publish
 
 Manual publish is available only through the `Release` workflow with `dry_run=false`. Prefer the normal release-please path.
+
+## Publish Helper
+
+The workflow and local `pnpm publish:npm` script both call `scripts/publish-npm-readme.mjs`. That helper rebuilds, tests, typechecks, temporarily swaps in the npm README, and restores the GitHub README on exit.
+
+Use the script for local package-shape checks or emergency maintainer publishing only. The supported release path remains Release Please plus the `Release` workflow.

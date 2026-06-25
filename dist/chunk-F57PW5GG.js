@@ -1390,16 +1390,773 @@ async function inspectBundle(bundleDir) {
   };
 }
 
-// src/inspector.ts
+// src/source-store.ts
+import fs7 from "fs/promises";
+import os2 from "os";
 import path10 from "path";
+var SOURCE_NAME_PATTERN = /^[a-z0-9._-]+$/;
+var MANIFEST_KEYS = [
+  "schemaVersion",
+  "okfyVersion",
+  "name",
+  "kind",
+  "createdAt",
+  "updatedAt",
+  "source",
+  "crawl",
+  "refresh",
+  "bundle"
+];
+var CRAWL_KEYS = [
+  "maxPages",
+  "maxDepth",
+  "include",
+  "exclude",
+  "sameOrigin",
+  "respectRobots",
+  "concurrency",
+  "allowPrivateNetwork"
+];
+var REFRESH_KEYS = ["mode", "maxAgeSeconds", "minIntervalSeconds"];
+var STATE_KEYS = [
+  "schemaVersion",
+  "status",
+  "lastCheckedAt",
+  "lastRefreshStartedAt",
+  "lastRefreshCompletedAt",
+  "lastSuccessfulRefreshAt",
+  "nextRefreshAllowedAt",
+  "refreshInProgress",
+  "lastError",
+  "bundle"
+];
+var STATE_BUNDLE_KEYS = ["conceptCount", "warningCount", "valid", "contentHash"];
+function resolveOkfyHome(options = {}) {
+  const configured = options.okfyHome ?? options.env?.OKFY_HOME ?? process.env.OKFY_HOME;
+  if (configured && configured.trim() !== "") return path10.resolve(configured);
+  return path10.join(os2.homedir(), ".okfy");
+}
+function validateSourceName(name) {
+  if (!name || name === "." || name === ".." || !SOURCE_NAME_PATTERN.test(name)) {
+    throw new Error(
+      `Invalid source name "${name}". Use lowercase letters, numbers, dash, underscore, or dot without path separators.`
+    );
+  }
+  return name;
+}
+function resolveSourceDir(name, options = {}) {
+  const safeName = validateSourceName(name);
+  const sourcesRoot = resolveSourcesRoot(options);
+  const sourceDir = path10.resolve(sourcesRoot, safeName);
+  if (!isInsideOrEqual(sourcesRoot, sourceDir)) {
+    throw new Error(`Invalid source name "${name}". Source directory escapes OKFY_HOME.`);
+  }
+  return sourceDir;
+}
+function resolveBundleDir(manifest, options = {}) {
+  const sourceDir = resolveSourceDir(manifest.name, options);
+  const bundleDir = manifest.bundle.dir;
+  if (!bundleDir || bundleDir.trim() === "") {
+    throw new Error(`Invalid bundle directory for source "${manifest.name}".`);
+  }
+  if (path10.isAbsolute(bundleDir)) return path10.normalize(bundleDir);
+  const resolved = path10.resolve(sourceDir, bundleDir);
+  if (resolved === sourceDir || !isInsideOrEqual(sourceDir, resolved)) {
+    throw new Error(
+      `Invalid bundle directory for source "${manifest.name}". Relative bundle paths must stay inside the source directory.`
+    );
+  }
+  return resolved;
+}
+async function writeSourceManifest(manifest, options = {}) {
+  const sourceDir = resolveSourceDir(manifest.name, options);
+  await writeStableJson(path10.join(sourceDir, "source.json"), manifest);
+}
+async function readSourceManifest(name, options = {}) {
+  const sourceDir = resolveSourceDir(name, options);
+  const manifest = validateSourceManifest(
+    await readJson(path10.join(sourceDir, "source.json")),
+    name
+  );
+  if (manifest.name !== name) {
+    throw new Error(`Source manifest name mismatch: expected "${name}", found "${manifest.name}".`);
+  }
+  return manifest;
+}
+async function writeRefreshState(name, state, options = {}) {
+  const sourceDir = resolveSourceDir(name, options);
+  await writeStableJson(path10.join(sourceDir, "state.json"), state);
+}
+async function readRefreshState(name, options = {}) {
+  const sourceDir = resolveSourceDir(name, options);
+  return validateRefreshState(await readJson(path10.join(sourceDir, "state.json")), name);
+}
+async function listSources(options = {}) {
+  const sourcesRoot = resolveSourcesRoot(options);
+  let entries;
+  try {
+    entries = await fs7.readdir(sourcesRoot, { withFileTypes: true });
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return [];
+    throw error;
+  }
+  const records = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    let manifest;
+    try {
+      manifest = await readSourceManifest(entry.name, options);
+    } catch (error) {
+      records.push(invalidSourceRecord(sourcesRoot, entry.name, error));
+      continue;
+    }
+    const dir = resolveSourceDir(manifest.name, options);
+    let state;
+    let loadError;
+    try {
+      state = await readRefreshStateIfExists(entry.name, options);
+    } catch (error) {
+      loadError = errorDetails(error);
+    }
+    let bundleDir;
+    try {
+      bundleDir = resolveBundleDir(manifest, options);
+    } catch (error) {
+      bundleDir = path10.join(dir, "bundle");
+      loadError ??= errorDetails(error);
+    }
+    records.push({
+      name: manifest.name,
+      dir,
+      manifest,
+      state,
+      bundleDir,
+      loadError
+    });
+  }
+  return records.sort((first, second) => first.name.localeCompare(second.name));
+}
+async function removeSource(name, options = {}) {
+  const sourceDir = resolveSourceDir(name, options);
+  await fs7.rm(sourceDir, { recursive: true, force: true });
+}
+function resolveSourcesRoot(options) {
+  return path10.join(resolveOkfyHome(options), "sources");
+}
+function invalidSourceRecord(sourcesRoot, name, error) {
+  const dir = path10.join(sourcesRoot, name);
+  const sourceName = fallbackSourceName(name);
+  return {
+    name: sourceName,
+    dir,
+    manifest: fallbackSourceManifest(sourceName),
+    bundleDir: path10.join(dir, "bundle"),
+    loadError: errorDetails(error, name)
+  };
+}
+function fallbackSourceManifest(name) {
+  const timestamp = "1970-01-01T00:00:00.000Z";
+  return {
+    schemaVersion: 1,
+    okfyVersion: "unknown",
+    name,
+    kind: "website",
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    source: {
+      seedUrl: ""
+    },
+    crawl: {
+      maxPages: 0,
+      maxDepth: 0,
+      include: [],
+      exclude: [],
+      sameOrigin: true,
+      respectRobots: true,
+      concurrency: 1,
+      allowPrivateNetwork: false
+    },
+    refresh: {
+      mode: "off",
+      maxAgeSeconds: 0,
+      minIntervalSeconds: 0
+    },
+    bundle: {
+      dir: "bundle"
+    }
+  };
+}
+function fallbackSourceName(name) {
+  try {
+    return validateSourceName(name);
+  } catch {
+    const slug = name.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
+    return `invalid-${shortHash(name)}${slug ? `-${slug}` : ""}`;
+  }
+}
+function shortHash(value) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+function errorDetails(error, sourceDirName) {
+  const withSourceDir = (details) => ({
+    ...details,
+    ...sourceDirName && sourceDirName !== fallbackSourceName(sourceDirName) ? { sourceDirName } : {}
+  });
+  if (error instanceof Error) {
+    const details = { message: error.message };
+    if (isNodeError(error) && error.code) details.code = error.code;
+    return withSourceDir(details);
+  }
+  return withSourceDir({ message: String(error) });
+}
+function validateSourceManifest(value, expectedName) {
+  if (!isPlainObject(value))
+    throw new Error(`Invalid source manifest for "${expectedName}": expected object.`);
+  const name = requiredString(value, "name", expectedName);
+  validateSourceName(name);
+  if (value.schemaVersion !== 1) {
+    throw new Error(`Invalid source manifest for "${expectedName}": schemaVersion must be 1.`);
+  }
+  if (value.kind !== "website") {
+    throw new Error(`Invalid source manifest for "${expectedName}": kind must be "website".`);
+  }
+  const source = requiredObject(value, "source", expectedName);
+  const crawl = requiredObject(value, "crawl", expectedName);
+  const refresh = requiredObject(value, "refresh", expectedName);
+  const bundle = requiredObject(value, "bundle", expectedName);
+  const mode = requiredString(refresh, "mode", expectedName, "refresh");
+  if (!["off", "stale-while-refresh", "blocking"].includes(mode)) {
+    throw new Error(`Invalid source manifest for "${expectedName}": refresh.mode is invalid.`);
+  }
+  return {
+    schemaVersion: 1,
+    okfyVersion: requiredString(value, "okfyVersion", expectedName),
+    name,
+    kind: "website",
+    createdAt: requiredString(value, "createdAt", expectedName),
+    updatedAt: requiredString(value, "updatedAt", expectedName),
+    source: {
+      seedUrl: requiredString(source, "seedUrl", expectedName, "source")
+    },
+    crawl: {
+      maxPages: requiredNumber(crawl, "maxPages", expectedName, "crawl"),
+      maxDepth: requiredNumber(crawl, "maxDepth", expectedName, "crawl"),
+      include: requiredStringArray(crawl, "include", expectedName, "crawl"),
+      exclude: requiredStringArray(crawl, "exclude", expectedName, "crawl"),
+      sameOrigin: requiredBoolean(crawl, "sameOrigin", expectedName, "crawl"),
+      respectRobots: requiredBoolean(crawl, "respectRobots", expectedName, "crawl"),
+      concurrency: requiredNumber(crawl, "concurrency", expectedName, "crawl"),
+      allowPrivateNetwork: requiredBoolean(crawl, "allowPrivateNetwork", expectedName, "crawl")
+    },
+    refresh: {
+      mode,
+      maxAgeSeconds: requiredNumber(refresh, "maxAgeSeconds", expectedName, "refresh"),
+      minIntervalSeconds: requiredNumber(refresh, "minIntervalSeconds", expectedName, "refresh")
+    },
+    bundle: {
+      dir: requiredString(bundle, "dir", expectedName, "bundle")
+    }
+  };
+}
+function validateRefreshState(value, sourceName) {
+  if (!isPlainObject(value))
+    throw new Error(`Invalid refresh state for "${sourceName}": expected object.`);
+  if (value.schemaVersion !== 1) {
+    throw new Error(`Invalid refresh state for "${sourceName}": schemaVersion must be 1.`);
+  }
+  const status = stateString(value, "status", sourceName);
+  if (!["missing", "fresh", "stale", "refreshing", "failed"].includes(status)) {
+    throw new Error(`Invalid refresh state for "${sourceName}": status is invalid.`);
+  }
+  return {
+    schemaVersion: 1,
+    status,
+    lastCheckedAt: stateNullableString(value, "lastCheckedAt", sourceName),
+    lastRefreshStartedAt: stateNullableString(value, "lastRefreshStartedAt", sourceName),
+    lastRefreshCompletedAt: stateNullableString(value, "lastRefreshCompletedAt", sourceName),
+    lastSuccessfulRefreshAt: stateNullableString(value, "lastSuccessfulRefreshAt", sourceName),
+    nextRefreshAllowedAt: stateNullableString(value, "nextRefreshAllowedAt", sourceName),
+    refreshInProgress: stateBoolean(value, "refreshInProgress", sourceName),
+    lastError: validateRefreshError(value.lastError, sourceName),
+    bundle: validateRefreshBundle(value.bundle, sourceName)
+  };
+}
+function validateRefreshError(value, sourceName) {
+  if (value === null) return null;
+  if (!isPlainObject(value))
+    throw new Error(`Invalid refresh state for "${sourceName}": lastError must be object or null.`);
+  const details = {
+    ...value,
+    message: stateString(value, "message", sourceName, "lastError")
+  };
+  for (const key of ["code", "sourceName", "seedUrl", "occurredAt"]) {
+    const found = value[key];
+    if (found !== void 0 && typeof found !== "string") {
+      throw invalidStateField(sourceName, key, "string", "lastError");
+    }
+  }
+  return details;
+}
+function validateRefreshBundle(value, sourceName) {
+  if (value === null) return null;
+  if (!isPlainObject(value))
+    throw new Error(`Invalid refresh state for "${sourceName}": bundle must be object or null.`);
+  return {
+    conceptCount: stateNumber(value, "conceptCount", sourceName, "bundle"),
+    warningCount: stateNumber(value, "warningCount", sourceName, "bundle"),
+    valid: stateBoolean(value, "valid", sourceName, "bundle"),
+    contentHash: stateString(value, "contentHash", sourceName, "bundle")
+  };
+}
+function requiredObject(value, key, sourceName, prefix) {
+  const found = value[key];
+  if (!isPlainObject(found)) throw invalidManifestField(sourceName, key, "object", prefix);
+  return found;
+}
+function requiredString(value, key, sourceName, prefix) {
+  const found = value[key];
+  if (typeof found !== "string" || found.trim() === "") {
+    throw invalidManifestField(sourceName, key, "non-empty string", prefix);
+  }
+  return found;
+}
+function requiredNumber(value, key, sourceName, prefix) {
+  const found = value[key];
+  if (typeof found !== "number" || !Number.isFinite(found)) {
+    throw invalidManifestField(sourceName, key, "number", prefix);
+  }
+  return found;
+}
+function requiredBoolean(value, key, sourceName, prefix) {
+  const found = value[key];
+  if (typeof found !== "boolean") throw invalidManifestField(sourceName, key, "boolean", prefix);
+  return found;
+}
+function requiredStringArray(value, key, sourceName, prefix) {
+  const found = value[key];
+  if (!Array.isArray(found) || !found.every((item) => typeof item === "string")) {
+    throw invalidManifestField(sourceName, key, "string array", prefix);
+  }
+  return found;
+}
+function invalidManifestField(sourceName, key, expected, prefix) {
+  return new Error(
+    `Invalid source manifest for "${sourceName}": ${prefix ? `${prefix}.` : ""}${key} must be ${expected}.`
+  );
+}
+function stateString(value, key, sourceName, prefix) {
+  const found = value[key];
+  if (typeof found !== "string" || found.trim() === "") {
+    throw invalidStateField(sourceName, key, "non-empty string", prefix);
+  }
+  return found;
+}
+function stateNullableString(value, key, sourceName) {
+  const found = value[key];
+  if (found === null) return null;
+  if (typeof found !== "string" || found.trim() === "") {
+    throw invalidStateField(sourceName, key, "string or null");
+  }
+  return found;
+}
+function stateNumber(value, key, sourceName, prefix) {
+  const found = value[key];
+  if (typeof found !== "number" || !Number.isFinite(found)) {
+    throw invalidStateField(sourceName, key, "number", prefix);
+  }
+  return found;
+}
+function stateBoolean(value, key, sourceName, prefix) {
+  const found = value[key];
+  if (typeof found !== "boolean") throw invalidStateField(sourceName, key, "boolean", prefix);
+  return found;
+}
+function invalidStateField(sourceName, key, expected, prefix) {
+  return new Error(
+    `Invalid refresh state for "${sourceName}": ${prefix ? `${prefix}.` : ""}${key} must be ${expected}.`
+  );
+}
+async function readRefreshStateIfExists(name, options) {
+  try {
+    return await readRefreshState(name, options);
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return void 0;
+    throw error;
+  }
+}
+async function readJson(filePath) {
+  return JSON.parse(await fs7.readFile(filePath, "utf8"));
+}
+async function writeStableJson(filePath, value) {
+  await fs7.mkdir(path10.dirname(filePath), { recursive: true });
+  await fs7.writeFile(filePath, `${JSON.stringify(orderJson(value), null, 2)}
+`, "utf8");
+}
+function orderJson(value) {
+  if (Array.isArray(value)) return value.map(orderJson);
+  if (!isPlainObject(value)) return value;
+  const ordered = {};
+  for (const key of orderKeys(value)) {
+    ordered[key] = orderJson(value[key]);
+  }
+  return ordered;
+}
+function orderKeys(value) {
+  if ("status" in value) return sortByPreferredOrder(Object.keys(value), STATE_KEYS);
+  if ("okfyVersion" in value) return sortByPreferredOrder(Object.keys(value), MANIFEST_KEYS);
+  if (hasKeys(value, CRAWL_KEYS)) return sortByPreferredOrder(Object.keys(value), CRAWL_KEYS);
+  if (hasKeys(value, REFRESH_KEYS)) return sortByPreferredOrder(Object.keys(value), REFRESH_KEYS);
+  if (hasKeys(value, STATE_BUNDLE_KEYS))
+    return sortByPreferredOrder(Object.keys(value), STATE_BUNDLE_KEYS);
+  if ("seedUrl" in value) return sortByPreferredOrder(Object.keys(value), ["seedUrl"]);
+  if ("dir" in value) return sortByPreferredOrder(Object.keys(value), ["dir"]);
+  return Object.keys(value).sort((first, second) => first.localeCompare(second));
+}
+function hasKeys(value, keys) {
+  return keys.some((key) => key in value);
+}
+function sortByPreferredOrder(keys, preferredOrder) {
+  return keys.sort((first, second) => {
+    const firstIndex = preferredOrder.indexOf(first);
+    const secondIndex = preferredOrder.indexOf(second);
+    if (firstIndex === -1 && secondIndex === -1) return first.localeCompare(second);
+    if (firstIndex === -1) return 1;
+    if (secondIndex === -1) return -1;
+    return firstIndex - secondIndex;
+  });
+}
+function isPlainObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isInsideOrEqual(parent, child) {
+  const relative = path10.relative(parent, child);
+  return relative === "" || !relative.startsWith("..") && !path10.isAbsolute(relative);
+}
+function isNodeError(error) {
+  return error instanceof Error && "code" in error;
+}
+
+// src/workspace.ts
+import fs8 from "fs/promises";
+import path11 from "path";
 import { pathToFileURL } from "url";
+function bundleSourceName(bundleDir) {
+  const baseName = path11.basename(path11.resolve(bundleDir));
+  const candidate = baseName.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[._-]+|[._-]+$/g, "");
+  return validateSourceName(candidate || "bundle");
+}
+function localBundleRecord(bundleDir) {
+  const resolved = path11.resolve(bundleDir);
+  const name = bundleSourceName(resolved);
+  const timestamp = "1970-01-01T00:00:00.000Z";
+  return {
+    name,
+    dir: resolved,
+    bundleDir: resolved,
+    manifest: {
+      schemaVersion: 1,
+      okfyVersion: packageVersion(),
+      name,
+      kind: "local",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      source: {
+        seedUrl: pathToFileURL(resolved).href
+      },
+      crawl: {
+        maxPages: 0,
+        maxDepth: 0,
+        include: [],
+        exclude: [],
+        sameOrigin: true,
+        respectRobots: true,
+        concurrency: 1,
+        allowPrivateNetwork: false
+      },
+      refresh: {
+        mode: "off",
+        maxAgeSeconds: 0,
+        minIntervalSeconds: 0
+      },
+      bundle: {
+        dir: resolved
+      }
+    }
+  };
+}
+function assertUniqueWorkspaceRecordNames(records) {
+  const seen = /* @__PURE__ */ new Set();
+  for (const record of records) {
+    if (seen.has(record.name))
+      throw new Error(
+        `Duplicate workspace source "${record.name}". Rename one bundle directory or source.`
+      );
+    seen.add(record.name);
+  }
+}
+function isRegisteredWorkspaceRecord(record) {
+  return record.manifest.kind === "website";
+}
+var WorkspaceError = class extends Error {
+  constructor(code, message, details = {}) {
+    super(message);
+    this.code = code;
+    this.details = details;
+  }
+  code;
+  details;
+  toJSON() {
+    return {
+      code: this.code,
+      message: this.message,
+      ...this.details
+    };
+  }
+};
+function workspaceProfilePath(name, options = {}) {
+  return path11.join(resolveOkfyHome(options), "workspaces", `${validateSourceName(name)}.json`);
+}
+async function readWorkspaceProfile(name, options = {}) {
+  const profile = JSON.parse(
+    await fs8.readFile(workspaceProfilePath(name, options), "utf8")
+  );
+  validateWorkspaceProfile(profile, name);
+  return profile;
+}
+async function writeWorkspaceProfile(profile, options = {}) {
+  validateWorkspaceProfile(profile);
+  const filePath = workspaceProfilePath(profile.name, options);
+  await fs8.mkdir(path11.dirname(filePath), { recursive: true });
+  await fs8.writeFile(filePath, `${JSON.stringify(profile, null, 2)}
+`, "utf8");
+}
+async function resolveWorkspaceSources(selection, options = {}) {
+  const hasNames = Boolean(selection.names?.length);
+  const modeCount = Number(hasNames) + Number(Boolean(selection.all)) + Number(Boolean(selection.profile)) + Number(Boolean(selection.profileName));
+  if (modeCount > 1) {
+    throw new Error(
+      "Choose one workspace source selection: explicit source names, --all, or one workspace profile."
+    );
+  }
+  let names = selection.names ?? [];
+  let workspaceName;
+  if (selection.profileName) {
+    const profile = await readWorkspaceProfile(selection.profileName, options);
+    names = profile.sources;
+    workspaceName = profile.name;
+  } else if (selection.profile) {
+    validateWorkspaceProfile(selection.profile);
+    names = selection.profile.sources;
+    workspaceName = selection.profile.name;
+  }
+  if (selection.all) {
+    const records2 = await listSources(options);
+    if (!records2.length)
+      throw new WorkspaceError("no_sources", "No registered sources found for --all.");
+    return { records: records2, sourceNames: records2.map((record) => record.name) };
+  }
+  if (!names.length)
+    throw new WorkspaceError("no_sources", "Select at least one registered source.");
+  assertUniqueSourceNames(names);
+  const records = await Promise.all(names.map((name) => readSourceRecord(name, options)));
+  return { records, sourceNames: records.map((record) => record.name), workspaceName };
+}
+var WorkspaceSearch = class _WorkspaceSearch {
+  sources;
+  selectedNames;
+  availableNames;
+  constructor(sources, options = {}) {
+    if (!sources.length) throw new WorkspaceError("no_sources", "Workspace contains no sources.");
+    assertUniqueSourceNames(sources.map((source) => source.record.name));
+    this.sources = [...sources];
+    this.selectedNames = new Set(sources.map((source) => source.record.name));
+    this.availableNames = /* @__PURE__ */ new Set([...options.availableSourceNames ?? [], ...this.selectedNames]);
+  }
+  static async fromSourceRecords(records, options = {}) {
+    const sources = await Promise.all(
+      records.map(async (record) => ({
+        record,
+        bundleDir: record.bundleDir,
+        search: await BundleSearch.fromBundle(record.bundleDir)
+      }))
+    );
+    return new _WorkspaceSearch(sources, options);
+  }
+  search(query, options = {}) {
+    const limit = options.limit ?? 10;
+    const sources = this.usableSources(options.source);
+    return sources.flatMap(
+      (source) => source.search.search(query, { type: options.type, tags: options.tags, limit: Math.max(limit, 50) }).map((result) => this.withSourceResult(source, result))
+    ).sort(
+      (first, second) => second.score - first.score || first.sourceName.localeCompare(second.sourceName) || first.id.localeCompare(second.id)
+    ).slice(0, limit);
+  }
+  getConcept(input) {
+    const sources = input.source ? this.usableSources(input.source) : this.sourcesWithSearch();
+    const matches = sources.map((source) => ({ source, concept: source.search.getConcept(input.id) })).filter(
+      (row) => Boolean(row.concept)
+    );
+    if (matches.length === 0) {
+      throw new WorkspaceError("unknown_concept", `No concept found for ${input.id}`, {
+        id: input.id,
+        source: input.source
+      });
+    }
+    if (!input.source && matches.length > 1) {
+      throw new WorkspaceError(
+        "ambiguous_concept",
+        `Concept id "${input.id}" exists in multiple workspace sources.`,
+        {
+          id: input.id,
+          candidates: matches.map(({ source, concept }) => this.conceptCandidate(source, concept))
+        }
+      );
+    }
+    return matches[0];
+  }
+  listTypes(source) {
+    return this.distribution(source, (concept) => [concept.type]);
+  }
+  listTags(source) {
+    return this.distribution(source, (concept) => concept.tags);
+  }
+  sourceNames() {
+    return this.sources.map((source) => source.record.name);
+  }
+  usableSourceNames() {
+    return this.sourcesWithSearch().map((source) => source.record.name);
+  }
+  distribution(sourceName, values) {
+    const distribution = {};
+    for (const source of this.usableSources(sourceName)) {
+      for (const concept of source.search.graph.concepts.values()) {
+        for (const value of values(concept)) distribution[value] = (distribution[value] ?? 0) + 1;
+      }
+    }
+    return Object.fromEntries(
+      Object.entries(distribution).sort(([first], [second]) => first.localeCompare(second))
+    );
+  }
+  usableSources(sourceName) {
+    const sources = sourceName ? [this.sourceByName(sourceName)] : this.sources;
+    const usable = sources.filter(
+      (source) => Boolean(source.search)
+    );
+    if (!usable.length) {
+      throw new WorkspaceError(
+        "no_usable_sources",
+        "No usable OKF bundle is available in this workspace.",
+        {
+          source: sourceName,
+          sources: sources.map((source) => source.record.name)
+        }
+      );
+    }
+    return usable;
+  }
+  sourcesWithSearch() {
+    return this.sources.filter((source) => Boolean(source.search));
+  }
+  sourceByName(sourceName) {
+    if (this.selectedNames.has(sourceName)) {
+      return this.sources.find((source) => source.record.name === sourceName);
+    }
+    if (this.availableNames.has(sourceName)) {
+      throw new WorkspaceError(
+        "source_not_in_workspace",
+        `Source "${sourceName}" is not selected in this workspace.`,
+        {
+          source: sourceName,
+          workspaceSources: [...this.selectedNames]
+        }
+      );
+    }
+    throw new WorkspaceError("unknown_source", `Unknown source "${sourceName}".`, {
+      source: sourceName
+    });
+  }
+  withSourceResult(source, result) {
+    return {
+      ...result,
+      sourceName: source.record.name,
+      sourceKind: source.record.manifest.kind,
+      seedUrl: source.record.manifest.source.seedUrl,
+      ref: `${source.record.name}:${result.id}`
+    };
+  }
+  conceptCandidate(source, concept) {
+    return {
+      sourceName: source.record.name,
+      sourceKind: source.record.manifest.kind,
+      seedUrl: source.record.manifest.source.seedUrl,
+      id: concept.id,
+      ref: `${source.record.name}:${concept.id}`,
+      title: concept.title,
+      type: concept.type,
+      resource: concept.resource
+    };
+  }
+};
+function validateWorkspaceProfile(profile, expectedName) {
+  if (profile.schemaVersion !== 1) throw new Error("Workspace profile schemaVersion must be 1.");
+  validateSourceName(profile.name);
+  if (expectedName && profile.name !== expectedName) {
+    throw new Error(
+      `Workspace profile name mismatch: expected "${expectedName}", found "${profile.name}".`
+    );
+  }
+  if (!Array.isArray(profile.sources) || profile.sources.length === 0) {
+    throw new Error(`Workspace profile "${profile.name}" must list at least one source.`);
+  }
+  for (const source of profile.sources) validateSourceName(source);
+  assertUniqueSourceNames(profile.sources);
+}
+function assertUniqueSourceNames(names) {
+  const seen = /* @__PURE__ */ new Set();
+  for (const name of names) {
+    validateSourceName(name);
+    if (seen.has(name))
+      throw new WorkspaceError("duplicate_source", `Duplicate workspace source "${name}".`, {
+        source: name
+      });
+    seen.add(name);
+  }
+}
+async function readSourceRecord(name, options) {
+  const manifest = await readSourceManifest(name, options);
+  return {
+    name: manifest.name,
+    dir: resolveSourceDir(manifest.name, options),
+    manifest,
+    state: await readRefreshStateIfExists2(manifest.name, options),
+    bundleDir: resolveBundleDir(manifest, options)
+  };
+}
+async function readRefreshStateIfExists2(name, options) {
+  try {
+    return await readRefreshState(name, options);
+  } catch (error) {
+    if (isNodeError2(error) && error.code === "ENOENT") return void 0;
+    throw error;
+  }
+}
+function isNodeError2(error) {
+  return error instanceof Error && "code" in error;
+}
+
+// src/inspector.ts
+import path12 from "path";
 async function buildBundleInspectorReport(bundleDir, options = {}) {
-  const resolved = path10.resolve(bundleDir);
-  const sourceName = bundleSourceName(resolved);
-  const record = localBundleRecord(resolved, sourceName);
+  const resolved = path12.resolve(bundleDir);
+  const record = localBundleRecord(resolved);
   return buildInspectorReport([record], {
     target: { kind: "bundle", bundleDir: resolved },
-    title: options.title ?? `${path10.basename(resolved)} OKFY Inspector`,
+    title: options.title ?? `${path12.basename(resolved)} OKFY Inspector`,
     prefixSingleSourceRefs: false
   });
 }
@@ -1657,46 +2414,6 @@ function suggestedQuestions(sources, concepts) {
   ];
   return [...new Set(questions)];
 }
-function localBundleRecord(bundleDir, sourceName) {
-  const timestamp = "1970-01-01T00:00:00.000Z";
-  return {
-    name: sourceName,
-    dir: bundleDir,
-    bundleDir,
-    manifest: {
-      schemaVersion: 1,
-      okfyVersion: "local",
-      name: sourceName,
-      kind: "local",
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      source: {
-        seedUrl: pathToFileURL(bundleDir).href
-      },
-      crawl: {
-        maxPages: 0,
-        maxDepth: 0,
-        include: [],
-        exclude: [],
-        sameOrigin: true,
-        respectRobots: true,
-        concurrency: 1,
-        allowPrivateNetwork: false
-      },
-      refresh: {
-        mode: "off",
-        maxAgeSeconds: 0,
-        minIntervalSeconds: 0
-      },
-      bundle: {
-        dir: bundleDir
-      }
-    }
-  };
-}
-function bundleSourceName(bundleDir) {
-  return path10.basename(bundleDir).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[._-]+|[._-]+$/g, "") || "bundle";
-}
 function brokenLinkCount(issues) {
   return issues.filter((issue2) => issue2.code === "broken_internal_link").length;
 }
@@ -1727,625 +2444,6 @@ function earliest(values) {
 }
 function isString(value) {
   return typeof value === "string" && value.length > 0;
-}
-
-// src/source-store.ts
-import fs7 from "fs/promises";
-import os2 from "os";
-import path11 from "path";
-var SOURCE_NAME_PATTERN = /^[a-z0-9._-]+$/;
-var MANIFEST_KEYS = [
-  "schemaVersion",
-  "okfyVersion",
-  "name",
-  "kind",
-  "createdAt",
-  "updatedAt",
-  "source",
-  "crawl",
-  "refresh",
-  "bundle"
-];
-var CRAWL_KEYS = [
-  "maxPages",
-  "maxDepth",
-  "include",
-  "exclude",
-  "sameOrigin",
-  "respectRobots",
-  "concurrency",
-  "allowPrivateNetwork"
-];
-var REFRESH_KEYS = ["mode", "maxAgeSeconds", "minIntervalSeconds"];
-var STATE_KEYS = [
-  "schemaVersion",
-  "status",
-  "lastCheckedAt",
-  "lastRefreshStartedAt",
-  "lastRefreshCompletedAt",
-  "lastSuccessfulRefreshAt",
-  "nextRefreshAllowedAt",
-  "refreshInProgress",
-  "lastError",
-  "bundle"
-];
-var STATE_BUNDLE_KEYS = ["conceptCount", "warningCount", "valid", "contentHash"];
-function resolveOkfyHome(options = {}) {
-  const configured = options.okfyHome ?? options.env?.OKFY_HOME ?? process.env.OKFY_HOME;
-  if (configured && configured.trim() !== "") return path11.resolve(configured);
-  return path11.join(os2.homedir(), ".okfy");
-}
-function validateSourceName(name) {
-  if (!name || name === "." || name === ".." || !SOURCE_NAME_PATTERN.test(name)) {
-    throw new Error(
-      `Invalid source name "${name}". Use lowercase letters, numbers, dash, underscore, or dot without path separators.`
-    );
-  }
-  return name;
-}
-function resolveSourceDir(name, options = {}) {
-  const safeName = validateSourceName(name);
-  const sourcesRoot = resolveSourcesRoot(options);
-  const sourceDir = path11.resolve(sourcesRoot, safeName);
-  if (!isInsideOrEqual(sourcesRoot, sourceDir)) {
-    throw new Error(`Invalid source name "${name}". Source directory escapes OKFY_HOME.`);
-  }
-  return sourceDir;
-}
-function resolveBundleDir(manifest, options = {}) {
-  const sourceDir = resolveSourceDir(manifest.name, options);
-  const bundleDir = manifest.bundle.dir;
-  if (!bundleDir || bundleDir.trim() === "") {
-    throw new Error(`Invalid bundle directory for source "${manifest.name}".`);
-  }
-  if (path11.isAbsolute(bundleDir)) return path11.normalize(bundleDir);
-  const resolved = path11.resolve(sourceDir, bundleDir);
-  if (resolved === sourceDir || !isInsideOrEqual(sourceDir, resolved)) {
-    throw new Error(
-      `Invalid bundle directory for source "${manifest.name}". Relative bundle paths must stay inside the source directory.`
-    );
-  }
-  return resolved;
-}
-async function writeSourceManifest(manifest, options = {}) {
-  const sourceDir = resolveSourceDir(manifest.name, options);
-  await writeStableJson(path11.join(sourceDir, "source.json"), manifest);
-}
-async function readSourceManifest(name, options = {}) {
-  const sourceDir = resolveSourceDir(name, options);
-  const manifest = validateSourceManifest(
-    await readJson(path11.join(sourceDir, "source.json")),
-    name
-  );
-  if (manifest.name !== name) {
-    throw new Error(`Source manifest name mismatch: expected "${name}", found "${manifest.name}".`);
-  }
-  return manifest;
-}
-async function writeRefreshState(name, state, options = {}) {
-  const sourceDir = resolveSourceDir(name, options);
-  await writeStableJson(path11.join(sourceDir, "state.json"), state);
-}
-async function readRefreshState(name, options = {}) {
-  const sourceDir = resolveSourceDir(name, options);
-  return readJson(path11.join(sourceDir, "state.json"));
-}
-async function listSources(options = {}) {
-  const sourcesRoot = resolveSourcesRoot(options);
-  let entries;
-  try {
-    entries = await fs7.readdir(sourcesRoot, { withFileTypes: true });
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") return [];
-    throw error;
-  }
-  const records = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    let manifest;
-    try {
-      manifest = await readSourceManifest(entry.name, options);
-    } catch (error) {
-      records.push(invalidSourceRecord(sourcesRoot, entry.name, error));
-      continue;
-    }
-    const dir = resolveSourceDir(manifest.name, options);
-    let state;
-    let loadError;
-    try {
-      state = await readRefreshStateIfExists(entry.name, options);
-    } catch (error) {
-      loadError = errorDetails(error);
-    }
-    let bundleDir;
-    try {
-      bundleDir = resolveBundleDir(manifest, options);
-    } catch (error) {
-      bundleDir = path11.join(dir, "bundle");
-      loadError ??= errorDetails(error);
-    }
-    records.push({
-      name: manifest.name,
-      dir,
-      manifest,
-      state,
-      bundleDir,
-      loadError
-    });
-  }
-  return records.sort((first, second) => first.name.localeCompare(second.name));
-}
-async function removeSource(name, options = {}) {
-  const sourceDir = resolveSourceDir(name, options);
-  await fs7.rm(sourceDir, { recursive: true, force: true });
-}
-function resolveSourcesRoot(options) {
-  return path11.join(resolveOkfyHome(options), "sources");
-}
-function invalidSourceRecord(sourcesRoot, name, error) {
-  const dir = path11.join(sourcesRoot, name);
-  const sourceName = fallbackSourceName(name);
-  return {
-    name: sourceName,
-    dir,
-    manifest: fallbackSourceManifest(sourceName),
-    bundleDir: path11.join(dir, "bundle"),
-    loadError: errorDetails(error, name)
-  };
-}
-function fallbackSourceManifest(name) {
-  const timestamp = "1970-01-01T00:00:00.000Z";
-  return {
-    schemaVersion: 1,
-    okfyVersion: "unknown",
-    name,
-    kind: "website",
-    createdAt: timestamp,
-    updatedAt: timestamp,
-    source: {
-      seedUrl: ""
-    },
-    crawl: {
-      maxPages: 0,
-      maxDepth: 0,
-      include: [],
-      exclude: [],
-      sameOrigin: true,
-      respectRobots: true,
-      concurrency: 1,
-      allowPrivateNetwork: false
-    },
-    refresh: {
-      mode: "off",
-      maxAgeSeconds: 0,
-      minIntervalSeconds: 0
-    },
-    bundle: {
-      dir: "bundle"
-    }
-  };
-}
-function fallbackSourceName(name) {
-  try {
-    return validateSourceName(name);
-  } catch {
-    const slug = name.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
-    return `invalid-${shortHash(name)}${slug ? `-${slug}` : ""}`;
-  }
-}
-function shortHash(value) {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(36);
-}
-function errorDetails(error, sourceDirName) {
-  const withSourceDir = (details) => ({
-    ...details,
-    ...sourceDirName && sourceDirName !== fallbackSourceName(sourceDirName) ? { sourceDirName } : {}
-  });
-  if (error instanceof Error) {
-    const details = { message: error.message };
-    if (isNodeError(error) && error.code) details.code = error.code;
-    return withSourceDir(details);
-  }
-  return withSourceDir({ message: String(error) });
-}
-function validateSourceManifest(value, expectedName) {
-  if (!isPlainObject(value))
-    throw new Error(`Invalid source manifest for "${expectedName}": expected object.`);
-  const name = requiredString(value, "name", expectedName);
-  validateSourceName(name);
-  if (value.schemaVersion !== 1) {
-    throw new Error(`Invalid source manifest for "${expectedName}": schemaVersion must be 1.`);
-  }
-  if (value.kind !== "website") {
-    throw new Error(`Invalid source manifest for "${expectedName}": kind must be "website".`);
-  }
-  const source = requiredObject(value, "source", expectedName);
-  const crawl = requiredObject(value, "crawl", expectedName);
-  const refresh = requiredObject(value, "refresh", expectedName);
-  const bundle = requiredObject(value, "bundle", expectedName);
-  const mode = requiredString(refresh, "mode", expectedName, "refresh");
-  if (!["off", "stale-while-refresh", "blocking"].includes(mode)) {
-    throw new Error(`Invalid source manifest for "${expectedName}": refresh.mode is invalid.`);
-  }
-  return {
-    schemaVersion: 1,
-    okfyVersion: requiredString(value, "okfyVersion", expectedName),
-    name,
-    kind: "website",
-    createdAt: requiredString(value, "createdAt", expectedName),
-    updatedAt: requiredString(value, "updatedAt", expectedName),
-    source: {
-      seedUrl: requiredString(source, "seedUrl", expectedName, "source")
-    },
-    crawl: {
-      maxPages: requiredNumber(crawl, "maxPages", expectedName, "crawl"),
-      maxDepth: requiredNumber(crawl, "maxDepth", expectedName, "crawl"),
-      include: requiredStringArray(crawl, "include", expectedName, "crawl"),
-      exclude: requiredStringArray(crawl, "exclude", expectedName, "crawl"),
-      sameOrigin: requiredBoolean(crawl, "sameOrigin", expectedName, "crawl"),
-      respectRobots: requiredBoolean(crawl, "respectRobots", expectedName, "crawl"),
-      concurrency: requiredNumber(crawl, "concurrency", expectedName, "crawl"),
-      allowPrivateNetwork: requiredBoolean(crawl, "allowPrivateNetwork", expectedName, "crawl")
-    },
-    refresh: {
-      mode,
-      maxAgeSeconds: requiredNumber(refresh, "maxAgeSeconds", expectedName, "refresh"),
-      minIntervalSeconds: requiredNumber(refresh, "minIntervalSeconds", expectedName, "refresh")
-    },
-    bundle: {
-      dir: requiredString(bundle, "dir", expectedName, "bundle")
-    }
-  };
-}
-function requiredObject(value, key, sourceName, prefix) {
-  const found = value[key];
-  if (!isPlainObject(found)) throw invalidManifestField(sourceName, key, "object", prefix);
-  return found;
-}
-function requiredString(value, key, sourceName, prefix) {
-  const found = value[key];
-  if (typeof found !== "string" || found.trim() === "") {
-    throw invalidManifestField(sourceName, key, "non-empty string", prefix);
-  }
-  return found;
-}
-function requiredNumber(value, key, sourceName, prefix) {
-  const found = value[key];
-  if (typeof found !== "number" || !Number.isFinite(found)) {
-    throw invalidManifestField(sourceName, key, "number", prefix);
-  }
-  return found;
-}
-function requiredBoolean(value, key, sourceName, prefix) {
-  const found = value[key];
-  if (typeof found !== "boolean") throw invalidManifestField(sourceName, key, "boolean", prefix);
-  return found;
-}
-function requiredStringArray(value, key, sourceName, prefix) {
-  const found = value[key];
-  if (!Array.isArray(found) || !found.every((item) => typeof item === "string")) {
-    throw invalidManifestField(sourceName, key, "string array", prefix);
-  }
-  return found;
-}
-function invalidManifestField(sourceName, key, expected, prefix) {
-  return new Error(
-    `Invalid source manifest for "${sourceName}": ${prefix ? `${prefix}.` : ""}${key} must be ${expected}.`
-  );
-}
-async function readRefreshStateIfExists(name, options) {
-  try {
-    return await readRefreshState(name, options);
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") return void 0;
-    throw error;
-  }
-}
-async function readJson(filePath) {
-  return JSON.parse(await fs7.readFile(filePath, "utf8"));
-}
-async function writeStableJson(filePath, value) {
-  await fs7.mkdir(path11.dirname(filePath), { recursive: true });
-  await fs7.writeFile(filePath, `${JSON.stringify(orderJson(value), null, 2)}
-`, "utf8");
-}
-function orderJson(value) {
-  if (Array.isArray(value)) return value.map(orderJson);
-  if (!isPlainObject(value)) return value;
-  const ordered = {};
-  for (const key of orderKeys(value)) {
-    ordered[key] = orderJson(value[key]);
-  }
-  return ordered;
-}
-function orderKeys(value) {
-  if ("status" in value) return sortByPreferredOrder(Object.keys(value), STATE_KEYS);
-  if ("okfyVersion" in value) return sortByPreferredOrder(Object.keys(value), MANIFEST_KEYS);
-  if (hasKeys(value, CRAWL_KEYS)) return sortByPreferredOrder(Object.keys(value), CRAWL_KEYS);
-  if (hasKeys(value, REFRESH_KEYS)) return sortByPreferredOrder(Object.keys(value), REFRESH_KEYS);
-  if (hasKeys(value, STATE_BUNDLE_KEYS))
-    return sortByPreferredOrder(Object.keys(value), STATE_BUNDLE_KEYS);
-  if ("seedUrl" in value) return sortByPreferredOrder(Object.keys(value), ["seedUrl"]);
-  if ("dir" in value) return sortByPreferredOrder(Object.keys(value), ["dir"]);
-  return Object.keys(value).sort((first, second) => first.localeCompare(second));
-}
-function hasKeys(value, keys) {
-  return keys.some((key) => key in value);
-}
-function sortByPreferredOrder(keys, preferredOrder) {
-  return keys.sort((first, second) => {
-    const firstIndex = preferredOrder.indexOf(first);
-    const secondIndex = preferredOrder.indexOf(second);
-    if (firstIndex === -1 && secondIndex === -1) return first.localeCompare(second);
-    if (firstIndex === -1) return 1;
-    if (secondIndex === -1) return -1;
-    return firstIndex - secondIndex;
-  });
-}
-function isPlainObject(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function isInsideOrEqual(parent, child) {
-  const relative = path11.relative(parent, child);
-  return relative === "" || !relative.startsWith("..") && !path11.isAbsolute(relative);
-}
-function isNodeError(error) {
-  return error instanceof Error && "code" in error;
-}
-
-// src/workspace.ts
-import fs8 from "fs/promises";
-import path12 from "path";
-var WorkspaceError = class extends Error {
-  constructor(code, message, details = {}) {
-    super(message);
-    this.code = code;
-    this.details = details;
-  }
-  code;
-  details;
-  toJSON() {
-    return {
-      code: this.code,
-      message: this.message,
-      ...this.details
-    };
-  }
-};
-function workspaceProfilePath(name, options = {}) {
-  return path12.join(resolveOkfyHome(options), "workspaces", `${validateSourceName(name)}.json`);
-}
-async function readWorkspaceProfile(name, options = {}) {
-  const profile = JSON.parse(
-    await fs8.readFile(workspaceProfilePath(name, options), "utf8")
-  );
-  validateWorkspaceProfile(profile, name);
-  return profile;
-}
-async function writeWorkspaceProfile(profile, options = {}) {
-  validateWorkspaceProfile(profile);
-  const filePath = workspaceProfilePath(profile.name, options);
-  await fs8.mkdir(path12.dirname(filePath), { recursive: true });
-  await fs8.writeFile(filePath, `${JSON.stringify(profile, null, 2)}
-`, "utf8");
-}
-async function resolveWorkspaceSources(selection, options = {}) {
-  const hasNames = Boolean(selection.names?.length);
-  const modeCount = Number(hasNames) + Number(Boolean(selection.all)) + Number(Boolean(selection.profile)) + Number(Boolean(selection.profileName));
-  if (modeCount > 1) {
-    throw new Error(
-      "Choose one workspace source selection: explicit source names, --all, or one workspace profile."
-    );
-  }
-  let names = selection.names ?? [];
-  let workspaceName;
-  if (selection.profileName) {
-    const profile = await readWorkspaceProfile(selection.profileName, options);
-    names = profile.sources;
-    workspaceName = profile.name;
-  } else if (selection.profile) {
-    validateWorkspaceProfile(selection.profile);
-    names = selection.profile.sources;
-    workspaceName = selection.profile.name;
-  }
-  if (selection.all) {
-    const records2 = await listSources(options);
-    if (!records2.length)
-      throw new WorkspaceError("no_sources", "No registered sources found for --all.");
-    return { records: records2, sourceNames: records2.map((record) => record.name) };
-  }
-  if (!names.length)
-    throw new WorkspaceError("no_sources", "Select at least one registered source.");
-  assertUniqueSourceNames(names);
-  const records = await Promise.all(names.map((name) => readSourceRecord(name, options)));
-  return { records, sourceNames: records.map((record) => record.name), workspaceName };
-}
-var WorkspaceSearch = class _WorkspaceSearch {
-  sources;
-  selectedNames;
-  availableNames;
-  constructor(sources, options = {}) {
-    if (!sources.length) throw new WorkspaceError("no_sources", "Workspace contains no sources.");
-    assertUniqueSourceNames(sources.map((source) => source.record.name));
-    this.sources = [...sources];
-    this.selectedNames = new Set(sources.map((source) => source.record.name));
-    this.availableNames = /* @__PURE__ */ new Set([...options.availableSourceNames ?? [], ...this.selectedNames]);
-  }
-  static async fromSourceRecords(records, options = {}) {
-    const sources = await Promise.all(
-      records.map(async (record) => ({
-        record,
-        bundleDir: record.bundleDir,
-        search: await BundleSearch.fromBundle(record.bundleDir)
-      }))
-    );
-    return new _WorkspaceSearch(sources, options);
-  }
-  search(query, options = {}) {
-    const limit = options.limit ?? 10;
-    const sources = this.usableSources(options.source);
-    return sources.flatMap(
-      (source) => source.search.search(query, { type: options.type, tags: options.tags, limit: Math.max(limit, 50) }).map((result) => this.withSourceResult(source, result))
-    ).sort(
-      (first, second) => second.score - first.score || first.sourceName.localeCompare(second.sourceName) || first.id.localeCompare(second.id)
-    ).slice(0, limit);
-  }
-  getConcept(input) {
-    const sources = input.source ? this.usableSources(input.source) : this.sourcesWithSearch();
-    const matches = sources.map((source) => ({ source, concept: source.search.getConcept(input.id) })).filter(
-      (row) => Boolean(row.concept)
-    );
-    if (matches.length === 0) {
-      throw new WorkspaceError("unknown_concept", `No concept found for ${input.id}`, {
-        id: input.id,
-        source: input.source
-      });
-    }
-    if (!input.source && matches.length > 1) {
-      throw new WorkspaceError(
-        "ambiguous_concept",
-        `Concept id "${input.id}" exists in multiple workspace sources.`,
-        {
-          id: input.id,
-          candidates: matches.map(({ source, concept }) => this.conceptCandidate(source, concept))
-        }
-      );
-    }
-    return matches[0];
-  }
-  listTypes(source) {
-    return this.distribution(source, (concept) => [concept.type]);
-  }
-  listTags(source) {
-    return this.distribution(source, (concept) => concept.tags);
-  }
-  sourceNames() {
-    return this.sources.map((source) => source.record.name);
-  }
-  usableSourceNames() {
-    return this.sourcesWithSearch().map((source) => source.record.name);
-  }
-  distribution(sourceName, values) {
-    const distribution = {};
-    for (const source of this.usableSources(sourceName)) {
-      for (const concept of source.search.graph.concepts.values()) {
-        for (const value of values(concept)) distribution[value] = (distribution[value] ?? 0) + 1;
-      }
-    }
-    return Object.fromEntries(
-      Object.entries(distribution).sort(([first], [second]) => first.localeCompare(second))
-    );
-  }
-  usableSources(sourceName) {
-    const sources = sourceName ? [this.sourceByName(sourceName)] : this.sources;
-    const usable = sources.filter(
-      (source) => Boolean(source.search)
-    );
-    if (!usable.length) {
-      throw new WorkspaceError(
-        "no_usable_sources",
-        "No usable OKF bundle is available in this workspace.",
-        {
-          source: sourceName,
-          sources: sources.map((source) => source.record.name)
-        }
-      );
-    }
-    return usable;
-  }
-  sourcesWithSearch() {
-    return this.sources.filter((source) => Boolean(source.search));
-  }
-  sourceByName(sourceName) {
-    if (this.selectedNames.has(sourceName)) {
-      return this.sources.find((source) => source.record.name === sourceName);
-    }
-    if (this.availableNames.has(sourceName)) {
-      throw new WorkspaceError(
-        "source_not_in_workspace",
-        `Source "${sourceName}" is not selected in this workspace.`,
-        {
-          source: sourceName,
-          workspaceSources: [...this.selectedNames]
-        }
-      );
-    }
-    throw new WorkspaceError("unknown_source", `Unknown source "${sourceName}".`, {
-      source: sourceName
-    });
-  }
-  withSourceResult(source, result) {
-    return {
-      ...result,
-      sourceName: source.record.name,
-      sourceKind: source.record.manifest.kind,
-      seedUrl: source.record.manifest.source.seedUrl,
-      ref: `${source.record.name}:${result.id}`
-    };
-  }
-  conceptCandidate(source, concept) {
-    return {
-      sourceName: source.record.name,
-      sourceKind: source.record.manifest.kind,
-      seedUrl: source.record.manifest.source.seedUrl,
-      id: concept.id,
-      ref: `${source.record.name}:${concept.id}`,
-      title: concept.title,
-      type: concept.type,
-      resource: concept.resource
-    };
-  }
-};
-function validateWorkspaceProfile(profile, expectedName) {
-  if (profile.schemaVersion !== 1) throw new Error("Workspace profile schemaVersion must be 1.");
-  validateSourceName(profile.name);
-  if (expectedName && profile.name !== expectedName) {
-    throw new Error(
-      `Workspace profile name mismatch: expected "${expectedName}", found "${profile.name}".`
-    );
-  }
-  if (!Array.isArray(profile.sources) || profile.sources.length === 0) {
-    throw new Error(`Workspace profile "${profile.name}" must list at least one source.`);
-  }
-  for (const source of profile.sources) validateSourceName(source);
-  assertUniqueSourceNames(profile.sources);
-}
-function assertUniqueSourceNames(names) {
-  const seen = /* @__PURE__ */ new Set();
-  for (const name of names) {
-    validateSourceName(name);
-    if (seen.has(name))
-      throw new WorkspaceError("duplicate_source", `Duplicate workspace source "${name}".`, {
-        source: name
-      });
-    seen.add(name);
-  }
-}
-async function readSourceRecord(name, options) {
-  const manifest = await readSourceManifest(name, options);
-  return {
-    name: manifest.name,
-    dir: resolveSourceDir(manifest.name, options),
-    manifest,
-    state: await readRefreshStateIfExists2(manifest.name, options),
-    bundleDir: resolveBundleDir(manifest, options)
-  };
-}
-async function readRefreshStateIfExists2(name, options) {
-  try {
-    return await readRefreshState(name, options);
-  } catch (error) {
-    if (isNodeError2(error) && error.code === "ENOENT") return void 0;
-    throw error;
-  }
-}
-function isNodeError2(error) {
-  return error instanceof Error && "code" in error;
 }
 
 // src/mcp.ts
@@ -3446,8 +3544,6 @@ export {
   BundleSearch,
   validateBundle,
   inspectBundle,
-  buildBundleInspectorReport,
-  buildWorkspaceInspectorReport,
   resolveOkfyHome,
   validateSourceName,
   resolveSourceDir,
@@ -3458,12 +3554,18 @@ export {
   readRefreshState,
   listSources,
   removeSource,
+  bundleSourceName,
+  localBundleRecord,
+  assertUniqueWorkspaceRecordNames,
+  isRegisteredWorkspaceRecord,
   WorkspaceError,
   workspaceProfilePath,
   readWorkspaceProfile,
   writeWorkspaceProfile,
   resolveWorkspaceSources,
   WorkspaceSearch,
+  buildBundleInspectorReport,
+  buildWorkspaceInspectorReport,
   MCP_TOOL_NAMES,
   createMcpServer,
   createWorkspaceMcpServer,

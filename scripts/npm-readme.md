@@ -266,7 +266,7 @@ Validation errors are limited to OKF conformance: malformed or missing concept f
 - Preflight DNS-resolved private targets are rejected before fetch; fetch-time DNS is not IP-pinned.
 - `--force` refuses unsafe output directories such as `.`, `/`, the home dir, repo root, input path, input parent, and symlink output dirs unless an explicit dangerous override is provided.
 - HTML and Markdown are treated as text. Scripts are not executed.
-- MCP tools are read-only in v0.1.
+- MCP tools are read-only; refresh is server-side maintenance, not an agent-callable write tool.
 
 ## Links
 

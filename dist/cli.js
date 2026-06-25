@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import {
   MCP_TOOL_NAMES,
+  assertUniqueWorkspaceRecordNames,
   buildBundleInspectorReport,
   buildWorkspaceInspectorReport,
   crawlWebsite,
@@ -8,7 +9,9 @@ import {
   hashBundleContents,
   importLocal,
   inspectBundle,
+  isRegisteredWorkspaceRecord,
   listSources,
+  localBundleRecord,
   packageVersion,
   parseDurationSeconds,
   readRefreshState,
@@ -26,13 +29,13 @@ import {
   validateSourceName,
   writeRefreshState,
   writeSourceManifest
-} from "./chunk-DKRANTEG.js";
+} from "./chunk-F57PW5GG.js";
 
 // src/cli.ts
 import fs2 from "fs";
 import path2 from "path";
 import { execFile } from "child_process";
-import { fileURLToPath, pathToFileURL } from "url";
+import { fileURLToPath } from "url";
 import { Command } from "commander";
 import pc from "picocolors";
 
@@ -824,68 +827,11 @@ async function serveBundleTarget(target, options) {
   printStatus("okfy serve: ready on stdio (stdout is reserved for MCP JSON-RPC)");
   printStatus(`okfy serve: tools ${MCP_TOOL_NAMES.join(", ")}`);
 }
-function bundleSourceName(bundleDir) {
-  const baseName = path2.basename(path2.resolve(bundleDir));
-  const candidate = baseName.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[._-]+|[._-]+$/g, "");
-  return validateSourceName(candidate || "bundle");
-}
-function localBundleRecord(bundleDir) {
-  const resolved = path2.resolve(bundleDir);
-  const name = bundleSourceName(resolved);
-  const timestamp = "1970-01-01T00:00:00.000Z";
-  return {
-    name,
-    dir: resolved,
-    bundleDir: resolved,
-    manifest: {
-      schemaVersion: 1,
-      okfyVersion: packageVersion(),
-      name,
-      kind: "local",
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      source: {
-        seedUrl: pathToFileURL(resolved).href
-      },
-      crawl: {
-        maxPages: 0,
-        maxDepth: 0,
-        include: [],
-        exclude: [],
-        sameOrigin: true,
-        respectRobots: true,
-        concurrency: 1,
-        allowPrivateNetwork: false
-      },
-      refresh: {
-        mode: "off",
-        maxAgeSeconds: 0,
-        minIntervalSeconds: 0
-      },
-      bundle: {
-        dir: resolved
-      }
-    }
-  };
-}
 async function assertBundleHasConceptFiles(bundleDir) {
   const validation = await validateBundle(bundleDir);
   if (validation.conceptCount === 0) {
     throw new Error(`Bundle path does not contain any OKF concept files: ${bundleDir}`);
   }
-}
-function assertUniqueWorkspaceRecordNames(records) {
-  const seen = /* @__PURE__ */ new Set();
-  for (const record of records) {
-    if (seen.has(record.name))
-      throw new Error(
-        `Duplicate workspace source "${record.name}". Rename one bundle directory or source.`
-      );
-    seen.add(record.name);
-  }
-}
-function isRegisteredWorkspaceRecord(record) {
-  return record.manifest.kind === "website";
 }
 async function readStateIfExists(name) {
   try {
@@ -1081,6 +1027,45 @@ async function registeredRecord(name) {
     state,
     bundleDir: resolveBundleDir(manifest)
   };
+}
+async function resolveLocalBundleTarget(target, label = "Bundle path") {
+  if (!await pathExists(target)) throw new Error(`${label} does not exist: ${target}`);
+  await assertBundleHasConceptFiles(target);
+  return target;
+}
+async function resolveCliTargets(targets, options) {
+  if (options.all && targets.length > 0) {
+    throw new Error("Use either --all or explicit source names, not both.");
+  }
+  if (!options.all && targets.length === 0) {
+    throw new Error("Provide a registered source name, an OKF bundle directory, or --all.");
+  }
+  if (!options.all && targets.length === 1) {
+    const target = targets[0];
+    if (pathLikeTarget(target)) {
+      return { kind: "bundle", bundleDir: await resolveLocalBundleTarget(target) };
+    }
+    try {
+      return { kind: "registered", record: await registeredRecord(target) };
+    } catch (error) {
+      if (await pathExists(target) && !await registeredSourceDirExists(target)) {
+        return { kind: "bundle", bundleDir: await resolveLocalBundleTarget(target) };
+      }
+      throw error;
+    }
+  }
+  const bundleTargets = options.all ? [] : targets.filter(pathLikeTarget);
+  const sourceTargets = options.all ? [] : targets.filter((sourceName) => !pathLikeTarget(sourceName));
+  const sourceSet = options.all || sourceTargets.length ? await resolveWorkspaceSources({ all: options.all, names: sourceTargets }) : { records: [], sourceNames: [] };
+  const bundleRecords = await Promise.all(
+    bundleTargets.map(async (bundleTarget) => {
+      await resolveLocalBundleTarget(bundleTarget, "Workspace bundle path");
+      return localBundleRecord(bundleTarget);
+    })
+  );
+  const records = [...sourceSet.records, ...bundleRecords];
+  assertUniqueWorkspaceRecordNames(records);
+  return { kind: "workspace", all: options.all, records, sourceNames: sourceSet.sourceNames };
 }
 function mcpRefreshHooksForRecord(record, mode, maxAgeSeconds) {
   return {
@@ -1793,46 +1778,14 @@ program.command("inspect").argument("<bundle>", "OKF bundle directory").action(a
 });
 program.command("map").argument("[targets...]", "Registered source name(s), OKF bundle path(s), or one OKF bundle directory").option("--all", "Map all registered sources as one source-aware workspace", false).option("--out <file>", "Inspector HTML output file", "okfy-inspector.html").option("--json", "Print Inspector report JSON without writing HTML", false).action(async (targets = [], options) => {
   try {
-    if (options.all && targets.length > 0) {
-      throw new Error("Use either --all or explicit source names, not both.");
-    }
-    if (!options.all && targets.length === 0) {
-      throw new Error("Provide a registered source name, an OKF bundle directory, or --all.");
-    }
     let report;
-    const target = targets[0];
-    if (!options.all && targets.length === 1 && pathLikeTarget(target)) {
-      if (!await pathExists(target)) throw new Error(`Bundle path does not exist: ${target}`);
-      await assertBundleHasConceptFiles(target);
-      report = await buildBundleInspectorReport(target);
-    } else if (!options.all && targets.length === 1) {
-      try {
-        const record = await registeredRecord(target);
-        report = await buildWorkspaceInspectorReport([record]);
-      } catch (error) {
-        if (!pathLikeTarget(target) && await pathExists(target) && !await registeredSourceDirExists(target)) {
-          await assertBundleHasConceptFiles(target);
-          report = await buildBundleInspectorReport(target);
-        } else {
-          throw error;
-        }
-      }
+    const resolution = await resolveCliTargets(targets, { all: options.all });
+    if (resolution.kind === "bundle") {
+      report = await buildBundleInspectorReport(resolution.bundleDir);
+    } else if (resolution.kind === "registered") {
+      report = await buildWorkspaceInspectorReport([resolution.record]);
     } else {
-      const bundleTargets = options.all ? [] : targets.filter(pathLikeTarget);
-      const sourceTargets = options.all ? [] : targets.filter((sourceName) => !pathLikeTarget(sourceName));
-      const sourceSet = options.all || sourceTargets.length ? await resolveWorkspaceSources({ all: options.all, names: sourceTargets }) : { records: [], sourceNames: [] };
-      const bundleRecords = await Promise.all(
-        bundleTargets.map(async (bundleTarget) => {
-          if (!await pathExists(bundleTarget)) {
-            throw new Error(`Workspace bundle path does not exist: ${bundleTarget}`);
-          }
-          await assertBundleHasConceptFiles(bundleTarget);
-          return localBundleRecord(bundleTarget);
-        })
-      );
-      const records = [...sourceSet.records, ...bundleRecords];
-      assertUniqueWorkspaceRecordNames(records);
-      report = await buildWorkspaceInspectorReport(records, { all: options.all });
+      report = await buildWorkspaceInspectorReport(resolution.records, { all: resolution.all });
     }
     if (options.json) {
       printJson(report);
@@ -1857,7 +1810,7 @@ program.command("serve").argument(
 ).option("--all", "Serve all registered sources as one source-aware workspace", false).option("--mcp", "Start MCP server", false).option("--transport <transport>", "Transport: stdio", "stdio").option("--name <server-name>", "MCP server name", "okfy").option(
   "--max-result-chars <n>",
   "Maximum characters per tool result",
-  (value) => Number(value),
+  positiveIntegerOption("max-result-chars"),
   12e3
 ).option("--auto-refresh", "Enable registered source refresh behavior", false).option(
   "--refresh-mode <mode>",
@@ -1865,55 +1818,31 @@ program.command("serve").argument(
   refreshMode
 ).option("--max-age <duration>", "Override freshness max age", duration).action(async (targets = [], options) => {
   if (!options.mcp) {
-    console.error(pc.red("Only --mcp mode is supported in v0.1."));
+    console.error(pc.red("Only MCP server mode is supported. Pass --mcp to start stdio."));
     process.exitCode = 1;
     return;
   }
   if (options.transport !== "stdio") {
-    console.error(pc.red("Only stdio transport is supported in v0.1."));
+    console.error(pc.red("Only stdio transport is supported."));
     process.exitCode = 1;
     return;
   }
-  if (options.all && targets.length > 0) {
-    console.error(pc.red("Use either --all or explicit source names, not both."));
-    process.exitCode = 1;
-    return;
-  }
-  if (!options.all && targets.length === 0) {
-    console.error(pc.red("Provide a registered source name, an OKF bundle directory, or --all."));
-    process.exitCode = 1;
-    return;
-  }
-  const target = targets[0];
   try {
-    if (!options.all && targets.length === 1 && pathLikeTarget(target)) {
-      if (!await pathExists(target)) throw new Error(`Bundle path does not exist: ${target}`);
-      await serveBundleTarget(target, options);
+    const resolution = await resolveCliTargets(targets, { all: options.all });
+    if (resolution.kind === "bundle") {
+      await serveBundleTarget(resolution.bundleDir, options);
       return;
     }
-    if (options.all || targets.length > 1) {
-      const bundleTargets = options.all ? [] : targets.filter(pathLikeTarget);
-      const sourceTargets = options.all ? [] : targets.filter((sourceName) => !pathLikeTarget(sourceName));
-      const sourceSet = options.all || sourceTargets.length ? await resolveWorkspaceSources({ all: options.all, names: sourceTargets }) : { records: [], sourceNames: [] };
-      const bundleRecords = await Promise.all(
-        bundleTargets.map(async (bundleTarget) => {
-          if (!await pathExists(bundleTarget)) {
-            throw new Error(`Workspace bundle path does not exist: ${bundleTarget}`);
-          }
-          return localBundleRecord(bundleTarget);
-        })
-      );
-      const records = [...sourceSet.records, ...bundleRecords];
-      assertUniqueWorkspaceRecordNames(records);
-      const availableSourceNames = options.all ? sourceSet.sourceNames : (await listSources()).map((record2) => record2.name);
-      const workspaceNames = records.map((record2) => record2.name);
+    if (resolution.kind === "workspace") {
+      const availableSourceNames = resolution.all ? resolution.sourceNames : (await listSources()).map((record2) => record2.name);
+      const workspaceNames = resolution.records.map((record2) => record2.name);
       printStatus(`okfy serve: loading workspace sources ${workspaceNames.join(", ")}`);
       printStatus(`okfy serve: starting MCP stdio server "${options.name}"`);
       await serveWorkspaceMcpStdio({
         name: options.name,
         maxResultChars: options.maxResultChars,
         availableSourceNames,
-        sources: records.map((record2) => {
+        sources: resolution.records.map((record2) => {
           if (!isRegisteredWorkspaceRecord(record2)) return { record: record2 };
           const mode2 = options.autoRefresh ? options.refreshMode ?? record2.manifest.refresh.mode : "off";
           return { record: record2, refresh: mcpRefreshHooksForRecord(record2, mode2, options.maxAge) };
@@ -1923,20 +1852,10 @@ program.command("serve").argument(
       printStatus(`okfy serve: tools ${MCP_TOOL_NAMES.join(", ")}`);
       return;
     }
-    let manifest;
-    try {
-      manifest = await readSourceManifest(target);
-    } catch (error) {
-      if (!pathLikeTarget(target) && await pathExists(target) && !await registeredSourceDirExists(target)) {
-        await serveBundleTarget(target, options);
-        return;
-      }
-      throw error;
-    }
-    const bundleDir = resolveBundleDir(manifest);
+    const { record } = resolution;
+    const { manifest, bundleDir } = record;
     const mode = options.autoRefresh ? options.refreshMode ?? manifest.refresh.mode : "off";
     const maxAgeSeconds = options.maxAge;
-    const record = await registeredRecord(manifest.name);
     printStatus(`okfy serve: loading source ${manifest.name} from ${bundleDir}`);
     printStatus(`okfy serve: starting MCP stdio server "${options.name}"`);
     await serveMcpStdio({
