@@ -70,6 +70,26 @@ type RenderAgentPreview = {
   suggestedQuestions?: string[];
 };
 
+type RenderActivation = {
+  client?: string;
+  serverName?: string;
+  codexServerName?: string;
+  command?: {
+    display?: string;
+    env?: Record<string, string>;
+  };
+  firstPrompt?: string;
+  artifacts?: Array<{
+    label: string;
+    format: string;
+    body: string;
+  }>;
+  files?: Array<{
+    label: string;
+    path: string;
+  }>;
+};
+
 export type InspectorReport = {
   schemaVersion?: number;
   title: string;
@@ -80,6 +100,7 @@ export type InspectorReport = {
   concepts: RenderConcept[];
   edges: RenderEdge[];
   agentPreview: RenderAgentPreview;
+  activation?: RenderActivation;
 };
 
 export function renderInspectorHtml(report: InspectorReport): string {
@@ -137,8 +158,13 @@ section h2{margin:0 0 14px;font-size:18px;letter-spacing:0}
 .step{border:1px solid var(--line);border-radius:6px;padding:13px;background:#fbfcfb}
 .step code{display:block;color:var(--accent-2);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .questions{margin:16px 0 0;padding-left:20px;color:var(--muted)}
+.activation-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
+.activation-block{border:1px solid var(--line);border-radius:6px;background:#fbfcfb;padding:13px;min-width:0}
+.activation-block b{display:block;margin-bottom:8px}
+pre{margin:0;max-width:100%;overflow:auto;border:1px solid var(--line);border-radius:6px;background:#f5f7f6;padding:12px}
+pre code{white-space:pre;font-size:13px}
 .error{color:var(--bad)}
-@media (max-width:820px){header,.workspace,.toolbar{grid-template-columns:1fr}.metrics,.steps{grid-template-columns:repeat(2,minmax(0,1fr))}.shell{padding:22px 14px}.map{min-height:460px}.detail dl{grid-template-columns:86px minmax(0,1fr)}}
+@media (max-width:820px){header,.workspace,.toolbar,.activation-grid{grid-template-columns:1fr}.metrics,.steps{grid-template-columns:repeat(2,minmax(0,1fr))}.shell{padding:22px 14px}.map{min-height:460px}.detail dl{grid-template-columns:86px minmax(0,1fr)}}
 </style>
 </head>
 <body>
@@ -171,6 +197,7 @@ ${renderMap(normalized.concepts, normalized.edges)}
 <h2 id="agent-preview-title">Agent Preview</h2>
 ${renderAgentPreview(normalized.agentPreview)}
 </section>
+${renderActivation(normalized.activation)}
 </main>
 </div>
 <script id="okfy-inspector-report" type="application/json">${json}</script>
@@ -330,6 +357,26 @@ function renderAgentPreview(agentPreview: NormalizedReport["agentPreview"]): str
     .join("")}</ol>`;
 }
 
+function renderActivation(activation: NormalizedReport["activation"]): string {
+  if (!activation) return "";
+  const artifacts = activation.artifacts ?? [];
+  const files = activation.files ?? [];
+  return `<section aria-labelledby="activation-title">
+<h2 id="activation-title">Agent Setup</h2>
+<div class="activation-grid">
+<div class="activation-block"><b>MCP launch command</b><pre><code>${escapeHtml(activation.command?.display ?? "")}</code></pre></div>
+<div class="activation-block"><b>First prompt</b><pre><code>${escapeHtml(activation.firstPrompt ?? "")}</code></pre></div>
+</div>
+${artifacts
+  .map(
+    (artifact) =>
+      `<div class="activation-block" style="margin-top:12px"><b>${escapeHtml(artifact.label)}</b><pre><code>${escapeHtml(artifact.body)}</code></pre></div>`
+  )
+  .join("")}
+${files.length ? `<p>${files.map((file) => `${escapeHtml(file.label)}: <code>${escapeHtml(file.path)}</code>`).join("<br>")}</p>` : ""}
+</section>`;
+}
+
 type NormalizedReport = {
   title: string;
   readiness: Required<RenderReadiness>;
@@ -337,6 +384,7 @@ type NormalizedReport = {
   concepts: RenderConcept[];
   edges: RenderEdge[];
   agentPreview: Required<RenderAgentPreview>;
+  activation?: RenderActivation;
 };
 
 function normalizeReport(report: InspectorReport): NormalizedReport {
@@ -377,7 +425,8 @@ function normalizeReport(report: InspectorReport): NormalizedReport {
       tools: agentPreview.tools ?? [],
       citationGuidance: agentPreview.citationGuidance ?? "",
       suggestedQuestions: agentPreview.suggestedQuestions ?? []
-    }
+    },
+    activation: report.activation
   };
 }
 

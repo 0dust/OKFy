@@ -431,6 +431,39 @@ describe("renderInspectorHtml", () => {
     expect(renderInspectorHtml(report)).toBe(renderInspectorHtml(report));
   });
 
+  it("renders activation setup metadata when present", () => {
+    const html = renderInspectorHtml({
+      ...reportFixture(),
+      activation: {
+        client: "codex",
+        serverName: "stripe-okf",
+        codexServerName: "stripe_okf",
+        command: {
+          display: "npx -y okfy-ai serve stripe --mcp --auto-refresh",
+          env: {}
+        },
+        firstPrompt: "Use the stripe_okf MCP server.",
+        artifacts: [
+          {
+            label: "Codex config.toml",
+            format: "toml",
+            body: '[mcp_servers.stripe_okf]\ncommand = "npx"'
+          }
+        ],
+        files: [
+          { label: "Inspector HTML", path: "/tmp/okfy-activation/okfy-inspector.html" },
+          { label: "Proof JSON", path: "/tmp/okfy-activation/okfy-proof.json" }
+        ]
+      }
+    });
+
+    expect(html).toContain("Agent Setup");
+    expect(html).toContain("npx -y okfy-ai serve stripe --mcp --auto-refresh");
+    expect(html).toContain("Use the stripe_okf MCP server.");
+    expect(html).toContain("Codex config.toml");
+    expect(html).toContain("okfy-proof.json");
+  });
+
   it("emits responsive containment styles for the generated knowledge map", () => {
     const html = renderInspectorHtml(reportFixture());
 

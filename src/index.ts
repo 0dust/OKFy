@@ -1,4 +1,5 @@
 export * from "./crawler.js";
+export * from "./activation.js";
 export * from "./graph.js";
 export * from "./importer.js";
 export * from "./mcp.js";

@@ -2,10 +2,14 @@
 import {
   MCP_TOOL_NAMES,
   assertUniqueWorkspaceRecordNames,
+  buildActivationPacket,
   buildBundleInspectorReport,
   buildWorkspaceInspectorReport,
   crawlWebsite,
+  createSetupReport,
+  defaultOkfyHome,
   evaluateFreshness,
+  executableOnPath,
   hashBundleContents,
   importLocal,
   inspectBundle,
@@ -14,26 +18,35 @@ import {
   localBundleRecord,
   packageVersion,
   parseDurationSeconds,
+  parseSetupClient,
+  probeMcpStdio,
+  protectedActivationInputPaths,
   readRefreshState,
   readSourceManifest,
   refreshSource,
   removeSource,
+  renderActivationSetupMarkdown,
   resolveBundleDir,
   resolveOkfyHome,
   resolveSourceDir,
   resolveWorkspaceSources,
   runtimePackageRoot,
+  serveCommand,
+  serveCommandArgs,
   serveMcpStdio,
   serveWorkspaceMcpStdio,
+  setupCheck,
   validateBundle,
   validateSourceName,
+  withActivationMetadata,
+  writeActivationPacketFiles,
   writeRefreshState,
   writeSourceManifest
-} from "./chunk-F57PW5GG.js";
+} from "./chunk-YYJNXQPO.js";
 
 // src/cli.ts
-import fs2 from "fs";
-import path2 from "path";
+import fs from "fs";
+import path from "path";
 import { execFile } from "child_process";
 import { fileURLToPath } from "url";
 import { Command } from "commander";
@@ -95,8 +108,13 @@ section h2{margin:0 0 14px;font-size:18px;letter-spacing:0}
 .step{border:1px solid var(--line);border-radius:6px;padding:13px;background:#fbfcfb}
 .step code{display:block;color:var(--accent-2);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .questions{margin:16px 0 0;padding-left:20px;color:var(--muted)}
+.activation-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
+.activation-block{border:1px solid var(--line);border-radius:6px;background:#fbfcfb;padding:13px;min-width:0}
+.activation-block b{display:block;margin-bottom:8px}
+pre{margin:0;max-width:100%;overflow:auto;border:1px solid var(--line);border-radius:6px;background:#f5f7f6;padding:12px}
+pre code{white-space:pre;font-size:13px}
 .error{color:var(--bad)}
-@media (max-width:820px){header,.workspace,.toolbar{grid-template-columns:1fr}.metrics,.steps{grid-template-columns:repeat(2,minmax(0,1fr))}.shell{padding:22px 14px}.map{min-height:460px}.detail dl{grid-template-columns:86px minmax(0,1fr)}}
+@media (max-width:820px){header,.workspace,.toolbar,.activation-grid{grid-template-columns:1fr}.metrics,.steps{grid-template-columns:repeat(2,minmax(0,1fr))}.shell{padding:22px 14px}.map{min-height:460px}.detail dl{grid-template-columns:86px minmax(0,1fr)}}
 </style>
 </head>
 <body>
@@ -129,6 +147,7 @@ ${renderMap(normalized.concepts, normalized.edges)}
 <h2 id="agent-preview-title">Agent Preview</h2>
 ${renderAgentPreview(normalized.agentPreview)}
 </section>
+${renderActivation(normalized.activation)}
 </main>
 </div>
 <script id="okfy-inspector-report" type="application/json">${json}</script>
@@ -257,6 +276,22 @@ function renderAgentPreview(agentPreview) {
 <p>${escapeHtml(agentPreview.citationGuidance ?? "")}</p>
 <ol class="questions">${(agentPreview.suggestedQuestions ?? []).map((question) => `<li>${escapeHtml(question)}</li>`).join("")}</ol>`;
 }
+function renderActivation(activation) {
+  if (!activation) return "";
+  const artifacts = activation.artifacts ?? [];
+  const files = activation.files ?? [];
+  return `<section aria-labelledby="activation-title">
+<h2 id="activation-title">Agent Setup</h2>
+<div class="activation-grid">
+<div class="activation-block"><b>MCP launch command</b><pre><code>${escapeHtml(activation.command?.display ?? "")}</code></pre></div>
+<div class="activation-block"><b>First prompt</b><pre><code>${escapeHtml(activation.firstPrompt ?? "")}</code></pre></div>
+</div>
+${artifacts.map(
+    (artifact) => `<div class="activation-block" style="margin-top:12px"><b>${escapeHtml(artifact.label)}</b><pre><code>${escapeHtml(artifact.body)}</code></pre></div>`
+  ).join("")}
+${files.length ? `<p>${files.map((file) => `${escapeHtml(file.label)}: <code>${escapeHtml(file.path)}</code>`).join("<br>")}</p>` : ""}
+</section>`;
+}
 function normalizeReport(report) {
   const readiness = report.readiness ?? {};
   const agentPreview = report.agentPreview ?? {};
@@ -293,7 +328,8 @@ function normalizeReport(report) {
       tools: agentPreview.tools ?? [],
       citationGuidance: agentPreview.citationGuidance ?? "",
       suggestedQuestions: agentPreview.suggestedQuestions ?? []
-    }
+    },
+    activation: report.activation
   };
 }
 function compareSources(first, second) {
@@ -390,388 +426,6 @@ function sourceKind(source) {
   return source.sourceKind;
 }
 
-// src/setup.ts
-import fs from "fs/promises";
-import path from "path";
-import { spawn } from "child_process";
-var EXPECTED_MCP_TOOLS = [...MCP_TOOL_NAMES];
-var MAX_CAPTURE_CHARS = 64e3;
-var MAX_DIAGNOSTIC_CHARS = 1e3;
-var MAX_MESSAGES = 100;
-function parseSetupClient(value) {
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "claude-code" || normalized === "claude") return "claude-code";
-  if (normalized === "claude-desktop" || normalized === "cursor" || normalized === "mcp-json" || normalized === "desktop") {
-    return "mcp-json";
-  }
-  if (normalized === "codex") return "codex";
-  if (normalized === "generic" || normalized === "json") return "generic";
-  throw new Error(
-    `Invalid setup client "${value}". Use claude-code, claude-desktop, cursor, codex, or generic.`
-  );
-}
-function defaultOkfyHome() {
-  return resolveOkfyHome({ env: { OKFY_HOME: "" } });
-}
-function setupStatus(checks) {
-  if (checks.some((check) => check.severity === "fail")) return "failed";
-  if (checks.some((check) => check.severity === "warn")) return "warning";
-  return "ready";
-}
-function createSetupReport(input) {
-  const okfyHome = path.resolve(input.okfyHome ?? resolveOkfyHome());
-  const defaultHome = defaultOkfyHome();
-  const sourceNames = setupSourceNames(input);
-  const workspace = Boolean(input.workspaceAll) || sourceNames.length > 1;
-  const serverIdentity = input.workspaceAll ? ["all"] : sourceNames;
-  const commandTarget = input.workspaceAll ? { all: true } : sourceNames;
-  const serverName = mcpServerName(serverIdentity);
-  const codexServerName = codexMcpServerName(serverIdentity);
-  const command = serveCommand(commandTarget, okfyHome, defaultHome);
-  return {
-    sourceName: input.workspaceAll && sourceNames.length === 0 ? "--all" : sourceNames.join(", "),
-    sourceNames,
-    workspace,
-    workspaceAll: Boolean(input.workspaceAll),
-    client: input.client,
-    serverName,
-    codexServerName,
-    okfyHome,
-    defaultOkfyHome: defaultHome,
-    command,
-    artifacts: renderClientArtifacts({
-      client: input.client,
-      sourceNames,
-      workspaceAll: input.workspaceAll,
-      okfyHome,
-      defaultOkfyHome: defaultHome
-    }),
-    firstPrompt: firstAgentPrompt(input.client === "codex" ? codexServerName : serverName, {
-      workspace
-    }),
-    checks: input.checks,
-    status: setupStatus(input.checks)
-  };
-}
-function renderClientArtifacts(input) {
-  const okfyHome = path.resolve(input.okfyHome ?? resolveOkfyHome());
-  const defaultHome = input.defaultOkfyHome ?? defaultOkfyHome();
-  const sourceNames = setupSourceNames(input);
-  const serverIdentity = input.workspaceAll ? ["all"] : sourceNames;
-  const commandTarget = input.workspaceAll ? { all: true } : sourceNames;
-  const serverName = mcpServerName(serverIdentity);
-  const codexName = codexMcpServerName(serverIdentity);
-  const command = serveCommand(commandTarget, okfyHome, defaultHome);
-  const env = Object.keys(command.env).length ? command.env : void 0;
-  if (input.client === "claude-code") {
-    return [
-      {
-        client: input.client,
-        label: "Claude Code",
-        format: "shell",
-        body: `claude mcp add --transport stdio${shellEnvArgs(command.env, "-e")} ${serverName} -- ${command.display}`
-      }
-    ];
-  }
-  if (input.client === "codex") {
-    return [
-      {
-        client: input.client,
-        label: "Codex config.toml",
-        format: "toml",
-        body: codexToml(codexName, command, env)
-      },
-      {
-        client: input.client,
-        label: "Codex CLI",
-        format: "shell",
-        body: `codex mcp add${shellEnvArgs(command.env, "--env")} ${codexName} -- ${command.display}`
-      }
-    ];
-  }
-  const label = input.client === "mcp-json" ? "Claude Desktop / Cursor mcpServers JSON" : "Generic mcpServers JSON";
-  return [
-    {
-      client: input.client,
-      label,
-      format: "json",
-      body: JSON.stringify(
-        {
-          mcpServers: {
-            [serverName]: {
-              command: command.command,
-              args: command.args,
-              ...env ? { env } : {}
-            }
-          }
-        },
-        null,
-        2
-      )
-    }
-  ];
-}
-function firstAgentPrompt(serverName, options = {}) {
-  if (options.workspace) {
-    return `Use the ${serverName} MCP server. Start with bundle_summary to understand the workspace sources and freshness. Filter by source when you know which docs apply, search before reading concepts, read only the most relevant concepts, inspect neighbors when relationships matter, and cite source_resource URLs in the final answer.`;
-  }
-  return `Use the ${serverName} MCP server. Start with bundle_summary to understand the bundle and freshness. Search before reading concepts, read only the most relevant concepts, inspect neighbors when relationships matter, and cite source_resource URLs in the final answer.`;
-}
-function serveCommand(sourceNameOrNames, okfyHome, defaultHome = defaultOkfyHome()) {
-  const args = ["-y", "okfy-ai", ...serveCommandArgs(sourceNameOrNames)];
-  const env = needsOkfyHomeEnv(okfyHome, defaultHome) ? { OKFY_HOME: path.resolve(okfyHome) } : {};
-  return {
-    command: "npx",
-    args,
-    env,
-    display: ["npx", ...args].join(" ")
-  };
-}
-function serveCommandArgs(sourceNameOrNames) {
-  if (isAllCommandTarget(sourceNameOrNames)) {
-    return ["serve", "--all", "--mcp", "--auto-refresh"];
-  }
-  const sourceNames = Array.isArray(sourceNameOrNames) ? sourceNameOrNames : [sourceNameOrNames];
-  return sourceNames.some((sourceName) => sourceName.startsWith("-")) ? ["serve", "--mcp", "--auto-refresh", "--", ...sourceNames] : ["serve", ...sourceNames, "--mcp", "--auto-refresh"];
-}
-function isAllCommandTarget(sourceNameOrNames) {
-  return typeof sourceNameOrNames === "object" && !Array.isArray(sourceNameOrNames) && sourceNameOrNames.all;
-}
-function setupCheck(id, label, severity, message, fix) {
-  return { id, label, severity, message, ...fix ? { fix } : {} };
-}
-async function executableOnPath(command, env = process.env) {
-  const searchPath = env.PATH ?? "";
-  const extensions = process.platform === "win32" ? (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";") : [""];
-  for (const directory of searchPath.split(path.delimiter)) {
-    if (!directory) continue;
-    for (const extension of extensions) {
-      const candidate = path.join(directory, `${command}${extension}`);
-      try {
-        await fs.access(candidate, fs.constants.X_OK);
-        return true;
-      } catch {
-      }
-    }
-  }
-  return false;
-}
-function evaluateMcpProbeMessages(messages) {
-  const toolsResponse = messages.find((message) => message.id === 2);
-  const tools = toolsResponse?.result?.tools?.map((tool) => tool.name).filter((name) => Boolean(name)) ?? [];
-  const missingTools = EXPECTED_MCP_TOOLS.filter((tool) => !tools.includes(tool));
-  return { ok: missingTools.length === 0, tools, missingTools };
-}
-async function probeMcpStdio(options) {
-  const child = spawn(options.command, options.args, {
-    env: options.env,
-    stdio: ["pipe", "pipe", "pipe"]
-  });
-  return probeChildProcess(child, options.timeoutMs ?? 5e3);
-}
-async function probeChildProcess(child, timeoutMs) {
-  const messages = [];
-  let stdoutBuffer = "";
-  let stderr = "";
-  let contamination;
-  let spawnError;
-  let exit;
-  const closed = new Promise((resolve) => {
-    child.once("close", (code, signal) => {
-      exit = { code, signal };
-      resolve(exit);
-    });
-  });
-  child.on("error", (error) => {
-    spawnError = error;
-  });
-  child.stdin.on("error", (error) => {
-    spawnError ??= error;
-  });
-  child.stdout.on("data", (chunk) => {
-    stdoutBuffer = appendBounded(stdoutBuffer, chunk.toString("utf8"));
-    let newlineIndex = stdoutBuffer.indexOf("\n");
-    while (newlineIndex >= 0) {
-      const line = stdoutBuffer.slice(0, newlineIndex).trim();
-      stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
-      if (line) {
-        try {
-          if (messages.length >= MAX_MESSAGES)
-            contamination = `MCP stdout exceeded ${MAX_MESSAGES} JSON-RPC messages.`;
-          else messages.push(JSON.parse(line));
-        } catch {
-          contamination = line;
-        }
-      }
-      newlineIndex = stdoutBuffer.indexOf("\n");
-    }
-    if (stdoutBuffer.length >= MAX_CAPTURE_CHARS)
-      contamination = `MCP stdout line exceeded ${MAX_CAPTURE_CHARS} characters.`;
-  });
-  child.stderr.on("data", (chunk) => {
-    stderr = appendBounded(stderr, chunk.toString("utf8"));
-  });
-  const send = (id, method, params = {}) => {
-    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}
-`);
-  };
-  try {
-    send(1, "initialize", {
-      protocolVersion: "2025-06-18",
-      capabilities: {},
-      clientInfo: { name: "okfy-doctor", version: packageVersion() }
-    });
-    await waitForMessage(
-      1,
-      messages,
-      () => contamination,
-      () => spawnError,
-      () => exit,
-      () => stderr,
-      timeoutMs
-    );
-    child.stdin.write(
-      `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} })}
-`
-    );
-    send(2, "tools/list");
-    await waitForMessage(
-      2,
-      messages,
-      () => contamination,
-      () => spawnError,
-      () => exit,
-      () => stderr,
-      timeoutMs
-    );
-    const result = evaluateMcpProbeMessages(messages);
-    if (!result.ok) {
-      return {
-        ok: false,
-        tools: result.tools,
-        stderr,
-        error: {
-          code: "missing_tools",
-          message: `MCP server did not expose expected tools: ${result.missingTools.join(", ")}.`
-        }
-      };
-    }
-    return { ok: true, tools: result.tools, stderr };
-  } catch (error) {
-    if (error instanceof ProbeFailure) {
-      return { ok: false, tools: [], stderr, error: { code: error.code, message: error.message } };
-    }
-    return {
-      ok: false,
-      tools: [],
-      stderr,
-      error: {
-        code: "protocol_error",
-        message: error instanceof Error ? error.message : String(error)
-      }
-    };
-  } finally {
-    await stopChild(child, closed, () => exit);
-  }
-}
-var ProbeFailure = class extends Error {
-  constructor(code, message) {
-    super(message);
-    this.code = code;
-  }
-  code;
-};
-async function waitForMessage(id, messages, contamination, spawnError, childExit, capturedStderr, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const badLine = contamination();
-    if (badLine)
-      throw new ProbeFailure(
-        "stdout_contamination",
-        `MCP stdout contained non-JSON output: ${badLine}`
-      );
-    const error = spawnError();
-    if (error) throw new ProbeFailure("startup_failed", error.message);
-    const message = messages.find((candidate) => candidate.id === id);
-    if (message) return message;
-    const exit = childExit();
-    if (exit) {
-      const details = capturedStderr() ? ` stderr: ${truncate(capturedStderr())}` : "";
-      throw new ProbeFailure(
-        "startup_failed",
-        `MCP subprocess exited before response ${id} (${formatExit(exit)}).${details}`
-      );
-    }
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  throw new ProbeFailure("timeout", `Timed out waiting for MCP response ${id}.`);
-}
-async function stopChild(child, closed, childExit) {
-  try {
-    if (!child.stdin.destroyed) child.stdin.end();
-  } catch {
-  }
-  if (childExit()) return;
-  child.kill("SIGTERM");
-  const exited = await Promise.race([
-    closed.then(() => true),
-    new Promise((resolve) => setTimeout(() => resolve(false), 500))
-  ]);
-  if (!exited && !childExit()) child.kill("SIGKILL");
-}
-function appendBounded(current, addition) {
-  const next = current + addition;
-  if (next.length <= MAX_CAPTURE_CHARS) return next;
-  return next.slice(next.length - MAX_CAPTURE_CHARS);
-}
-function truncate(value) {
-  const normalized = value.trim();
-  if (normalized.length <= MAX_DIAGNOSTIC_CHARS) return normalized;
-  return `${normalized.slice(0, MAX_DIAGNOSTIC_CHARS)}...truncated`;
-}
-function formatExit(exit) {
-  if (exit.signal) return `signal ${exit.signal}`;
-  return `exit code ${exit.code ?? "unknown"}`;
-}
-function needsOkfyHomeEnv(okfyHome, defaultHome) {
-  return path.resolve(okfyHome) !== path.resolve(defaultHome);
-}
-function mcpServerName(sourceNameOrNames) {
-  const sourceNames = Array.isArray(sourceNameOrNames) ? sourceNameOrNames : [sourceNameOrNames];
-  const safeName = sourceNames.map((sourceName) => sourceName.replace(/[._]+/g, "-").replace(/^-+/, "")).filter(Boolean).join("-");
-  return `${safeName || "source"}-okf`;
-}
-function codexMcpServerName(sourceNameOrNames) {
-  const sourceNames = Array.isArray(sourceNameOrNames) ? sourceNameOrNames : [sourceNameOrNames];
-  const safeName = sourceNames.map((sourceName) => sourceName.replace(/[^a-z0-9]+/g, "_").replace(/^_+/, "")).filter(Boolean).join("_");
-  return `${safeName || "source"}_okf`;
-}
-function setupSourceNames(input) {
-  const names = input.sourceNames ?? (input.sourceName ? [input.sourceName] : []);
-  if (input.workspaceAll) return [...names];
-  if (!names.length) throw new Error("Setup report requires at least one source name.");
-  return [...names];
-}
-function shellEnvArgs(env, flag) {
-  const entries = Object.entries(env);
-  if (!entries.length) return "";
-  return entries.map(([key, value]) => ` ${flag} ${shellQuote(`${key}=${value}`)}`).join("");
-}
-function shellQuote(value) {
-  if (/^[A-Za-z0-9_./:=@+-]+$/.test(value)) return value;
-  return `'${value.replace(/'/g, "'\\''")}'`;
-}
-function codexToml(serverName, command, env) {
-  const lines = [
-    `[mcp_servers.${serverName}]`,
-    `command = ${JSON.stringify(command.command)}`,
-    `args = [${command.args.map((arg) => JSON.stringify(arg)).join(", ")}]`
-  ];
-  if (env?.OKFY_HOME) lines.push(`env = { OKFY_HOME = ${JSON.stringify(env.OKFY_HOME)} }`);
-  lines.push("startup_timeout_sec = 20", "tool_timeout_sec = 60", "enabled = true");
-  return lines.join("\n");
-}
-
 // src/cli.ts
 var program = new Command();
 var cliPath = fileURLToPath(import.meta.url);
@@ -799,7 +453,7 @@ function printJson(value) {
 }
 async function pathExists(target) {
   try {
-    await fs2.promises.access(target);
+    await fs.promises.access(target);
     return true;
   } catch (error) {
     if (error?.code === "ENOENT") return false;
@@ -807,7 +461,7 @@ async function pathExists(target) {
   }
 }
 function pathLikeTarget(target) {
-  return path2.isAbsolute(target) || target === "." || target === ".." || target.startsWith("./") || target.startsWith("../") || target.includes("/") || target.includes("\\");
+  return path.isAbsolute(target) || target === "." || target === ".." || target.startsWith("./") || target.startsWith("../") || target.includes("/") || target.includes("\\");
 }
 async function registeredSourceDirExists(name) {
   try {
@@ -951,7 +605,7 @@ function manifestFromOptions(name, seedUrl, options) {
       minIntervalSeconds: options.minRefreshInterval
     },
     bundle: {
-      dir: options.out ? path2.resolve(options.out) : "bundle"
+      dir: options.out ? path.resolve(options.out) : "bundle"
     }
   };
 }
@@ -977,13 +631,13 @@ async function registerWebsiteSource(name, url, options) {
   let backupDir;
   if (options.force && await pathExists(sourceDir)) {
     backupDir = `${sourceDir}.backup-${process.pid}-${Date.now()}`;
-    await fs2.promises.rename(sourceDir, backupDir);
+    await fs.promises.rename(sourceDir, backupDir);
   }
   try {
     await writeSourceManifest(manifest);
     const result = await runSourceRefresh(manifest, { force: true });
     if (result.status === "fresh") {
-      if (backupDir) await fs2.promises.rm(backupDir, { recursive: true, force: true });
+      if (backupDir) await fs.promises.rm(backupDir, { recursive: true, force: true });
       return { manifest, result };
     }
     if (backupDir) {
@@ -997,8 +651,8 @@ async function registerWebsiteSource(name, url, options) {
   }
 }
 async function restoreSourceBackup(sourceDir, backupDir) {
-  await fs2.promises.rm(sourceDir, { recursive: true, force: true });
-  if (await pathExists(backupDir)) await fs2.promises.rename(backupDir, sourceDir);
+  await fs.promises.rm(sourceDir, { recursive: true, force: true });
+  if (await pathExists(backupDir)) await fs.promises.rename(backupDir, sourceDir);
 }
 async function runSourceRefresh(manifest, options = {}) {
   const state = await readStateIfExists(manifest.name);
@@ -1067,6 +721,42 @@ async function resolveCliTargets(targets, options) {
   assertUniqueWorkspaceRecordNames(records);
   return { kind: "workspace", all: options.all, records, sourceNames: sourceSet.sourceNames };
 }
+async function inspectorReportForResolution(resolution) {
+  if (resolution.kind === "bundle") return buildBundleInspectorReport(resolution.bundleDir);
+  if (resolution.kind === "registered") return buildWorkspaceInspectorReport([resolution.record]);
+  return buildWorkspaceInspectorReport(resolution.records, { all: resolution.all });
+}
+function activationInputForResolution(resolution) {
+  if (resolution.kind === "bundle") {
+    const record = localBundleRecord(resolution.bundleDir);
+    return {
+      records: [record],
+      commandTarget: resolution.bundleDir,
+      protectedInputPaths: protectedActivationInputPaths([record]),
+      autoRefresh: false,
+      serverIdentity: [record.name]
+    };
+  }
+  if (resolution.kind === "registered") {
+    return {
+      records: [resolution.record],
+      commandTarget: resolution.record.name,
+      protectedInputPaths: protectedActivationInputPaths([resolution.record]),
+      autoRefresh: true,
+      serverIdentity: [resolution.record.name]
+    };
+  }
+  const commandTargets = resolution.records.map(
+    (record) => isRegisteredWorkspaceRecord(record) ? record.name : record.bundleDir
+  );
+  return {
+    records: resolution.records,
+    commandTarget: resolution.all ? { all: true } : commandTargets,
+    protectedInputPaths: protectedActivationInputPaths(resolution.records),
+    autoRefresh: resolution.records.some(isRegisteredWorkspaceRecord) || resolution.all,
+    serverIdentity: resolution.all ? ["all"] : resolution.records.map((record) => record.name)
+  };
+}
 function mcpRefreshHooksForRecord(record, mode, maxAgeSeconds) {
   return {
     mode,
@@ -1124,20 +814,20 @@ function printStatus(message) {
 `);
 }
 async function writeFileAtomically(filePath, contents) {
-  const resolved = path2.resolve(filePath);
+  const resolved = path.resolve(filePath);
   const tempPath = `${resolved}.tmp-${process.pid}-${Date.now()}`;
-  await fs2.promises.mkdir(path2.dirname(resolved), { recursive: true });
+  await fs.promises.mkdir(path.dirname(resolved), { recursive: true });
   try {
-    await fs2.promises.writeFile(tempPath, contents, "utf8");
-    await fs2.promises.rename(tempPath, resolved);
+    await fs.promises.writeFile(tempPath, contents, "utf8");
+    await fs.promises.rename(tempPath, resolved);
   } catch (error) {
-    await fs2.promises.rm(tempPath, { force: true });
+    await fs.promises.rm(tempPath, { force: true });
     throw error;
   }
 }
 function setupHomeCheck(okfyHome) {
   const defaultHome = defaultOkfyHome();
-  if (path2.resolve(okfyHome) === path2.resolve(defaultHome)) {
+  if (path.resolve(okfyHome) === path.resolve(defaultHome)) {
     return setupCheck(
       "source_home",
       "Source store",
@@ -1776,7 +1466,73 @@ program.command("inspect").argument("<bundle>", "OKF bundle directory").action(a
     process.exitCode = 1;
   }
 });
-program.command("map").argument("[targets...]", "Registered source name(s), OKF bundle path(s), or one OKF bundle directory").option("--all", "Map all registered sources as one source-aware workspace", false).option("--out <file>", "Inspector HTML output file", "okfy-inspector.html").option("--json", "Print Inspector report JSON without writing HTML", false).action(async (targets = [], options) => {
+program.command("activate").argument(
+  "[targets...]",
+  "Registered source name(s), OKF bundle path(s), or one OKF bundle directory"
+).option("--all", "Activate all registered sources as one source-aware workspace", false).option(
+  "--client <client>",
+  "Target client: claude-code, claude-desktop, cursor, codex, or generic",
+  setupClient,
+  "generic"
+).option("--out <dir>", "Activation packet output directory", "okfy-activation").option("--force", "Overwrite a non-empty activation output directory", false).option("--json", "Print activation packet manifest JSON", false).action(async (targets = [], options) => {
+  try {
+    const resolution = await resolveCliTargets(targets, { all: options.all });
+    const report = await inspectorReportForResolution(resolution);
+    const activationInput = activationInputForResolution(resolution);
+    const packet = await buildActivationPacket({
+      ...activationInput,
+      report,
+      client: options.client,
+      outDir: options.out,
+      okfyHome: resolveOkfyHome()
+    });
+    const reportWithActivation = withActivationMetadata(report, packet);
+    await writeActivationPacketFiles(
+      packet,
+      {
+        inspectorHtml: renderInspectorHtml(reportWithActivation),
+        setupMarkdown: renderActivationSetupMarkdown(packet)
+      },
+      { force: options.force, protectedInputPaths: activationInput.protectedInputPaths }
+    );
+    const manifest = {
+      status: "ready",
+      outDir: packet.outDir,
+      client: packet.setup.client,
+      command: packet.setup.command,
+      firstPrompt: packet.setup.firstPrompt,
+      files: packet.files,
+      proof: {
+        query: packet.proof.search.input.query,
+        searchResultCount: packet.proof.search.results.length,
+        readRef: packet.proof.read?.result.ref ?? null,
+        citation: packet.proof.read?.result.citation.sourceResource ?? null
+      }
+    };
+    if (options.json) {
+      printJson(manifest);
+      return;
+    }
+    console.log("okfy activate");
+    console.log(`Output: ${packet.outDir}`);
+    for (const file of packet.files) console.log(`${file.label}: ${file.path}`);
+    console.log("");
+    console.log("MCP launch command:");
+    console.log(`  ${packet.setup.command.display}`);
+    console.log("");
+    console.log("First prompt:");
+    console.log(packet.setup.firstPrompt);
+  } catch (error) {
+    if (options.json)
+      printJson({ status: "failed", error: { message: error?.message ?? "Activate failed." } });
+    else console.error(pc.red(error?.message ?? "Activate failed."));
+    process.exitCode = 1;
+  }
+});
+program.command("map").argument(
+  "[targets...]",
+  "Registered source name(s), OKF bundle path(s), or one OKF bundle directory"
+).option("--all", "Map all registered sources as one source-aware workspace", false).option("--out <file>", "Inspector HTML output file", "okfy-inspector.html").option("--json", "Print Inspector report JSON without writing HTML", false).action(async (targets = [], options) => {
   try {
     let report;
     const resolution = await resolveCliTargets(targets, { all: options.all });
@@ -1791,7 +1547,7 @@ program.command("map").argument("[targets...]", "Registered source name(s), OKF 
       printJson(report);
       return;
     }
-    const outputPath = path2.resolve(options.out);
+    const outputPath = path.resolve(options.out);
     const html = renderInspectorHtml(report);
     await writeFileAtomically(outputPath, html);
     console.log(`Wrote OKFY Inspector: ${outputPath}`);
@@ -1878,8 +1634,8 @@ program.command("serve").argument(
 });
 function resolveDemoBundle() {
   const relativeBundle = "examples/bundles/okfy-docs";
-  if (fs2.existsSync(relativeBundle)) return relativeBundle;
-  return path2.join(packageRoot, relativeBundle);
+  if (fs.existsSync(relativeBundle)) return relativeBundle;
+  return path.join(packageRoot, relativeBundle);
 }
 program.command("demo").description("Run offline demo against committed example bundle").action(async () => {
   const bundle = resolveDemoBundle();
