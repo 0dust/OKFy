@@ -1,10 +1,9 @@
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import { BundleSearch } from "./search.js";
 import { inspectBundle, validateBundle } from "./validate.js";
 import type { Concept, ValidationIssue } from "./types.js";
 import type { RefreshState } from "./source-store.js";
-import type { WorkspaceSourceRecord } from "./workspace.js";
+import { localBundleRecord, type WorkspaceSourceRecord } from "./workspace.js";
 
 export type InspectorValidationStatus = "valid" | "invalid" | "unavailable";
 export type InspectorAvailabilityStatus = "available" | "unavailable";
@@ -132,8 +131,7 @@ export async function buildBundleInspectorReport(
   options: BuildBundleInspectorOptions = {}
 ): Promise<InspectorReport> {
   const resolved = path.resolve(bundleDir);
-  const sourceName = bundleSourceName(resolved);
-  const record = localBundleRecord(resolved, sourceName);
+  const record = localBundleRecord(resolved);
   return buildInspectorReport([record], {
     target: { kind: "bundle", bundleDir: resolved },
     title: options.title ?? `${path.basename(resolved)} OKFY Inspector`,
@@ -474,54 +472,6 @@ function suggestedQuestions(
     "What related concepts should I inspect next with get_neighbors?"
   ];
   return [...new Set(questions)];
-}
-
-function localBundleRecord(bundleDir: string, sourceName: string): WorkspaceSourceRecord {
-  const timestamp = "1970-01-01T00:00:00.000Z";
-  return {
-    name: sourceName,
-    dir: bundleDir,
-    bundleDir,
-    manifest: {
-      schemaVersion: 1,
-      okfyVersion: "local",
-      name: sourceName,
-      kind: "local",
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      source: {
-        seedUrl: pathToFileURL(bundleDir).href
-      },
-      crawl: {
-        maxPages: 0,
-        maxDepth: 0,
-        include: [],
-        exclude: [],
-        sameOrigin: true,
-        respectRobots: true,
-        concurrency: 1,
-        allowPrivateNetwork: false
-      },
-      refresh: {
-        mode: "off",
-        maxAgeSeconds: 0,
-        minIntervalSeconds: 0
-      },
-      bundle: {
-        dir: bundleDir
-      }
-    }
-  };
-}
-
-function bundleSourceName(bundleDir: string): string {
-  return (
-    path
-      .basename(bundleDir)
-      .toLowerCase()
-      .replace(/[^a-z0-9._-]+/g, "-")
-      .replace(/^[._-]+|[._-]+$/g, "") || "bundle"
-  );
 }
 
 function brokenLinkCount(issues: ValidationIssue[]): number {

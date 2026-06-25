@@ -300,6 +300,16 @@ describe("registered source CLI flow", () => {
     await expect(fs.access(outFile)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("rejects empty serve bundle directories before starting MCP", async () => {
+    const okfyHome = await tempHome();
+    const emptyBundle = path.join(okfyHome, "not-a-bundle");
+    await fs.mkdir(emptyBundle);
+
+    await expect(runCli(["serve", emptyBundle, "--mcp"], okfyHome)).rejects.toMatchObject({
+      stderr: expect.stringContaining("does not contain any OKF concept files")
+    });
+  });
+
   it("shows corrupt source directories in sources output", async () => {
     const okfyHome = await tempHome();
     await fs.mkdir(path.join(okfyHome, "sources", "broken"), { recursive: true });

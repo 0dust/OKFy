@@ -1,5 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { packageVersion } from "./metadata.js";
 import { BundleSearch, type SearchResult } from "./search.js";
 import {
   listSources,
@@ -38,6 +40,72 @@ export type WorkspaceSourceRecord = Omit<SourceRecord, "manifest"> & {
     kind: SourceRecord["manifest"]["kind"] | "local";
   };
 };
+
+export function bundleSourceName(bundleDir: string): string {
+  const baseName = path.basename(path.resolve(bundleDir));
+  const candidate = baseName
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^[._-]+|[._-]+$/g, "");
+  return validateSourceName(candidate || "bundle");
+}
+
+export function localBundleRecord(bundleDir: string): WorkspaceSourceRecord {
+  const resolved = path.resolve(bundleDir);
+  const name = bundleSourceName(resolved);
+  const timestamp = "1970-01-01T00:00:00.000Z";
+  return {
+    name,
+    dir: resolved,
+    bundleDir: resolved,
+    manifest: {
+      schemaVersion: 1,
+      okfyVersion: packageVersion(),
+      name,
+      kind: "local",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      source: {
+        seedUrl: pathToFileURL(resolved).href
+      },
+      crawl: {
+        maxPages: 0,
+        maxDepth: 0,
+        include: [],
+        exclude: [],
+        sameOrigin: true,
+        respectRobots: true,
+        concurrency: 1,
+        allowPrivateNetwork: false
+      },
+      refresh: {
+        mode: "off",
+        maxAgeSeconds: 0,
+        minIntervalSeconds: 0
+      },
+      bundle: {
+        dir: resolved
+      }
+    }
+  };
+}
+
+export function assertUniqueWorkspaceRecordNames(records: WorkspaceSourceRecord[]): void {
+  const seen = new Set<string>();
+  for (const record of records) {
+    if (seen.has(record.name))
+      throw new Error(
+        `Duplicate workspace source "${record.name}". Rename one bundle directory or source.`
+      );
+    seen.add(record.name);
+  }
+}
+
+export function isRegisteredWorkspaceRecord(
+  record: WorkspaceSourceRecord
+): record is SourceRecord {
+  return record.manifest.kind === "website";
+}
 
 export interface WorkspaceSearchSource {
   record: WorkspaceSourceRecord;

@@ -3,6 +3,15 @@
   "version": "0.3.1",
   "description": "Convert docs into Open Knowledge Format bundles and serve them to MCP agents.",
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "bin": {
     "okfy": "dist/cli.js",
     "okfy-ai": "dist/cli.js"

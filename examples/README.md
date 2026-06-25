@@ -18,7 +18,8 @@ Purpose: committed offline OKF bundle used by `okfy demo`.
 Source command:
 
 ```bash
-pnpm okfy import examples/local-markdown --out examples/bundles/okfy-docs --source-name "okfy docs" --force --stable-timestamps
+npx -y okfy-ai import examples/local-markdown --out /tmp/okfy-docs --source-name "okfy docs" --force --stable-timestamps
+npx -y okfy-ai validate /tmp/okfy-docs
 ```
 
 Expected concept count:
@@ -41,12 +42,13 @@ Suggested agent questions:
 
 ## bundles/stripe-checkout-small
 
-Purpose: small curated Stripe Checkout sample for launch demos when live crawling is flaky.
+Purpose: small curated Stripe Checkout sample for launch demos when live crawling is flaky. The generated OKF bundle is committed so package users can inspect it without the repo-only source fixture.
 
-Source command:
+Try it:
 
 ```bash
-pnpm okfy import test-fixtures/stripe-checkout-html --out examples/bundles/stripe-checkout-small --source-name "Stripe Checkout" --force --stable-timestamps
+npx -y okfy-ai validate examples/bundles/stripe-checkout-small
+npx -y okfy-ai map examples/bundles/stripe-checkout-small --out stripe-inspector.html
 ```
 
 Expected concept count:

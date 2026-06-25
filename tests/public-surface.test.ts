@@ -10,10 +10,37 @@ describe("public surface", () => {
   it("README points at public product assets and current demo output", async () => {
     const cli = path.resolve("dist/cli.js");
     await fs.access(cli);
-    const [{ stdout: demoOutput }, { stdout: versionOutput }, readme, packageJson, manifest] =
+    const [
+      { stdout: demoOutput },
+      { stdout: versionOutput },
+      { stderr: serveError },
+      { stderr: transportError },
+      { stderr: maxCharsError },
+      readme,
+      packageJson,
+      manifest
+    ] =
       await Promise.all([
         execFileAsync(process.execPath, [cli, "demo"]),
         execFileAsync(process.execPath, [cli, "--version"]),
+        execFileAsync(process.execPath, [cli, "serve"]).catch((error: { stderr: string }) => ({
+          stderr: error.stderr
+        })),
+        execFileAsync(process.execPath, [cli, "serve", "stripe", "--mcp", "--transport", "http"]).catch(
+          (error: { stderr: string }) => ({
+            stderr: error.stderr
+          })
+        ),
+        execFileAsync(process.execPath, [
+          cli,
+          "serve",
+          "examples/bundles/okfy-docs",
+          "--mcp",
+          "--max-result-chars",
+          "abc"
+        ]).catch((error: { stderr: string }) => ({
+          stderr: error.stderr
+        })),
         fs.readFile("README.md", "utf8"),
         fs.readFile("package.json", "utf8"),
         fs.readFile(".release-please-manifest.json", "utf8")
@@ -38,6 +65,10 @@ describe("public surface", () => {
     expect(parsedPackage.dependencies?.["js-yaml"]).toMatch(/^\^4\./);
     expect(versionOutput.trim()).toBe(parsedPackage.version);
     expect(parsedManifest["."]).toBe(parsedPackage.version);
+    expect(serveError).toContain("Only MCP server mode is supported.");
+    expect(transportError).toContain("Only stdio transport is supported.");
+    expect(maxCharsError).toContain("Expected max-result-chars to be an integer >= 1");
+    expect(`${serveError}\n${transportError}\n${maxCharsError}`).not.toContain("v0.1");
 
     expect(readme).toContain("![okfy terminal demo](assets/demo.gif)");
     expect(readme).toContain(
@@ -118,6 +149,7 @@ describe("public surface", () => {
         suggestedAgentQuestions?: string[];
       };
       expect(parsed.sourceCommand).toBeTruthy();
+      expect(parsed.sourceCommand).not.toMatch(/pnpm okfy|test-fixtures/);
       expect(parsed.expectedConceptCount).toBeGreaterThan(0);
       expect(parsed.expectedValidationStatus).toBe("valid");
       expect(parsed.suggestedAgentQuestions).toHaveLength(3);
@@ -153,18 +185,40 @@ describe("public surface", () => {
       fs.readFile("docs/mcp-clients.md", "utf8"),
       fs.readFile("examples/README.md", "utf8")
     ]);
-    const parsed = JSON.parse(packageJson) as { name?: string; bin?: Record<string, string> };
+    const parsed = JSON.parse(packageJson) as {
+      name?: string;
+      bin?: Record<string, string>;
+      main?: string;
+      types?: string;
+      exports?: Record<string, unknown>;
+    };
     const publicCopy = `${readme}\n${npmReadme}\n${mcpDocs}\n${examplesReadme}`;
 
     expect(parsed.name).toBe("okfy-ai");
     expect(parsed.bin?.okfy).toBe("dist/cli.js");
     expect(parsed.bin?.["okfy-ai"]).toBe("dist/cli.js");
+    expect(parsed.main).toBe("./dist/index.js");
+    expect(parsed.types).toBe("./dist/index.d.ts");
+    expect(parsed.exports?.["."]).toMatchObject({
+      types: "./dist/index.d.ts",
+      import: "./dist/index.js"
+    });
+    await expect(
+      execFileAsync(process.execPath, [
+        "--input-type=module",
+        "-e",
+        "import('okfy-ai').then((mod) => console.log(typeof mod.validateBundle))"
+      ])
+    ).resolves.toMatchObject({ stdout: "function\n" });
     expect(readme).toContain(
       "`okfy-ai` is the npm package name. `okfy` is the installed CLI command."
     );
     expect(readme).toContain("You do not need global install for MCP configs.");
     expect(readme).toContain("MCP clients start it as a subprocess");
     expect(readme).toContain("Preflight DNS-resolved private targets");
+    expect(readme).toContain("The MCP server exposes read-only tools.");
+    expect(readme).toContain("okfy init <name> <url>");
+    expect(readme).toContain("okfy doctor <name> [more-names...]");
     expect(readme).not.toContain("including DNS-resolved hosts and redirects");
     expect(npmReadme).toContain("# okfy-ai");
     expect(npmReadme).toContain("npm install -g okfy-ai");
@@ -172,6 +226,9 @@ describe("public surface", () => {
       "`okfy-ai` is the npm package name. `okfy` is the installed CLI command."
     );
     expect(npmReadme).toContain("Preflight DNS-resolved private targets");
+    expect(npmReadme).toContain(
+      "MCP tools are read-only; refresh is server-side maintenance, not an agent-callable write tool."
+    );
     expect(npmReadme).not.toContain("including DNS-resolved hosts and redirects");
     expect(npmReadme).toContain(
       "Turn docs into agent-readable Open Knowledge Format v0.1-conformant bundles, then serve them to Claude, Codex, Cursor"
@@ -238,9 +295,13 @@ describe("public surface", () => {
       "Direct bundle paths, including local bundle workspaces, do not use source auto-refresh."
     );
     expect(mcpDocs).toContain('args": ["-y", "okfy-ai", "serve", "./docs-okf", "--mcp"]');
+    expect(mcpDocs).toContain("search_concepts(query, source?, type?, tags?, limit?)");
+    expect(mcpDocs).toContain("read_concept(id, source?, max_chars?)");
+    expect(mcpDocs).toContain("get_neighbors(id, source?, depth?)");
     expect(examplesReadme).toContain("Preview what your agent will know");
     expect(examplesReadme).toContain("npx -y okfy-ai map stripe --out okfy-inspector.html");
     expect(examplesReadme).toContain("okfy map ./tmp/okfy-docs --out okfy-inspector.html");
+    expect(examplesReadme).not.toMatch(/pnpm okfy|test-fixtures/);
     expect(`${readme}\n${npmReadme}\n${mcpDocs}`).not.toMatch(/npx -y okfy(?:@|\s)/);
     for (const forbidden of [
       /hosted accounts?/i,

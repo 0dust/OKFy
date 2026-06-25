@@ -1,5 +1,5 @@
 {
-  "sourceCommand": "pnpm okfy import test-fixtures/stripe-checkout-html --out examples/bundles/stripe-checkout-small --source-name \"Stripe Checkout\" --force --stable-timestamps",
+  "sourceCommand": "npx -y okfy-ai validate examples/bundles/stripe-checkout-small",
   "expectedConceptCount": 4,
   "expectedValidationStatus": "valid",
   "suggestedAgentQuestions": [

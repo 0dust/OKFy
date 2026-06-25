@@ -330,7 +330,7 @@ registered docs source or Markdown folder
 | `list_types` | List concept types and counts, optionally filtered by workspace source. |
 | `list_tags` | List tags and counts, optionally filtered by workspace source. |
 
-The server is read-only in v0.1. Auto-refresh is server-side maintenance for registered sources, not an agent-callable write tool. `okfy serve --mcp` writes MCP JSON-RPC to stdout, so launch it through an MCP client rather than as a normal terminal command.
+The MCP server exposes read-only tools. Auto-refresh is server-side maintenance for registered sources, not an agent-callable write tool. `okfy serve --mcp` writes MCP JSON-RPC to stdout, so launch it through an MCP client rather than as a normal terminal command.
 
 ## Bundle Format
 
@@ -384,11 +384,13 @@ OKF keeps knowledge as typed, linked Markdown files:
 - Preflight DNS-resolved private targets are rejected before fetch; fetch-time DNS is not IP-pinned.
 - `--force` refuses unsafe output directories such as `.`, `/`, the home dir, repo root, input path, input parent, and symlink output dirs unless an explicit dangerous override is provided.
 - HTML and Markdown are treated as text. Scripts are not executed.
-- MCP tools are read-only in v0.1.
+- MCP tools are read-only; refresh is server-side maintenance, not an agent-callable write tool.
 
 ## Commands
 
 ```bash
+okfy init <name> <url>
+okfy doctor <name> [more-names...]
 okfy add <name> <url>
 okfy sources
 okfy check <name-or-bundle>
@@ -399,7 +401,7 @@ okfy import <path> --out <dir>
 okfy validate <bundle>
 okfy inspect <bundle>
 okfy map <name-or-bundle> [more-source-names...] --out okfy-inspector.html
-okfy serve <name-or-bundle> --mcp
+okfy serve <name-or-bundle> [more-source-names...] --mcp
 okfy demo
 ```
 
