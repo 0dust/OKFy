@@ -211,6 +211,59 @@ describe("registered source CLI flow", () => {
     expect(html).toContain("Quickstart");
   });
 
+  it("writes an activation packet for a local bundle", async () => {
+    const okfyHome = await tempHome();
+    const outDir = path.join(okfyHome, "activation");
+
+    const result = await runCli(
+      ["activate", "test-fixtures/okf-valid", "--client", "codex", "--out", outDir],
+      okfyHome
+    );
+
+    expect(result.stdout).toContain("okfy activate");
+    expect(result.stdout).toContain(outDir);
+    const [html, setup, proofText] = await Promise.all([
+      fs.readFile(path.join(outDir, "okfy-inspector.html"), "utf8"),
+      fs.readFile(path.join(outDir, "okfy-setup.md"), "utf8"),
+      fs.readFile(path.join(outDir, "okfy-proof.json"), "utf8")
+    ]);
+    const proof = parseJson<{
+      search: { input: { query: string }; results: Array<{ ref: string }> };
+      read: { result: { citation: { sourceResource: string } } };
+    }>(proofText);
+    expect(html).toContain("Agent Setup");
+    expect(html).toContain("Codex config.toml");
+    expect(setup).toContain("npx -y okfy-ai serve");
+    expect(setup).toContain("First Prompt");
+    expect(proof.search.input.query).toBe("Quickstart");
+    expect(proof.search.results[0]?.ref).toBe("guides/quickstart");
+    expect(proof.read.result.citation.sourceResource).toBe(
+      "https://docs.example.com/guides/quickstart"
+    );
+  });
+
+  it("refuses to overwrite activation packets unless forced", async () => {
+    const okfyHome = await tempHome();
+    const outDir = path.join(okfyHome, "activation");
+    await fs.mkdir(outDir);
+    await fs.writeFile(path.join(outDir, "keep.txt"), "do not replace", "utf8");
+
+    await expect(
+      runCli(["activate", "test-fixtures/okf-valid", "--out", outDir], okfyHome)
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("Activation output directory is not empty")
+    });
+    await expect(fs.readFile(path.join(outDir, "keep.txt"), "utf8")).resolves.toBe(
+      "do not replace"
+    );
+
+    await runCli(["activate", "test-fixtures/okf-valid", "--out", outDir, "--force"], okfyHome);
+    await expect(fs.access(path.join(outDir, "okfy-proof.json"))).resolves.toBeUndefined();
+    await expect(fs.access(path.join(outDir, "keep.txt"))).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+  });
+
   it("prints local bundle Inspector JSON without writing HTML", async () => {
     const okfyHome = await tempHome();
     const outFile = path.join(okfyHome, "should-not-exist.html");

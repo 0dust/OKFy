@@ -19,32 +19,36 @@ describe("public surface", () => {
       readme,
       packageJson,
       manifest
-    ] =
-      await Promise.all([
-        execFileAsync(process.execPath, [cli, "demo"]),
-        execFileAsync(process.execPath, [cli, "--version"]),
-        execFileAsync(process.execPath, [cli, "serve"]).catch((error: { stderr: string }) => ({
-          stderr: error.stderr
-        })),
-        execFileAsync(process.execPath, [cli, "serve", "stripe", "--mcp", "--transport", "http"]).catch(
-          (error: { stderr: string }) => ({
-            stderr: error.stderr
-          })
-        ),
-        execFileAsync(process.execPath, [
-          cli,
-          "serve",
-          "examples/bundles/okfy-docs",
-          "--mcp",
-          "--max-result-chars",
-          "abc"
-        ]).catch((error: { stderr: string }) => ({
-          stderr: error.stderr
-        })),
-        fs.readFile("README.md", "utf8"),
-        fs.readFile("package.json", "utf8"),
-        fs.readFile(".release-please-manifest.json", "utf8")
-      ]);
+    ] = await Promise.all([
+      execFileAsync(process.execPath, [cli, "demo"]),
+      execFileAsync(process.execPath, [cli, "--version"]),
+      execFileAsync(process.execPath, [cli, "serve"]).catch((error: { stderr: string }) => ({
+        stderr: error.stderr
+      })),
+      execFileAsync(process.execPath, [
+        cli,
+        "serve",
+        "stripe",
+        "--mcp",
+        "--transport",
+        "http"
+      ]).catch((error: { stderr: string }) => ({
+        stderr: error.stderr
+      })),
+      execFileAsync(process.execPath, [
+        cli,
+        "serve",
+        "examples/bundles/okfy-docs",
+        "--mcp",
+        "--max-result-chars",
+        "abc"
+      ]).catch((error: { stderr: string }) => ({
+        stderr: error.stderr
+      })),
+      fs.readFile("README.md", "utf8"),
+      fs.readFile("package.json", "utf8"),
+      fs.readFile(".release-please-manifest.json", "utf8")
+    ]);
     const parsedPackage = JSON.parse(packageJson) as {
       dependencies?: Record<string, string>;
       version?: string;
@@ -90,6 +94,9 @@ describe("public surface", () => {
     expect(readme).toContain("[docs/mcp-clients.md](docs/mcp-clients.md)");
     expect(readme.indexOf("## Use With Agents")).toBeGreaterThan(-1);
     expect(readme.indexOf("## Use With Agents")).toBeLessThan(
+      readme.indexOf("## Activation Packet")
+    );
+    expect(readme.indexOf("## Activation Packet")).toBeLessThan(
       readme.indexOf("## Preview The Inspector")
     );
     expect(readme.indexOf("## Preview The Inspector")).toBeLessThan(
@@ -99,6 +106,9 @@ describe("public surface", () => {
       "npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client codex"
     );
     expect(readme).toContain("npx -y okfy-ai doctor stripe --client codex");
+    expect(readme).toContain("npx -y okfy-ai activate stripe --client codex --out okfy-activation");
+    expect(readme).toContain("okfy-proof.json");
+    expect(readme).toContain("Activation does not write client config files by default.");
     expect(readme).toContain("Preview what your agent will know");
     expect(readme).toContain("npx -y okfy-ai map stripe --out okfy-inspector.html");
     expect(readme).toContain("local static HTML Inspector");
@@ -219,6 +229,9 @@ describe("public surface", () => {
     expect(readme).toContain("The MCP server exposes read-only tools.");
     expect(readme).toContain("okfy init <name> <url>");
     expect(readme).toContain("okfy doctor <name> [more-names...]");
+    expect(readme).toContain(
+      "okfy activate <name-or-bundle> [more-source-names...] --client codex --out okfy-activation"
+    );
     expect(readme).not.toContain("including DNS-resolved hosts and redirects");
     expect(npmReadme).toContain("# okfy-ai");
     expect(npmReadme).toContain("npm install -g okfy-ai");
@@ -234,12 +247,19 @@ describe("public surface", () => {
       "Turn docs into agent-readable Open Knowledge Format v0.1-conformant bundles, then serve them to Claude, Codex, Cursor"
     );
     expect(npmReadme).toContain("Preview what your agent will know");
+    expect(npmReadme).toContain(
+      "npx -y okfy-ai activate stripe --client codex --out okfy-activation"
+    );
+    expect(npmReadme).toContain("okfy-proof.json");
     expect(npmReadme).toContain("npx -y okfy-ai map stripe --out okfy-inspector.html");
     expect(npmReadme).toContain("local static HTML Inspector");
     expect(npmReadme.indexOf("## Use With Agents")).toBeLessThan(
       npmReadme.indexOf("## Optional CLI Install")
     );
     expect(npmReadme.indexOf("## Use With Agents")).toBeLessThan(
+      npmReadme.indexOf("## Activation Packet")
+    );
+    expect(npmReadme.indexOf("## Activation Packet")).toBeLessThan(
       npmReadme.indexOf("## Preview The Inspector")
     );
     expect(npmReadme.indexOf("## Preview The Inspector")).toBeLessThan(
@@ -270,6 +290,11 @@ describe("public surface", () => {
       "npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client generic"
     );
     expect(mcpDocs).toContain("npx -y okfy-ai doctor stripe --client codex");
+    expect(mcpDocs).toContain(
+      "npx -y okfy-ai activate stripe --client codex --out okfy-activation"
+    );
+    expect(mcpDocs).toContain("okfy-setup.md");
+    expect(mcpDocs).toContain("Activation does not write client files.");
     expect(mcpDocs).toContain("npx -y okfy-ai map stripe --out okfy-inspector.html");
     expect(mcpDocs).toContain("local static HTML file");
     expect(mcpDocs).toContain(
@@ -299,6 +324,9 @@ describe("public surface", () => {
     expect(mcpDocs).toContain("read_concept(id, source?, max_chars?)");
     expect(mcpDocs).toContain("get_neighbors(id, source?, depth?)");
     expect(examplesReadme).toContain("Preview what your agent will know");
+    expect(examplesReadme).toContain(
+      "npx -y okfy-ai activate examples/bundles/stripe-checkout-small --client codex --out stripe-activation"
+    );
     expect(examplesReadme).toContain("npx -y okfy-ai map stripe --out okfy-inspector.html");
     expect(examplesReadme).toContain("okfy map ./tmp/okfy-docs --out okfy-inspector.html");
     expect(examplesReadme).not.toMatch(/pnpm okfy|test-fixtures/);

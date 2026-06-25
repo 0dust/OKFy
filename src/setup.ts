@@ -16,11 +16,22 @@ export interface ServeCommand {
   display: string;
 }
 
+export interface ServeCommandOptions {
+  autoRefresh?: boolean;
+}
+
 export interface SetupArtifact {
   client: SetupClient;
   label: string;
   format: "shell" | "json" | "toml";
   body: string;
+}
+
+export interface McpClientArtifactInput {
+  client: SetupClient;
+  serverName: string;
+  codexServerName: string;
+  command: ServeCommand;
 }
 
 export interface SetupCheck {
@@ -168,7 +179,17 @@ export function renderClientArtifacts(input: {
   const serverName = mcpServerName(serverIdentity);
   const codexName = codexMcpServerName(serverIdentity);
   const command = serveCommand(commandTarget, okfyHome, defaultHome);
-  const env = Object.keys(command.env).length ? command.env : undefined;
+
+  return renderMcpClientArtifacts({
+    client: input.client,
+    serverName,
+    codexServerName: codexName,
+    command
+  });
+}
+
+export function renderMcpClientArtifacts(input: McpClientArtifactInput): SetupArtifact[] {
+  const env = Object.keys(input.command.env).length ? input.command.env : undefined;
 
   if (input.client === "claude-code") {
     return [
@@ -176,7 +197,7 @@ export function renderClientArtifacts(input: {
         client: input.client,
         label: "Claude Code",
         format: "shell",
-        body: `claude mcp add --transport stdio${shellEnvArgs(command.env, "-e")} ${serverName} -- ${command.display}`
+        body: `claude mcp add --transport stdio${shellEnvArgs(input.command.env, "-e")} ${input.serverName} -- ${input.command.display}`
       }
     ];
   }
@@ -187,13 +208,13 @@ export function renderClientArtifacts(input: {
         client: input.client,
         label: "Codex config.toml",
         format: "toml",
-        body: codexToml(codexName, command, env)
+        body: codexToml(input.codexServerName, input.command, env)
       },
       {
         client: input.client,
         label: "Codex CLI",
         format: "shell",
-        body: `codex mcp add${shellEnvArgs(command.env, "--env")} ${codexName} -- ${command.display}`
+        body: `codex mcp add${shellEnvArgs(input.command.env, "--env")} ${input.codexServerName} -- ${input.command.display}`
       }
     ];
   }
@@ -210,9 +231,9 @@ export function renderClientArtifacts(input: {
       body: JSON.stringify(
         {
           mcpServers: {
-            [serverName]: {
-              command: command.command,
-              args: command.args,
+            [input.serverName]: {
+              command: input.command.command,
+              args: input.command.args,
               ...(env ? { env } : {})
             }
           }
@@ -239,9 +260,10 @@ export type ServeCommandTarget = string | string[] | { all: true };
 export function serveCommand(
   sourceNameOrNames: ServeCommandTarget,
   okfyHome: string,
-  defaultHome = defaultOkfyHome()
+  defaultHome = defaultOkfyHome(),
+  options: ServeCommandOptions = {}
 ): ServeCommand {
-  const args = ["-y", "okfy-ai", ...serveCommandArgs(sourceNameOrNames)];
+  const args = ["-y", "okfy-ai", ...serveCommandArgs(sourceNameOrNames, options)];
   const env: Record<string, string> = needsOkfyHomeEnv(okfyHome, defaultHome)
     ? { OKFY_HOME: path.resolve(okfyHome) }
     : {};
@@ -253,14 +275,25 @@ export function serveCommand(
   };
 }
 
-export function serveCommandArgs(sourceNameOrNames: ServeCommandTarget): string[] {
+export function serveCommandArgs(
+  sourceNameOrNames: ServeCommandTarget,
+  options: ServeCommandOptions = {}
+): string[] {
+  const autoRefresh = options.autoRefresh ?? true;
   if (isAllCommandTarget(sourceNameOrNames)) {
-    return ["serve", "--all", "--mcp", "--auto-refresh"];
+    return autoRefresh
+      ? ["serve", "--all", "--mcp", "--auto-refresh"]
+      : ["serve", "--all", "--mcp"];
   }
   const sourceNames = Array.isArray(sourceNameOrNames) ? sourceNameOrNames : [sourceNameOrNames];
-  return sourceNames.some((sourceName) => sourceName.startsWith("-"))
-    ? ["serve", "--mcp", "--auto-refresh", "--", ...sourceNames]
-    : ["serve", ...sourceNames, "--mcp", "--auto-refresh"];
+  if (sourceNames.some((sourceName) => sourceName.startsWith("-"))) {
+    return autoRefresh
+      ? ["serve", "--mcp", "--auto-refresh", "--", ...sourceNames]
+      : ["serve", "--mcp", "--", ...sourceNames];
+  }
+  return autoRefresh
+    ? ["serve", ...sourceNames, "--mcp", "--auto-refresh"]
+    : ["serve", ...sourceNames, "--mcp"];
 }
 
 function isAllCommandTarget(
@@ -525,7 +558,7 @@ function needsOkfyHomeEnv(okfyHome: string, defaultHome: string): boolean {
   return path.resolve(okfyHome) !== path.resolve(defaultHome);
 }
 
-function mcpServerName(sourceNameOrNames: string | string[]): string {
+export function mcpServerName(sourceNameOrNames: string | string[]): string {
   const sourceNames = Array.isArray(sourceNameOrNames) ? sourceNameOrNames : [sourceNameOrNames];
   const safeName = sourceNames
     .map((sourceName) => sourceName.replace(/[._]+/g, "-").replace(/^-+/, ""))
@@ -534,7 +567,7 @@ function mcpServerName(sourceNameOrNames: string | string[]): string {
   return `${safeName || "source"}-okf`;
 }
 
-function codexMcpServerName(sourceNameOrNames: string | string[]): string {
+export function codexMcpServerName(sourceNameOrNames: string | string[]): string {
   const sourceNames = Array.isArray(sourceNameOrNames) ? sourceNameOrNames : [sourceNameOrNames];
   const safeName = sourceNames
     .map((sourceName) => sourceName.replace(/[^a-z0-9]+/g, "_").replace(/^_+/, ""))
