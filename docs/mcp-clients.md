@@ -20,7 +20,7 @@ npx -y okfy-ai sources
 npx -y okfy-ai check stripe
 npx -y okfy-ai doctor stripe
 npx -y okfy-ai update stripe
-npx -y okfy-ai remove stripe
+npx -y okfy-ai remove stripe --yes
 npx -y okfy-ai serve stripe --mcp --auto-refresh
 ```
 

@@ -195,7 +195,7 @@ npx -y okfy-ai sources
 npx -y okfy-ai check stripe
 npx -y okfy-ai doctor stripe
 npx -y okfy-ai update stripe
-npx -y okfy-ai remove stripe
+npx -y okfy-ai remove stripe --yes
 npx -y okfy-ai serve stripe --mcp --auto-refresh
 npx -y okfy-ai serve stripe clerk --mcp --auto-refresh
 ```
@@ -395,7 +395,7 @@ okfy add <name> <url>
 okfy sources
 okfy check <name-or-bundle>
 okfy update <name>
-okfy remove <name>
+okfy remove <name> --yes
 okfy crawl <url> --out <dir>
 okfy import <path> --out <dir>
 okfy validate <bundle>
