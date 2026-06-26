@@ -23,6 +23,7 @@
 
   <p>
     <a href="#use-with-agents">Use with agents</a> |
+    <a href="#activation-packet">Activation packet</a> |
     <a href="#preview-the-inspector">Preview Inspector</a> |
     <a href="#project-stack-workspaces">Project stack workspaces</a> |
     <a href="#keep-sources-fresh">Keep sources fresh</a> |
@@ -99,6 +100,14 @@ Use the stripe-okf MCP server. Search for Checkout Sessions, read the most relev
 
 More setup details: [docs/mcp-clients.md](docs/mcp-clients.md).
 
+Create a local activation packet when you want proof before or alongside client setup:
+
+```bash
+npx -y okfy-ai activate stripe --client codex --out okfy-activation
+```
+
+The packet contains an Inspector HTML file, a setup Markdown file, and a proof JSON transcript that follows the agent path: `bundle_summary`, `search_concepts`, `read_concept`, and `get_neighbors`.
+
 If setup is not working, run:
 
 ```bash
@@ -107,9 +116,37 @@ npx -y okfy-ai doctor stripe --client codex
 
 `doctor` checks the registered source, bundle validity, freshness, `npx` availability, generated command shape, MCP tool visibility, and JSON-RPC-clean stdout, then tells you the next repair command or config edit.
 
+## Activation Packet
+
+Use activation when you want the quickest shareable proof that a docs source is ready for an agent. Preview what your agent will know and get the setup/proof files in one folder:
+
+```bash
+npx -y okfy-ai activate stripe --client codex --out okfy-activation
+```
+
+`okfy activate` writes:
+
+- `okfy-inspector.html`: static local Inspector with setup command and first prompt.
+- `okfy-setup.md`: client-specific MCP config, launch command, first prompt, readiness, and file list.
+- `okfy-proof.json`: deterministic proof of `bundle_summary`, `search_concepts`, `read_concept`, and `get_neighbors` over the selected docs.
+
+For a local OKF bundle path:
+
+```bash
+npx -y okfy-ai activate ./docs-okf --client codex --out okfy-activation
+```
+
+For a project stack workspace:
+
+```bash
+npx -y okfy-ai activate stripe clerk --client codex --out stack-activation
+```
+
+Activation does not write client config files by default. It gives you the exact config and prompt to review, paste, or send to a teammate.
+
 ## Preview The Inspector
 
-Preview what your agent will know before or alongside MCP setup:
+Preview just the Inspector when you do not need the setup/proof packet:
 
 ```bash
 npx -y okfy-ai map stripe --out okfy-inspector.html
@@ -311,24 +348,24 @@ registered docs source or Markdown folder
   -> source-backed agent answers
 ```
 
-| Output | Why it matters |
-| --- | --- |
-| Plain Markdown concepts | Humans can read, review, diff, and commit the knowledge. |
-| OKF frontmatter | Agents get type, title, description, tags, source, and timestamp. |
-| Links and backlinks | Agents can traverse related docs instead of reading everything. |
-| MCP stdio server | Local clients can search and read the bundle with no hosted index. |
+| Output                   | Why it matters                                                      |
+| ------------------------ | ------------------------------------------------------------------- |
+| Plain Markdown concepts  | Humans can read, review, diff, and commit the knowledge.            |
+| OKF frontmatter          | Agents get type, title, description, tags, source, and timestamp.   |
+| Links and backlinks      | Agents can traverse related docs instead of reading everything.     |
+| MCP stdio server         | Local clients can search and read the bundle with no hosted index.  |
 | Deterministic validation | Malformed concept docs fail; broken links and missing indexes warn. |
 
 ## MCP Tools
 
-| Tool | Purpose |
-| --- | --- |
-| `bundle_summary` | Show bundle or workspace stats, validation status, and source freshness when available. |
-| `search_concepts` | Search concept previews by query, optional source, type, or tags. |
-| `read_concept` | Read one concept body, frontmatter, links, backlinks, and source; workspace reads can pass `source`. |
-| `get_neighbors` | Traverse outbound links and backlinks around a concept; workspace calls can pass `source`. |
-| `list_types` | List concept types and counts, optionally filtered by workspace source. |
-| `list_tags` | List tags and counts, optionally filtered by workspace source. |
+| Tool              | Purpose                                                                                              |
+| ----------------- | ---------------------------------------------------------------------------------------------------- |
+| `bundle_summary`  | Show bundle or workspace stats, validation status, and source freshness when available.              |
+| `search_concepts` | Search concept previews by query, optional source, type, or tags.                                    |
+| `read_concept`    | Read one concept body, frontmatter, links, backlinks, and source; workspace reads can pass `source`. |
+| `get_neighbors`   | Traverse outbound links and backlinks around a concept; workspace calls can pass `source`.           |
+| `list_types`      | List concept types and counts, optionally filtered by workspace source.                              |
+| `list_tags`       | List tags and counts, optionally filtered by workspace source.                                       |
 
 The MCP server exposes read-only tools. Auto-refresh is server-side maintenance for registered sources, not an agent-callable write tool. `okfy serve --mcp` writes MCP JSON-RPC to stdout, so launch it through an MCP client rather than as a normal terminal command.
 
@@ -400,6 +437,7 @@ okfy crawl <url> --out <dir>
 okfy import <path> --out <dir>
 okfy validate <bundle>
 okfy inspect <bundle>
+okfy activate <name-or-bundle> [more-source-names...] --client codex --out okfy-activation
 okfy map <name-or-bundle> [more-source-names...] --out okfy-inspector.html
 okfy serve <name-or-bundle> [more-source-names...] --mcp
 okfy demo
@@ -415,6 +453,7 @@ okfy update stripe --json
 okfy crawl https://docs.example.com --out ./docs-okf --max-pages 100 --max-depth 4
 okfy import ./docs --out ./docs-okf --source-name "Project docs" --force
 okfy validate ./docs-okf --json
+okfy activate stripe --client codex --out okfy-activation
 okfy map stripe --out okfy-inspector.html
 okfy serve ./docs-okf --mcp --max-result-chars 12000
 ```

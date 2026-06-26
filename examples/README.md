@@ -1,8 +1,17 @@
 # Examples
 
-## Preview With Inspector
+## Activate And Preview
 
-Preview what your agent will know from any registered source or local OKF bundle:
+Preview what your agent will know and generate setup, proof, and Inspector output in one folder:
+
+```bash
+npx -y okfy-ai activate stripe --client codex --out okfy-activation
+npx -y okfy-ai activate examples/bundles/okfy-docs --client codex --out okfy-activation
+```
+
+The activation packet includes `okfy-inspector.html`, `okfy-setup.md`, and `okfy-proof.json`.
+
+Preview only the Inspector when you do not need the setup/proof packet:
 
 ```bash
 npx -y okfy-ai map stripe --out okfy-inspector.html
@@ -48,6 +57,7 @@ Try it:
 
 ```bash
 npx -y okfy-ai validate examples/bundles/stripe-checkout-small
+npx -y okfy-ai activate examples/bundles/stripe-checkout-small --client codex --out stripe-activation
 npx -y okfy-ai map examples/bundles/stripe-checkout-small --out stripe-inspector.html
 ```
 
@@ -96,6 +106,7 @@ Validate:
 ```bash
 okfy validate ./tmp/okfy-docs
 okfy inspect ./tmp/okfy-docs
+okfy activate ./tmp/okfy-docs --client codex --out okfy-activation
 okfy map ./tmp/okfy-docs --out okfy-inspector.html
 ```
 

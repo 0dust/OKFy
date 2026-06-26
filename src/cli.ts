@@ -5,6 +5,13 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import pc from "picocolors";
+import {
+  buildActivationPacket,
+  protectedActivationInputPaths,
+  renderActivationSetupMarkdown,
+  withActivationMetadata,
+  writeActivationPacketFiles
+} from "./activation.js";
 import { crawlWebsite, type CrawlProgressEvent } from "./crawler.js";
 import { parseDurationSeconds } from "./duration.js";
 import { hashBundleContents } from "./hash.js";
@@ -419,7 +426,9 @@ async function resolveCliTargets(
   }
 
   const bundleTargets = options.all ? [] : targets.filter(pathLikeTarget);
-  const sourceTargets = options.all ? [] : targets.filter((sourceName) => !pathLikeTarget(sourceName));
+  const sourceTargets = options.all
+    ? []
+    : targets.filter((sourceName) => !pathLikeTarget(sourceName));
   const sourceSet =
     options.all || sourceTargets.length
       ? await resolveWorkspaceSources({ all: options.all, names: sourceTargets })
@@ -433,6 +442,52 @@ async function resolveCliTargets(
   const records: WorkspaceSourceRecord[] = [...sourceSet.records, ...bundleRecords];
   assertUniqueWorkspaceRecordNames(records);
   return { kind: "workspace", all: options.all, records, sourceNames: sourceSet.sourceNames };
+}
+
+async function inspectorReportForResolution(
+  resolution: CliTargetResolution
+): Promise<Awaited<ReturnType<typeof buildBundleInspectorReport>>> {
+  if (resolution.kind === "bundle") return buildBundleInspectorReport(resolution.bundleDir);
+  if (resolution.kind === "registered") return buildWorkspaceInspectorReport([resolution.record]);
+  return buildWorkspaceInspectorReport(resolution.records, { all: resolution.all });
+}
+
+function activationInputForResolution(resolution: CliTargetResolution): {
+  records: WorkspaceSourceRecord[];
+  commandTarget: ServeCommandTarget;
+  protectedInputPaths: string[];
+  autoRefresh: boolean;
+  serverIdentity: string[];
+} {
+  if (resolution.kind === "bundle") {
+    const record = localBundleRecord(resolution.bundleDir);
+    return {
+      records: [record],
+      commandTarget: resolution.bundleDir,
+      protectedInputPaths: protectedActivationInputPaths([record]),
+      autoRefresh: false,
+      serverIdentity: [record.name]
+    };
+  }
+  if (resolution.kind === "registered") {
+    return {
+      records: [resolution.record],
+      commandTarget: resolution.record.name,
+      protectedInputPaths: protectedActivationInputPaths([resolution.record]),
+      autoRefresh: true,
+      serverIdentity: [resolution.record.name]
+    };
+  }
+  const commandTargets = resolution.records.map((record) =>
+    isRegisteredWorkspaceRecord(record) ? record.name : record.bundleDir
+  );
+  return {
+    records: resolution.records,
+    commandTarget: resolution.all ? { all: true } : commandTargets,
+    protectedInputPaths: protectedActivationInputPaths(resolution.records),
+    autoRefresh: resolution.records.some(isRegisteredWorkspaceRecord) || resolution.all,
+    serverIdentity: resolution.all ? ["all"] : resolution.records.map((record) => record.name)
+  };
 }
 
 function mcpRefreshHooksForRecord(
@@ -1303,8 +1358,83 @@ program
   });
 
 program
+  .command("activate")
+  .argument(
+    "[targets...]",
+    "Registered source name(s), OKF bundle path(s), or one OKF bundle directory"
+  )
+  .option("--all", "Activate all registered sources as one source-aware workspace", false)
+  .option(
+    "--client <client>",
+    "Target client: claude-code, claude-desktop, cursor, codex, or generic",
+    setupClient,
+    "generic"
+  )
+  .option("--out <dir>", "Activation packet output directory", "okfy-activation")
+  .option("--force", "Overwrite a non-empty activation output directory", false)
+  .option("--json", "Print activation packet manifest JSON", false)
+  .action(async (targets: string[] = [], options) => {
+    try {
+      const resolution = await resolveCliTargets(targets, { all: options.all });
+      const report = await inspectorReportForResolution(resolution);
+      const activationInput = activationInputForResolution(resolution);
+      const packet = await buildActivationPacket({
+        ...activationInput,
+        report,
+        client: options.client,
+        outDir: options.out,
+        okfyHome: resolveOkfyHome()
+      });
+      const reportWithActivation = withActivationMetadata(report, packet);
+      await writeActivationPacketFiles(
+        packet,
+        {
+          inspectorHtml: renderInspectorHtml(reportWithActivation),
+          setupMarkdown: renderActivationSetupMarkdown(packet)
+        },
+        { force: options.force, protectedInputPaths: activationInput.protectedInputPaths }
+      );
+      const manifest = {
+        status: "ready",
+        outDir: packet.outDir,
+        client: packet.setup.client,
+        command: packet.setup.command,
+        firstPrompt: packet.setup.firstPrompt,
+        files: packet.files,
+        proof: {
+          query: packet.proof.search.input.query,
+          searchResultCount: packet.proof.search.results.length,
+          readRef: packet.proof.read?.result.ref ?? null,
+          citation: packet.proof.read?.result.citation.sourceResource ?? null
+        }
+      };
+      if (options.json) {
+        printJson(manifest);
+        return;
+      }
+      console.log("okfy activate");
+      console.log(`Output: ${packet.outDir}`);
+      for (const file of packet.files) console.log(`${file.label}: ${file.path}`);
+      console.log("");
+      console.log("MCP launch command:");
+      console.log(`  ${packet.setup.command.display}`);
+      console.log("");
+      console.log("First prompt:");
+      console.log(packet.setup.firstPrompt);
+    } catch (error: any) {
+      if (options.json)
+        printJson({ status: "failed", error: { message: error?.message ?? "Activate failed." } });
+      else console.error(pc.red(error?.message ?? "Activate failed."));
+      process.exitCode = 1;
+    }
+  });
+
+program
   .command("map")
-  .argument("[targets...]", "Registered source name(s), OKF bundle path(s), or one OKF bundle directory")
+  .argument(
+    "[targets...]",
+    "Registered source name(s), OKF bundle path(s), or one OKF bundle directory"
+  )
   .option("--all", "Map all registered sources as one source-aware workspace", false)
   .option("--out <file>", "Inspector HTML output file", "okfy-inspector.html")
   .option("--json", "Print Inspector report JSON without writing HTML", false)

@@ -63,9 +63,27 @@ npx -y okfy-ai doctor stripe --client codex
 
 `doctor` checks the registered source, bundle validity, freshness, `npx` availability, generated command shape, MCP tool visibility, and JSON-RPC-clean stdout, then tells you the next repair command or config edit.
 
+## Activation Packet
+
+Create a local proof packet before or alongside MCP setup. Preview what your agent will know and get setup/proof files in one folder:
+
+```bash
+npx -y okfy-ai activate stripe --client codex --out okfy-activation
+```
+
+The packet contains `okfy-inspector.html`, `okfy-setup.md`, and `okfy-proof.json`. It shows the exact MCP command/config, first prompt, readiness, and a deterministic proof path through `bundle_summary`, `search_concepts`, `read_concept`, and `get_neighbors`.
+
+Use a local OKF bundle path when you already manage the bundle yourself:
+
+```bash
+npx -y okfy-ai activate ./docs-okf --client codex --out okfy-activation
+```
+
+Activation does not write client config files by default.
+
 ## Preview The Inspector
 
-Preview what your agent will know before or alongside MCP setup:
+Preview just the Inspector when you do not need the setup/proof packet:
 
 ```bash
 npx -y okfy-ai map stripe --out okfy-inspector.html
@@ -235,14 +253,14 @@ okfy demo
 
 ## MCP Tools
 
-| Tool | Purpose |
-| --- | --- |
-| `bundle_summary` | Show bundle or workspace stats, validation status, and source freshness when available. |
-| `search_concepts` | Search concept previews by query, optional source, type, or tags. |
-| `read_concept` | Read one concept body, frontmatter, links, backlinks, and source. |
-| `get_neighbors` | Traverse outbound links and backlinks around a concept. |
-| `list_types` | List concept types and counts, optionally filtered by workspace source. |
-| `list_tags` | List tags and counts, optionally filtered by workspace source. |
+| Tool              | Purpose                                                                                 |
+| ----------------- | --------------------------------------------------------------------------------------- |
+| `bundle_summary`  | Show bundle or workspace stats, validation status, and source freshness when available. |
+| `search_concepts` | Search concept previews by query, optional source, type, or tags.                       |
+| `read_concept`    | Read one concept body, frontmatter, links, backlinks, and source.                       |
+| `get_neighbors`   | Traverse outbound links and backlinks around a concept.                                 |
+| `list_types`      | List concept types and counts, optionally filtered by workspace source.                 |
+| `list_tags`       | List tags and counts, optionally filtered by workspace source.                          |
 
 ## What okfy Generates
 

@@ -51,9 +51,37 @@ This is local-first. There is no OKFY cloud registry, account, central cache, ho
 npx -y okfy-ai doctor stripe --client codex
 ```
 
+## Activation Packet
+
+Use activation when you want a reviewable setup packet before pasting config into an MCP client:
+
+```bash
+npx -y okfy-ai activate stripe --client codex --out okfy-activation
+```
+
+The packet includes:
+
+- `okfy-inspector.html` with readiness, relationships, setup command, and first prompt.
+- `okfy-setup.md` with client-specific config snippets and the exact MCP launch command.
+- `okfy-proof.json` with a deterministic `bundle_summary`, `search_concepts`, `read_concept`, and `get_neighbors` proof over the selected docs.
+
+For local bundle snapshots:
+
+```bash
+npx -y okfy-ai activate ./docs-okf --client codex --out okfy-activation
+```
+
+For multi-source workspaces:
+
+```bash
+npx -y okfy-ai activate stripe clerk --client codex --out stack-activation
+```
+
+Activation does not write client files. It produces copyable config and proof artifacts that you can review, commit, or send to a teammate.
+
 ## Inspector Confidence Check
 
-Before or alongside MCP setup, preview what your agent will know:
+When you only need the visual preview without setup/proof files, use the Inspector directly:
 
 ```bash
 npx -y okfy-ai map stripe --out okfy-inspector.html
@@ -271,7 +299,16 @@ Blocking refresh variant:
   "mcpServers": {
     "stripe-okf": {
       "command": "npx",
-      "args": ["-y", "okfy-ai", "serve", "stripe", "--mcp", "--auto-refresh", "--refresh-mode", "blocking"]
+      "args": [
+        "-y",
+        "okfy-ai",
+        "serve",
+        "stripe",
+        "--mcp",
+        "--auto-refresh",
+        "--refresh-mode",
+        "blocking"
+      ]
     }
   }
 }

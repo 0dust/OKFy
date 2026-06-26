@@ -99,6 +99,28 @@ export interface InspectorAgentStep {
   example: string;
 }
 
+export interface InspectorActivationArtifact {
+  label: string;
+  format: "shell" | "json" | "toml";
+  body: string;
+}
+
+export interface InspectorActivation {
+  client: string;
+  serverName: string;
+  codexServerName: string;
+  command: {
+    display: string;
+    env: Record<string, string>;
+  };
+  firstPrompt: string;
+  artifacts: InspectorActivationArtifact[];
+  files: Array<{
+    label: string;
+    path: string;
+  }>;
+}
+
 export interface InspectorReport {
   schemaVersion: 1;
   title: string;
@@ -114,6 +136,7 @@ export interface InspectorReport {
     citationGuidance: string;
     suggestedQuestions: string[];
   };
+  activation?: InspectorActivation;
 }
 
 export interface BuildBundleInspectorOptions {
@@ -313,7 +336,9 @@ function collapsedEdges(
   );
 }
 
-function sourceBase(record: WorkspaceSourceRecord): Omit<
+function sourceBase(
+  record: WorkspaceSourceRecord
+): Omit<
   InspectorReadinessSource,
   | "availabilityStatus"
   | "validationStatus"
@@ -495,7 +520,10 @@ function normalizeError(error: unknown): InspectorError | null {
   return { message: String(error) };
 }
 
-function sum(sources: InspectorReadinessSource[], key: "conceptCount" | "warningCount" | "brokenLinkCount"): number {
+function sum(
+  sources: InspectorReadinessSource[],
+  key: "conceptCount" | "warningCount" | "brokenLinkCount"
+): number {
   return sources.reduce((total, source) => total + source[key], 0);
 }
 
