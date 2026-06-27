@@ -354,7 +354,7 @@ MCP config:
 ```text
 registered docs source or Markdown folder
   -> local OKF bundle: Markdown files + YAML frontmatter + links
-  -> MCP server: search_concepts, read_concept, get_neighbors
+  -> MCP server: bundle_summary, search_concepts, read_concept, get_neighbors, list_types, list_tags
   -> source-backed agent answers
 ```
 

@@ -254,6 +254,7 @@ okfy crawl <url> --out <dir>
 okfy import <path> --out <dir>
 okfy validate <bundle>
 okfy inspect <bundle>
+okfy activate <name-or-bundle> [more-source-names...] --client codex --out okfy-activation
 okfy map <name-or-bundle> [more-source-names...] --out okfy-inspector.html
 okfy serve <name-or-bundle> [more-source-names...] --mcp
 okfy demo
@@ -275,7 +276,7 @@ okfy demo
 ```text
 registered docs source or Markdown folder
   -> local OKF bundle: Markdown files + YAML frontmatter + links
-  -> MCP server: search_concepts, read_concept, get_neighbors
+  -> MCP server: bundle_summary, search_concepts, read_concept, get_neighbors, list_types, list_tags
   -> source-backed agent answers
 ```
 
