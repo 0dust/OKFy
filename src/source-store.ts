@@ -624,15 +624,15 @@ function orderJson(value: unknown): unknown {
 }
 
 function orderKeys(value: Record<string, unknown>): string[] {
-  if ("status" in value) return sortByPreferredOrder(Object.keys(value), STATE_KEYS);
-  if ("okfyVersion" in value) return sortByPreferredOrder(Object.keys(value), MANIFEST_KEYS);
-  if (hasKeys(value, CRAWL_KEYS)) return sortByPreferredOrder(Object.keys(value), CRAWL_KEYS);
-  if (hasKeys(value, REFRESH_KEYS)) return sortByPreferredOrder(Object.keys(value), REFRESH_KEYS);
-  if (hasKeys(value, STATE_BUNDLE_KEYS))
-    return sortByPreferredOrder(Object.keys(value), STATE_BUNDLE_KEYS);
-  if ("seedUrl" in value) return sortByPreferredOrder(Object.keys(value), ["seedUrl"]);
-  if ("dir" in value) return sortByPreferredOrder(Object.keys(value), ["dir"]);
-  return Object.keys(value).sort((first, second) => first.localeCompare(second));
+  const keys = Object.keys(value);
+  if ("status" in value) return sortByPreferredOrder(keys, STATE_KEYS);
+  if ("okfyVersion" in value) return sortByPreferredOrder(keys, MANIFEST_KEYS);
+  if (hasKeys(value, CRAWL_KEYS)) return sortByPreferredOrder(keys, CRAWL_KEYS);
+  if (hasKeys(value, REFRESH_KEYS)) return sortByPreferredOrder(keys, REFRESH_KEYS);
+  if (hasKeys(value, STATE_BUNDLE_KEYS)) return sortByPreferredOrder(keys, STATE_BUNDLE_KEYS);
+  if ("seedUrl" in value) return sortByPreferredOrder(keys, ["seedUrl"]);
+  if ("dir" in value) return sortByPreferredOrder(keys, ["dir"]);
+  return keys.sort((first, second) => first.localeCompare(second));
 }
 
 function hasKeys(value: Record<string, unknown>, keys: string[]): boolean {
@@ -640,12 +640,14 @@ function hasKeys(value: Record<string, unknown>, keys: string[]): boolean {
 }
 
 function sortByPreferredOrder(keys: string[], preferredOrder: string[]): string[] {
+  const preferredIndexes = new Map(preferredOrder.map((key, index) => [key, index]));
   return keys.sort((first, second) => {
-    const firstIndex = preferredOrder.indexOf(first);
-    const secondIndex = preferredOrder.indexOf(second);
-    if (firstIndex === -1 && secondIndex === -1) return first.localeCompare(second);
-    if (firstIndex === -1) return 1;
-    if (secondIndex === -1) return -1;
+    const firstIndex = preferredIndexes.get(first);
+    const secondIndex = preferredIndexes.get(second);
+    if (firstIndex === undefined && secondIndex === undefined)
+      return first.localeCompare(second);
+    if (firstIndex === undefined) return 1;
+    if (secondIndex === undefined) return -1;
     return firstIndex - secondIndex;
   });
 }

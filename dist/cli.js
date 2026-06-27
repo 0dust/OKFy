@@ -42,7 +42,7 @@ import {
   writeActivationPacketFiles,
   writeRefreshState,
   writeSourceManifest
-} from "./chunk-YYJNXQPO.js";
+} from "./chunk-7A4YHUWE.js";
 
 // src/cli.ts
 import fs from "fs";

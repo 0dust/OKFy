@@ -4,20 +4,9 @@ import { hasFrontmatter, parseFrontmatter, type ParsedFrontmatter } from "./fron
 import { buildGraph, extractInternalLinks } from "./graph.js";
 import { isConceptMarkdownPath, isReservedOkfPath } from "./okf.js";
 import { readBundle } from "./reader.js";
+import { listMarkdownFiles } from "./util/markdown-files.js";
+import { toPosixPath } from "./util/path.js";
 import type { BundleStats, ValidationIssue, ValidationReport } from "./types.js";
-
-async function listMarkdownFiles(dir: string): Promise<string[]> {
-  const result: string[] = [];
-  async function walk(current: string): Promise<void> {
-    for (const entry of await fs.readdir(current, { withFileTypes: true })) {
-      const absolute = path.join(current, entry.name);
-      if (entry.isDirectory()) await walk(absolute);
-      else if (entry.isFile() && entry.name.endsWith(".md")) result.push(absolute);
-    }
-  }
-  await walk(dir);
-  return result.sort();
-}
 
 function issue(
   severity: "error" | "warning",
@@ -145,20 +134,20 @@ export async function validateBundle(bundleDir: string): Promise<ValidationRepor
   }
 
   const conceptFiles = files.filter((file) =>
-    isConceptMarkdownPath(path.relative(bundleDir, file).split(path.sep).join("/"))
+    isConceptMarkdownPath(toPosixPath(path.relative(bundleDir, file)))
   );
   const reservedFiles = files.filter((file) =>
-    isReservedOkfPath(path.relative(bundleDir, file).split(path.sep).join("/"))
+    isReservedOkfPath(toPosixPath(path.relative(bundleDir, file)))
   );
 
   for (const file of reservedFiles) {
-    const rel = path.relative(bundleDir, file).split(path.sep).join("/");
+    const rel = toPosixPath(path.relative(bundleDir, file));
     const raw = await fs.readFile(file, "utf8");
     validateReservedFile(raw, rel, issues);
   }
 
   for (const file of files) {
-    const rel = path.relative(bundleDir, file).split(path.sep).join("/");
+    const rel = toPosixPath(path.relative(bundleDir, file));
     if (!isConceptMarkdownPath(rel)) continue;
     if (rel.includes("..") || path.isAbsolute(rel)) {
       issues.push(issue("error", "unsafe_path", "Concept path is unsafe.", rel));
@@ -235,7 +224,7 @@ export async function validateBundle(bundleDir: string): Promise<ValidationRepor
           "warning",
           "missing_folder_index",
           "Folder has concepts but no index.md.",
-          path.relative(bundleDir, dir).split(path.sep).join("/") || "."
+          toPosixPath(path.relative(bundleDir, dir)) || "."
         )
       );
     }

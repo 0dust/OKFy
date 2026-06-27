@@ -273,6 +273,8 @@ function inspectorConcept(
   includeSource: boolean
 ): InspectorConcept {
   const ref = refFor(concept.id);
+  const outbound = (search.graph.outbound.get(concept.id) ?? []).map(refFor).sort();
+  const backlinks = (search.graph.backlinks.get(concept.id) ?? []).map(refFor).sort();
   return {
     id: concept.id,
     ref,
@@ -290,9 +292,9 @@ function inspectorConcept(
           seedUrl: record.manifest.source.seedUrl
         }
       : {}),
-    outbound: (search.graph.outbound.get(concept.id) ?? []).map(refFor).sort(),
-    outboundLinks: (search.graph.outbound.get(concept.id) ?? []).map(refFor).sort(),
-    backlinks: (search.graph.backlinks.get(concept.id) ?? []).map(refFor).sort(),
+    outbound,
+    outboundLinks: [...outbound],
+    backlinks,
     citation: {
       ref,
       conceptPath: concept.path,

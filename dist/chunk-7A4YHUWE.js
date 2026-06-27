@@ -84,8 +84,8 @@ function buildGraph(conceptsByAnyKey) {
 }
 
 // src/reader.ts
-import fs from "fs/promises";
-import path4 from "path";
+import fs2 from "fs/promises";
+import path5 from "path";
 
 // src/frontmatter.ts
 import { load } from "js-yaml";
@@ -125,7 +125,9 @@ function isConceptMarkdownPath(input) {
   return input.toLowerCase().endsWith(".md") && !isReservedOkfPath(input);
 }
 
-// src/reader.ts
+// src/util/markdown-files.ts
+import fs from "fs/promises";
+import path4 from "path";
 async function listMarkdownFiles(dir) {
   const result = [];
   async function walk(current) {
@@ -138,14 +140,16 @@ async function listMarkdownFiles(dir) {
   await walk(dir);
   return result.sort();
 }
+
+// src/reader.ts
 function stringArray(value) {
   if (!Array.isArray(value)) return [];
   return value.filter((item) => typeof item === "string");
 }
 async function readConceptFile(bundleDir, absolutePath) {
-  const raw = await fs.readFile(absolutePath, "utf8");
+  const raw = await fs2.readFile(absolutePath, "utf8");
   const parsed = parseFrontmatter(raw);
-  const relPath = toPosixPath(path4.relative(bundleDir, absolutePath));
+  const relPath = toPosixPath(path5.relative(bundleDir, absolutePath));
   if (isReservedOkfPath(relPath)) throw new Error(`Reserved OKF file is not a concept: ${relPath}`);
   const id = stripMdExtension(relPath);
   const frontmatter2 = parsed.data;
@@ -165,7 +169,7 @@ async function readBundle(bundleDir) {
   const files = await listMarkdownFiles(bundleDir);
   const concepts = /* @__PURE__ */ new Map();
   for (const file of files) {
-    const relPath = toPosixPath(path4.relative(bundleDir, file));
+    const relPath = toPosixPath(path5.relative(bundleDir, file));
     if (!isConceptMarkdownPath(relPath)) continue;
     const concept = await readConceptFile(bundleDir, file);
     concepts.set(concept.id, concept);
@@ -301,14 +305,14 @@ var BundleSearch = class _BundleSearch {
 };
 
 // src/metadata.ts
-import fs2 from "fs";
-import path5 from "path";
+import fs3 from "fs";
+import path6 from "path";
 import { fileURLToPath } from "url";
 var FALLBACK_NAME = "okfy-ai";
 var FALLBACK_VERSION = "0.0.0";
 var cachedMetadata;
 function runtimePackageRoot() {
-  return path5.resolve(path5.dirname(fileURLToPath(import.meta.url)), "..");
+  return path6.resolve(path6.dirname(fileURLToPath(import.meta.url)), "..");
 }
 function packageMetadata() {
   cachedMetadata ??= readPackageMetadata();
@@ -323,7 +327,7 @@ function okfyUserAgent() {
 function readPackageMetadata() {
   const root = runtimePackageRoot();
   try {
-    const raw = fs2.readFileSync(path5.join(root, "package.json"), "utf8");
+    const raw = fs3.readFileSync(path6.join(root, "package.json"), "utf8");
     const parsed = JSON.parse(raw);
     return {
       name: parsed.name ?? FALLBACK_NAME,
@@ -340,20 +344,8 @@ function readPackageMetadata() {
 }
 
 // src/validate.ts
-import fs3 from "fs/promises";
-import path6 from "path";
-async function listMarkdownFiles2(dir) {
-  const result = [];
-  async function walk(current) {
-    for (const entry of await fs3.readdir(current, { withFileTypes: true })) {
-      const absolute = path6.join(current, entry.name);
-      if (entry.isDirectory()) await walk(absolute);
-      else if (entry.isFile() && entry.name.endsWith(".md")) result.push(absolute);
-    }
-  }
-  await walk(dir);
-  return result.sort();
-}
+import fs4 from "fs/promises";
+import path7 from "path";
 function issue(severity, code, message, file) {
   return { severity, code, message, path: file };
 }
@@ -441,7 +433,7 @@ function validateLogFile(raw, rel, issues) {
   }
 }
 function validateReservedFile(raw, rel, issues) {
-  const name = path6.posix.basename(rel).toLowerCase();
+  const name = path7.posix.basename(rel).toLowerCase();
   if (name === "index.md") validateIndexFile(raw, rel, issues);
   if (name === "log.md") validateLogFile(raw, rel, issues);
 }
@@ -449,7 +441,7 @@ async function validateBundle(bundleDir) {
   const issues = [];
   let files = [];
   try {
-    files = await listMarkdownFiles2(bundleDir);
+    files = await listMarkdownFiles(bundleDir);
   } catch (error) {
     return {
       valid: false,
@@ -460,23 +452,23 @@ async function validateBundle(bundleDir) {
     };
   }
   const conceptFiles = files.filter(
-    (file) => isConceptMarkdownPath(path6.relative(bundleDir, file).split(path6.sep).join("/"))
+    (file) => isConceptMarkdownPath(toPosixPath(path7.relative(bundleDir, file)))
   );
   const reservedFiles = files.filter(
-    (file) => isReservedOkfPath(path6.relative(bundleDir, file).split(path6.sep).join("/"))
+    (file) => isReservedOkfPath(toPosixPath(path7.relative(bundleDir, file)))
   );
   for (const file of reservedFiles) {
-    const rel = path6.relative(bundleDir, file).split(path6.sep).join("/");
-    const raw = await fs3.readFile(file, "utf8");
+    const rel = toPosixPath(path7.relative(bundleDir, file));
+    const raw = await fs4.readFile(file, "utf8");
     validateReservedFile(raw, rel, issues);
   }
   for (const file of files) {
-    const rel = path6.relative(bundleDir, file).split(path6.sep).join("/");
+    const rel = toPosixPath(path7.relative(bundleDir, file));
     if (!isConceptMarkdownPath(rel)) continue;
-    if (rel.includes("..") || path6.isAbsolute(rel)) {
+    if (rel.includes("..") || path7.isAbsolute(rel)) {
       issues.push(issue("error", "unsafe_path", "Concept path is unsafe.", rel));
     }
-    const raw = await fs3.readFile(file, "utf8");
+    const raw = await fs4.readFile(file, "utf8");
     if (!hasFrontmatter(raw)) {
       issues.push(
         issue("error", "missing_frontmatter", "Concept file must start with YAML frontmatter.", rel)
@@ -534,16 +526,16 @@ async function validateBundle(bundleDir) {
       }
     }
   }
-  const dirs = new Set(conceptFiles.map((file) => path6.dirname(file)));
+  const dirs = new Set(conceptFiles.map((file) => path7.dirname(file)));
   for (const dir of dirs) {
-    const index = path6.join(dir, "index.md");
+    const index = path7.join(dir, "index.md");
     if (!files.includes(index)) {
       issues.push(
         issue(
           "warning",
           "missing_folder_index",
           "Folder has concepts but no index.md.",
-          path6.relative(bundleDir, dir).split(path6.sep).join("/") || "."
+          toPosixPath(path7.relative(bundleDir, dir)) || "."
         )
       );
     }
@@ -579,7 +571,7 @@ async function inspectBundle(bundleDir) {
   const linkCount = [...graph.outbound.values()].reduce((sum2, links) => sum2 + links.length, 0);
   const validation = await validateBundle(bundleDir);
   return {
-    title: path6.basename(bundleDir),
+    title: path7.basename(bundleDir),
     conceptCount: concepts.length,
     reservedFileCount: validation.reservedFileCount,
     warningCount: validation.warningCount,
@@ -594,9 +586,9 @@ async function inspectBundle(bundleDir) {
 }
 
 // src/source-store.ts
-import fs4 from "fs/promises";
+import fs5 from "fs/promises";
 import os from "os";
-import path7 from "path";
+import path8 from "path";
 var SOURCE_NAME_PATTERN = /^[a-z0-9._-]+$/;
 var MANIFEST_KEYS = [
   "schemaVersion",
@@ -636,8 +628,8 @@ var STATE_KEYS = [
 var STATE_BUNDLE_KEYS = ["conceptCount", "warningCount", "valid", "contentHash"];
 function resolveOkfyHome(options = {}) {
   const configured = options.okfyHome ?? options.env?.OKFY_HOME ?? process.env.OKFY_HOME;
-  if (configured && configured.trim() !== "") return path7.resolve(configured);
-  return path7.join(os.homedir(), ".okfy");
+  if (configured && configured.trim() !== "") return path8.resolve(configured);
+  return path8.join(os.homedir(), ".okfy");
 }
 function validateSourceName(name) {
   if (!name || name === "." || name === ".." || !SOURCE_NAME_PATTERN.test(name)) {
@@ -650,7 +642,7 @@ function validateSourceName(name) {
 function resolveSourceDir(name, options = {}) {
   const safeName = validateSourceName(name);
   const sourcesRoot = resolveSourcesRoot(options);
-  const sourceDir = path7.resolve(sourcesRoot, safeName);
+  const sourceDir = path8.resolve(sourcesRoot, safeName);
   if (!isInsideOrEqual(sourcesRoot, sourceDir)) {
     throw new Error(`Invalid source name "${name}". Source directory escapes OKFY_HOME.`);
   }
@@ -662,8 +654,8 @@ function resolveBundleDir(manifest, options = {}) {
   if (!bundleDir || bundleDir.trim() === "") {
     throw new Error(`Invalid bundle directory for source "${manifest.name}".`);
   }
-  if (path7.isAbsolute(bundleDir)) return path7.normalize(bundleDir);
-  const resolved = path7.resolve(sourceDir, bundleDir);
+  if (path8.isAbsolute(bundleDir)) return path8.normalize(bundleDir);
+  const resolved = path8.resolve(sourceDir, bundleDir);
   if (resolved === sourceDir || !isInsideOrEqual(sourceDir, resolved)) {
     throw new Error(
       `Invalid bundle directory for source "${manifest.name}". Relative bundle paths must stay inside the source directory.`
@@ -673,12 +665,12 @@ function resolveBundleDir(manifest, options = {}) {
 }
 async function writeSourceManifest(manifest, options = {}) {
   const sourceDir = resolveSourceDir(manifest.name, options);
-  await writeStableJson(path7.join(sourceDir, "source.json"), manifest);
+  await writeStableJson(path8.join(sourceDir, "source.json"), manifest);
 }
 async function readSourceManifest(name, options = {}) {
   const sourceDir = resolveSourceDir(name, options);
   const manifest = validateSourceManifest(
-    await readJson(path7.join(sourceDir, "source.json")),
+    await readJson(path8.join(sourceDir, "source.json")),
     name
   );
   if (manifest.name !== name) {
@@ -688,17 +680,17 @@ async function readSourceManifest(name, options = {}) {
 }
 async function writeRefreshState(name, state, options = {}) {
   const sourceDir = resolveSourceDir(name, options);
-  await writeStableJson(path7.join(sourceDir, "state.json"), state);
+  await writeStableJson(path8.join(sourceDir, "state.json"), state);
 }
 async function readRefreshState(name, options = {}) {
   const sourceDir = resolveSourceDir(name, options);
-  return validateRefreshState(await readJson(path7.join(sourceDir, "state.json")), name);
+  return validateRefreshState(await readJson(path8.join(sourceDir, "state.json")), name);
 }
 async function listSources(options = {}) {
   const sourcesRoot = resolveSourcesRoot(options);
   let entries;
   try {
-    entries = await fs4.readdir(sourcesRoot, { withFileTypes: true });
+    entries = await fs5.readdir(sourcesRoot, { withFileTypes: true });
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") return [];
     throw error;
@@ -725,7 +717,7 @@ async function listSources(options = {}) {
     try {
       bundleDir = resolveBundleDir(manifest, options);
     } catch (error) {
-      bundleDir = path7.join(dir, "bundle");
+      bundleDir = path8.join(dir, "bundle");
       loadError ??= errorDetails(error);
     }
     records.push({
@@ -741,19 +733,19 @@ async function listSources(options = {}) {
 }
 async function removeSource(name, options = {}) {
   const sourceDir = resolveSourceDir(name, options);
-  await fs4.rm(sourceDir, { recursive: true, force: true });
+  await fs5.rm(sourceDir, { recursive: true, force: true });
 }
 function resolveSourcesRoot(options) {
-  return path7.join(resolveOkfyHome(options), "sources");
+  return path8.join(resolveOkfyHome(options), "sources");
 }
 function invalidSourceRecord(sourcesRoot, name, error) {
-  const dir = path7.join(sourcesRoot, name);
+  const dir = path8.join(sourcesRoot, name);
   const sourceName = fallbackSourceName(name);
   return {
     name: sourceName,
     dir,
     manifest: fallbackSourceManifest(sourceName),
-    bundleDir: path7.join(dir, "bundle"),
+    bundleDir: path8.join(dir, "bundle"),
     loadError: errorDetails(error, name)
   };
 }
@@ -993,11 +985,11 @@ async function readRefreshStateIfExists(name, options) {
   }
 }
 async function readJson(filePath) {
-  return JSON.parse(await fs4.readFile(filePath, "utf8"));
+  return JSON.parse(await fs5.readFile(filePath, "utf8"));
 }
 async function writeStableJson(filePath, value) {
-  await fs4.mkdir(path7.dirname(filePath), { recursive: true });
-  await fs4.writeFile(filePath, `${JSON.stringify(orderJson(value), null, 2)}
+  await fs5.mkdir(path8.dirname(filePath), { recursive: true });
+  await fs5.writeFile(filePath, `${JSON.stringify(orderJson(value), null, 2)}
 `, "utf8");
 }
 function orderJson(value) {
@@ -1010,26 +1002,28 @@ function orderJson(value) {
   return ordered;
 }
 function orderKeys(value) {
-  if ("status" in value) return sortByPreferredOrder(Object.keys(value), STATE_KEYS);
-  if ("okfyVersion" in value) return sortByPreferredOrder(Object.keys(value), MANIFEST_KEYS);
-  if (hasKeys(value, CRAWL_KEYS)) return sortByPreferredOrder(Object.keys(value), CRAWL_KEYS);
-  if (hasKeys(value, REFRESH_KEYS)) return sortByPreferredOrder(Object.keys(value), REFRESH_KEYS);
-  if (hasKeys(value, STATE_BUNDLE_KEYS))
-    return sortByPreferredOrder(Object.keys(value), STATE_BUNDLE_KEYS);
-  if ("seedUrl" in value) return sortByPreferredOrder(Object.keys(value), ["seedUrl"]);
-  if ("dir" in value) return sortByPreferredOrder(Object.keys(value), ["dir"]);
-  return Object.keys(value).sort((first, second) => first.localeCompare(second));
+  const keys = Object.keys(value);
+  if ("status" in value) return sortByPreferredOrder(keys, STATE_KEYS);
+  if ("okfyVersion" in value) return sortByPreferredOrder(keys, MANIFEST_KEYS);
+  if (hasKeys(value, CRAWL_KEYS)) return sortByPreferredOrder(keys, CRAWL_KEYS);
+  if (hasKeys(value, REFRESH_KEYS)) return sortByPreferredOrder(keys, REFRESH_KEYS);
+  if (hasKeys(value, STATE_BUNDLE_KEYS)) return sortByPreferredOrder(keys, STATE_BUNDLE_KEYS);
+  if ("seedUrl" in value) return sortByPreferredOrder(keys, ["seedUrl"]);
+  if ("dir" in value) return sortByPreferredOrder(keys, ["dir"]);
+  return keys.sort((first, second) => first.localeCompare(second));
 }
 function hasKeys(value, keys) {
   return keys.some((key) => key in value);
 }
 function sortByPreferredOrder(keys, preferredOrder) {
+  const preferredIndexes = new Map(preferredOrder.map((key, index) => [key, index]));
   return keys.sort((first, second) => {
-    const firstIndex = preferredOrder.indexOf(first);
-    const secondIndex = preferredOrder.indexOf(second);
-    if (firstIndex === -1 && secondIndex === -1) return first.localeCompare(second);
-    if (firstIndex === -1) return 1;
-    if (secondIndex === -1) return -1;
+    const firstIndex = preferredIndexes.get(first);
+    const secondIndex = preferredIndexes.get(second);
+    if (firstIndex === void 0 && secondIndex === void 0)
+      return first.localeCompare(second);
+    if (firstIndex === void 0) return 1;
+    if (secondIndex === void 0) return -1;
     return firstIndex - secondIndex;
   });
 }
@@ -1037,24 +1031,24 @@ function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function isInsideOrEqual(parent, child) {
-  const relative = path7.relative(parent, child);
-  return relative === "" || !relative.startsWith("..") && !path7.isAbsolute(relative);
+  const relative = path8.relative(parent, child);
+  return relative === "" || !relative.startsWith("..") && !path8.isAbsolute(relative);
 }
 function isNodeError(error) {
   return error instanceof Error && "code" in error;
 }
 
 // src/workspace.ts
-import fs5 from "fs/promises";
-import path8 from "path";
+import fs6 from "fs/promises";
+import path9 from "path";
 import { pathToFileURL } from "url";
 function bundleSourceName(bundleDir) {
-  const baseName = path8.basename(path8.resolve(bundleDir));
+  const baseName = path9.basename(path9.resolve(bundleDir));
   const candidate = baseName.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[._-]+|[._-]+$/g, "");
   return validateSourceName(candidate || "bundle");
 }
 function localBundleRecord(bundleDir) {
-  const resolved = path8.resolve(bundleDir);
+  const resolved = path9.resolve(bundleDir);
   const name = bundleSourceName(resolved);
   const timestamp = "1970-01-01T00:00:00.000Z";
   return {
@@ -1122,11 +1116,11 @@ var WorkspaceError = class extends Error {
   }
 };
 function workspaceProfilePath(name, options = {}) {
-  return path8.join(resolveOkfyHome(options), "workspaces", `${validateSourceName(name)}.json`);
+  return path9.join(resolveOkfyHome(options), "workspaces", `${validateSourceName(name)}.json`);
 }
 async function readWorkspaceProfile(name, options = {}) {
   const profile = JSON.parse(
-    await fs5.readFile(workspaceProfilePath(name, options), "utf8")
+    await fs6.readFile(workspaceProfilePath(name, options), "utf8")
   );
   validateWorkspaceProfile(profile, name);
   return profile;
@@ -1134,8 +1128,8 @@ async function readWorkspaceProfile(name, options = {}) {
 async function writeWorkspaceProfile(profile, options = {}) {
   validateWorkspaceProfile(profile);
   const filePath = workspaceProfilePath(profile.name, options);
-  await fs5.mkdir(path8.dirname(filePath), { recursive: true });
-  await fs5.writeFile(filePath, `${JSON.stringify(profile, null, 2)}
+  await fs6.mkdir(path9.dirname(filePath), { recursive: true });
+  await fs6.writeFile(filePath, `${JSON.stringify(profile, null, 2)}
 `, "utf8");
 }
 async function resolveWorkspaceSources(selection, options = {}) {
@@ -1397,6 +1391,33 @@ var sourceFilterSchema = z.object({ source: z.string().optional() });
 var workspaceSearchSchema = searchSchema.extend({ source: z.string().optional() });
 var workspaceReadSchema = readSchema.extend({ source: z.string().optional() });
 var workspaceNeighborsSchema = neighborsSchema.extend({ source: z.string().optional() });
+function collectNeighbors(search, rootId, depth) {
+  const seen = /* @__PURE__ */ new Set([rootId]);
+  let frontier = [rootId];
+  const edges = [];
+  for (let level = 0; level < depth; level += 1) {
+    const next = [];
+    for (const id of frontier) {
+      for (const to of search.graph.outbound.get(id) ?? []) {
+        edges.push({
+          from: id,
+          to,
+          direction: "outbound",
+          relationship_text: "Markdown link"
+        });
+        if (!seen.has(to)) next.push(to);
+        seen.add(to);
+      }
+      for (const from of search.graph.backlinks.get(id) ?? []) {
+        edges.push({ from, to: id, direction: "backlink", relationship_text: "Backlink" });
+        if (!seen.has(from)) next.push(from);
+        seen.add(from);
+      }
+    }
+    frontier = next;
+  }
+  return { conceptIds: [...seen], edges };
+}
 function errorDetails2(error) {
   if (error instanceof Error) return { message: error.message };
   if (typeof error === "string") return { message: error };
@@ -1617,38 +1638,14 @@ async function createMcpServer(options) {
           return json({
             error: { code: "unknown_concept", message: `No concept found for ${parsed.id}` }
           });
-        const depth = parsed.depth ?? 1;
-        const seen = /* @__PURE__ */ new Set([root.id]);
-        let frontier = [root.id];
-        const edges = [];
-        for (let level = 0; level < depth; level += 1) {
-          const next = [];
-          for (const id of frontier) {
-            for (const to of currentSearch.graph.outbound.get(id) ?? []) {
-              edges.push({
-                from: id,
-                to,
-                direction: "outbound",
-                relationship_text: "Markdown link"
-              });
-              if (!seen.has(to)) next.push(to);
-              seen.add(to);
-            }
-            for (const from of currentSearch.graph.backlinks.get(id) ?? []) {
-              edges.push({ from, to: id, direction: "backlink", relationship_text: "Backlink" });
-              if (!seen.has(from)) next.push(from);
-              seen.add(from);
-            }
-          }
-          frontier = next;
-        }
+        const neighbors = collectNeighbors(currentSearch, root.id, parsed.depth ?? 1);
         return json({
           root: root.id,
-          concepts: [...seen].map((id) => {
+          concepts: neighbors.conceptIds.map((id) => {
             const concept = currentSearch.graph.concepts.get(id);
             return { id, title: concept?.title, type: concept?.type, resource: concept?.resource };
           }),
-          edges
+          edges: neighbors.edges
         });
       }
       if (request.params.name === LIST_TYPES_TOOL) {
@@ -2047,45 +2044,14 @@ async function createWorkspaceMcpServer(options) {
         const parsed = workspaceNeighborsSchema.parse(args);
         const { source, concept: root } = workspace.getConcept(parsed);
         const currentSearch = source.search;
-        const depth = parsed.depth ?? 1;
-        const seen = /* @__PURE__ */ new Set([root.id]);
-        let frontier = [root.id];
-        const edges = [];
-        for (let level = 0; level < depth; level += 1) {
-          const next = [];
-          for (const id of frontier) {
-            for (const to of currentSearch.graph.outbound.get(id) ?? []) {
-              edges.push({
-                from: id,
-                to,
-                direction: "outbound",
-                relationship_text: "Markdown link",
-                sourceName: source.record.name
-              });
-              if (!seen.has(to)) next.push(to);
-              seen.add(to);
-            }
-            for (const from of currentSearch.graph.backlinks.get(id) ?? []) {
-              edges.push({
-                from,
-                to: id,
-                direction: "backlink",
-                relationship_text: "Backlink",
-                sourceName: source.record.name
-              });
-              if (!seen.has(from)) next.push(from);
-              seen.add(from);
-            }
-          }
-          frontier = next;
-        }
+        const neighbors = collectNeighbors(currentSearch, root.id, parsed.depth ?? 1);
         return json({
           sourceName: source.record.name,
           sourceKind: source.record.manifest.kind,
           seedUrl: source.record.manifest.source.seedUrl,
           root: root.id,
           ref: `${source.record.name}:${root.id}`,
-          concepts: [...seen].map((id) => {
+          concepts: neighbors.conceptIds.map((id) => {
             const concept = currentSearch.graph.concepts.get(id);
             return {
               sourceName: source.record.name,
@@ -2096,7 +2062,7 @@ async function createWorkspaceMcpServer(options) {
               resource: concept?.resource
             };
           }),
-          edges
+          edges: neighbors.edges.map((edge) => ({ ...edge, sourceName: source.record.name }))
         });
       }
       if (request.params.name === LIST_TYPES_TOOL) {
@@ -2135,8 +2101,8 @@ async function serveWorkspaceMcpStdio(options) {
 }
 
 // src/setup.ts
-import fs6 from "fs/promises";
-import path9 from "path";
+import fs7 from "fs/promises";
+import path10 from "path";
 import { spawn } from "child_process";
 var EXPECTED_MCP_TOOLS = [...MCP_TOOL_NAMES];
 var MAX_CAPTURE_CHARS = 64e3;
@@ -2163,7 +2129,7 @@ function setupStatus(checks) {
   return "ready";
 }
 function createSetupReport(input) {
-  const okfyHome = path9.resolve(input.okfyHome ?? resolveOkfyHome());
+  const okfyHome = path10.resolve(input.okfyHome ?? resolveOkfyHome());
   const defaultHome = defaultOkfyHome();
   const sourceNames = setupSourceNames(input);
   const workspace = Boolean(input.workspaceAll) || sourceNames.length > 1;
@@ -2198,7 +2164,7 @@ function createSetupReport(input) {
   };
 }
 function renderClientArtifacts(input) {
-  const okfyHome = path9.resolve(input.okfyHome ?? resolveOkfyHome());
+  const okfyHome = path10.resolve(input.okfyHome ?? resolveOkfyHome());
   const defaultHome = input.defaultOkfyHome ?? defaultOkfyHome();
   const sourceNames = setupSourceNames(input);
   const serverIdentity = input.workspaceAll ? ["all"] : sourceNames;
@@ -2271,7 +2237,7 @@ function firstAgentPrompt(serverName, options = {}) {
 }
 function serveCommand(sourceNameOrNames, okfyHome, defaultHome = defaultOkfyHome(), options = {}) {
   const args = ["-y", "okfy-ai", ...serveCommandArgs(sourceNameOrNames, options)];
-  const env = needsOkfyHomeEnv(okfyHome, defaultHome) ? { OKFY_HOME: path9.resolve(okfyHome) } : {};
+  const env = needsOkfyHomeEnv(okfyHome, defaultHome) ? { OKFY_HOME: path10.resolve(okfyHome) } : {};
   return {
     command: "npx",
     args,
@@ -2299,12 +2265,12 @@ function setupCheck(id, label, severity, message, fix) {
 async function executableOnPath(command, env = process.env) {
   const searchPath = env.PATH ?? "";
   const extensions = process.platform === "win32" ? (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";") : [""];
-  for (const directory of searchPath.split(path9.delimiter)) {
+  for (const directory of searchPath.split(path10.delimiter)) {
     if (!directory) continue;
     for (const extension of extensions) {
-      const candidate = path9.join(directory, `${command}${extension}`);
+      const candidate = path10.join(directory, `${command}${extension}`);
       try {
-        await fs6.access(candidate, fs6.constants.X_OK);
+        await fs7.access(candidate, fs7.constants.X_OK);
         return true;
       } catch {
       }
@@ -2490,7 +2456,7 @@ function formatExit(exit) {
   return `exit code ${exit.code ?? "unknown"}`;
 }
 function needsOkfyHomeEnv(okfyHome, defaultHome) {
-  return path9.resolve(okfyHome) !== path9.resolve(defaultHome);
+  return path10.resolve(okfyHome) !== path10.resolve(defaultHome);
 }
 function mcpServerName(sourceNameOrNames) {
   const sourceNames = Array.isArray(sourceNameOrNames) ? sourceNameOrNames : [sourceNameOrNames];
@@ -2615,9 +2581,9 @@ function descriptionFromMarkdown(markdown) {
 }
 
 // src/writer.ts
-import fs7 from "fs/promises";
+import fs8 from "fs/promises";
 import os2 from "os";
-import path10 from "path";
+import path11 from "path";
 
 // src/util/url.ts
 import dns from "dns/promises";
@@ -2747,8 +2713,8 @@ function assignOutputPaths(docs) {
     let candidate = base;
     let index = 2;
     while (used.has(candidate)) {
-      const parsed = path10.posix.parse(base);
-      candidate = path10.posix.join(parsed.dir, `${parsed.name}-${index}${parsed.ext}`);
+      const parsed = path11.posix.parse(base);
+      candidate = path11.posix.join(parsed.dir, `${parsed.name}-${index}${parsed.ext}`);
       index += 1;
     }
     used.add(candidate);
@@ -2759,9 +2725,9 @@ function assignOutputPaths(docs) {
 }
 function safeConceptOutputPath(candidate) {
   if (!isReservedOkfPath(candidate)) return candidate;
-  const parsed = path10.posix.parse(candidate);
+  const parsed = path11.posix.parse(candidate);
   const safeName = parsed.name.toLowerCase() === "log" ? "change-log" : parsed.dir ? "overview" : "home";
-  return path10.posix.join(parsed.dir, `${safeName}.md`);
+  return path11.posix.join(parsed.dir, `${safeName}.md`);
 }
 function rewriteLinks(doc, sourceToOutput) {
   return doc.markdown.replace(/\[([^\]]*)\]\(([^)\s]+)([^)]*)\)/g, (full, text, href, suffix) => {
@@ -2789,7 +2755,7 @@ function rewriteLinks(doc, sourceToOutput) {
     }
     if (!href.startsWith("#") && doc.sourcePath) {
       const abs = toPosixPath(
-        path10.posix.normalize(path10.posix.join(path10.posix.dirname(doc.sourcePath), href))
+        path11.posix.normalize(path11.posix.join(path11.posix.dirname(doc.sourcePath), href))
       );
       const noHash = abs.split("#")[0] ?? abs;
       const target = sourceToOutput.get(noHash);
@@ -2801,7 +2767,7 @@ function rewriteLinks(doc, sourceToOutput) {
 }
 async function pathExists(target) {
   try {
-    await fs7.lstat(target);
+    await fs8.lstat(target);
     return true;
   } catch (error) {
     if (error?.code === "ENOENT") return false;
@@ -2809,31 +2775,31 @@ async function pathExists(target) {
   }
 }
 async function resolveForSafety(target) {
-  const resolved = path10.resolve(target);
-  if (await pathExists(resolved)) return fs7.realpath(resolved);
-  const missingSegments = [path10.basename(resolved)];
-  let ancestor = path10.dirname(resolved);
+  const resolved = path11.resolve(target);
+  if (await pathExists(resolved)) return fs8.realpath(resolved);
+  const missingSegments = [path11.basename(resolved)];
+  let ancestor = path11.dirname(resolved);
   while (!await pathExists(ancestor)) {
-    const parent = path10.dirname(ancestor);
+    const parent = path11.dirname(ancestor);
     if (parent === ancestor)
       throw new Error(`Unable to resolve output path ancestor for ${target}.`);
-    missingSegments.unshift(path10.basename(ancestor));
+    missingSegments.unshift(path11.basename(ancestor));
     ancestor = parent;
   }
-  const realAncestor = await fs7.realpath(ancestor);
-  return path10.join(realAncestor, ...missingSegments);
+  const realAncestor = await fs8.realpath(ancestor);
+  return path11.join(realAncestor, ...missingSegments);
 }
 async function assertNoCwdSymlinkAncestor(target) {
-  const cwd = path10.resolve(process.cwd());
-  const resolved = path10.resolve(target);
-  const relative = path10.relative(cwd, resolved);
-  if (relative === "" || relative.startsWith("..") || path10.isAbsolute(relative)) return;
+  const cwd = path11.resolve(process.cwd());
+  const resolved = path11.resolve(target);
+  const relative = path11.relative(cwd, resolved);
+  if (relative === "" || relative.startsWith("..") || path11.isAbsolute(relative)) return;
   let current = cwd;
-  for (const segment of relative.split(path10.sep).filter(Boolean)) {
-    current = path10.join(current, segment);
+  for (const segment of relative.split(path11.sep).filter(Boolean)) {
+    current = path11.join(current, segment);
     let stat;
     try {
-      stat = await fs7.lstat(current);
+      stat = await fs8.lstat(current);
     } catch (error) {
       if (error?.code === "ENOENT") return;
       throw error;
@@ -2844,10 +2810,10 @@ async function assertNoCwdSymlinkAncestor(target) {
   }
 }
 async function findRepoRoot(start) {
-  let current = path10.resolve(start);
+  let current = path11.resolve(start);
   while (true) {
-    if (await pathExists(path10.join(current, ".git"))) return fs7.realpath(current);
-    const parent = path10.dirname(current);
+    if (await pathExists(path11.join(current, ".git"))) return fs8.realpath(current);
+    const parent = path11.dirname(current);
     if (parent === current) return void 0;
     current = parent;
   }
@@ -2855,10 +2821,10 @@ async function findRepoRoot(start) {
 async function assertSafeForceOutDir(outDir, options) {
   if (options.dangerouslyAllowUnsafeOutput) return;
   if (outDir.trim() === "") throw new Error("Unsafe output directory for --force: empty path.");
-  const rawResolved = path10.resolve(outDir);
+  const rawResolved = path11.resolve(outDir);
   const existing = await pathExists(rawResolved);
   if (existing) {
-    const stat = await fs7.lstat(rawResolved);
+    const stat = await fs8.lstat(rawResolved);
     if (stat.isSymbolicLink()) {
       throw new Error(`Unsafe output directory for --force: refusing symlink ${outDir}.`);
     }
@@ -2866,16 +2832,16 @@ async function assertSafeForceOutDir(outDir, options) {
   await assertNoCwdSymlinkAncestor(outDir);
   const realOutDir = await resolveForSafety(outDir);
   const forbidden = /* @__PURE__ */ new Map([
-    [path10.parse(realOutDir).root, "filesystem root"],
-    [await fs7.realpath(os2.homedir()), "home directory"],
-    [await fs7.realpath(process.cwd()), "current working directory"]
+    [path11.parse(realOutDir).root, "filesystem root"],
+    [await fs8.realpath(os2.homedir()), "home directory"],
+    [await fs8.realpath(process.cwd()), "current working directory"]
   ]);
   const repoRoot = await findRepoRoot(process.cwd());
   if (repoRoot) forbidden.set(repoRoot, "repository root");
   if (options.inputPath) {
     const inputReal = await resolveForSafety(options.inputPath);
     forbidden.set(inputReal, "input path");
-    forbidden.set(path10.dirname(inputReal), "parent of input path");
+    forbidden.set(path11.dirname(inputReal), "parent of input path");
   }
   const reason = forbidden.get(realOutDir);
   if (reason)
@@ -2886,33 +2852,33 @@ async function assertSafeForceOutDir(outDir, options) {
 async function ensureCleanOutDir(outDir, options) {
   if (options.force) await assertSafeForceOutDir(outDir, options);
   try {
-    const entries = await fs7.readdir(outDir);
+    const entries = await fs8.readdir(outDir);
     if (entries.length > 0) {
       if (!options.force)
         throw new Error(`Output directory is not empty: ${outDir}. Use --force to overwrite.`);
-      await fs7.rm(outDir, { recursive: true, force: true });
+      await fs8.rm(outDir, { recursive: true, force: true });
     }
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
   }
-  await fs7.mkdir(outDir, { recursive: true });
+  await fs8.mkdir(outDir, { recursive: true });
 }
 function titleForPath(relPath, fallback) {
-  const basename = path10.posix.basename(relPath, ".md");
+  const basename = path11.posix.basename(relPath, ".md");
   return fallback || basename;
 }
 function markdownLink(fromDir, toPath) {
   if (fromDir === ".") return toPath;
-  return path10.posix.relative(fromDir, toPath);
+  return path11.posix.relative(fromDir, toPath);
 }
 function indexTitle(dir, options) {
   if (dir === ".") return options.title ?? options.sourceName ?? "OKF Bundle";
-  const leaf = path10.posix.basename(dir);
+  const leaf = path11.posix.basename(dir);
   return leaf.split(/[-_\s]+/).filter(Boolean).map((word) => word.slice(0, 1).toUpperCase() + word.slice(1)).join(" ");
 }
 async function writePlainIndex(outDir, dir, concepts, options) {
-  const indexPath = dir === "." ? "index.md" : path10.posix.join(dir, "index.md");
-  const entries = (dir === "." ? concepts : concepts.filter((concept) => path10.posix.dirname(concept.relPath) === dir)).slice().sort((a, b) => a.relPath.localeCompare(b.relPath));
+  const indexPath = dir === "." ? "index.md" : path11.posix.join(dir, "index.md");
+  const entries = (dir === "." ? concepts : concepts.filter((concept) => path11.posix.dirname(concept.relPath) === dir)).slice().sort((a, b) => a.relPath.localeCompare(b.relPath));
   const lines = [
     `# ${indexTitle(dir, options)}`,
     "",
@@ -2920,8 +2886,8 @@ async function writePlainIndex(outDir, dir, concepts, options) {
       (concept) => `* [${concept.title}](${markdownLink(dir, concept.relPath)}) - ${concept.description}`
     )
   ];
-  await fs7.mkdir(path10.dirname(path10.join(outDir, indexPath)), { recursive: true });
-  await fs7.writeFile(path10.join(outDir, indexPath), `${lines.join("\n").trimEnd()}
+  await fs8.mkdir(path11.dirname(path11.join(outDir, indexPath)), { recursive: true });
+  await fs8.writeFile(path11.join(outDir, indexPath), `${lines.join("\n").trimEnd()}
 `, "utf8");
   return indexPath;
 }
@@ -2935,10 +2901,10 @@ async function writeOkfBundle(docs, options) {
   const concepts = [];
   for (const doc of orderedDocs) {
     const relPath = doc.outputPath ?? "index.md";
-    const absolute = path10.join(options.outDir, relPath);
-    await fs7.mkdir(path10.dirname(absolute), { recursive: true });
+    const absolute = path11.join(options.outDir, relPath);
+    await fs8.mkdir(path11.dirname(absolute), { recursive: true });
     const body = withTitle(doc.title, rewriteLinks(doc, sourceToOutput));
-    await fs7.writeFile(absolute, `${frontmatter(doc, timestamp)}${body}
+    await fs8.writeFile(absolute, `${frontmatter(doc, timestamp)}${body}
 `, "utf8");
     written.push(relPath);
     concepts.push({
@@ -2950,7 +2916,7 @@ async function writeOkfBundle(docs, options) {
   written.push(await writePlainIndex(options.outDir, ".", concepts, options));
   const dirs = [
     ...new Set(
-      concepts.map((concept) => path10.posix.dirname(concept.relPath)).filter((dir) => dir !== ".")
+      concepts.map((concept) => path11.posix.dirname(concept.relPath)).filter((dir) => dir !== ".")
     )
   ].sort();
   for (const dir of dirs) {
@@ -2960,19 +2926,19 @@ async function writeOkfBundle(docs, options) {
 }
 
 // src/activation.ts
-import fs8 from "fs/promises";
-import path11 from "path";
+import fs9 from "fs/promises";
+import path12 from "path";
 var PACKET_FILES = [
   { label: "Inspector HTML", fileName: "okfy-inspector.html" },
   { label: "Setup Markdown", fileName: "okfy-setup.md" },
   { label: "Proof JSON", fileName: "okfy-proof.json" }
 ];
 async function buildActivationPacket(options) {
-  const outDir = path11.resolve(options.outDir);
+  const outDir = path12.resolve(options.outDir);
   const protectedInputPaths = uniqueResolvedPaths(
     options.protectedInputPaths ?? protectedActivationInputPaths(options.records)
   );
-  const files = PACKET_FILES.map((file) => ({ ...file, path: path11.join(outDir, file.fileName) }));
+  const files = PACKET_FILES.map((file) => ({ ...file, path: path12.join(outDir, file.fileName) }));
   const usesRegistered = options.records.some(isRegisteredWorkspaceRecord) || isAllTarget(options.commandTarget);
   const okfyHome = usesRegistered ? options.okfyHome ?? process.env.OKFY_HOME ?? defaultOkfyHome() : defaultOkfyHome();
   const serverIdentity = options.serverIdentity ?? options.records.map((record) => record.name);
@@ -3230,24 +3196,24 @@ async function ensureActivationOutDir(outDir, options) {
     }
   }
   try {
-    const entries = await fs8.readdir(outDir);
+    const entries = await fs9.readdir(outDir);
     if (entries.length > 0) {
       if (!options.force)
         throw new Error(
           `Activation output directory is not empty: ${outDir}. Use --force to overwrite.`
         );
-      await fs8.rm(outDir, { recursive: true, force: true });
+      await fs9.rm(outDir, { recursive: true, force: true });
     }
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
   }
-  await fs8.mkdir(outDir, { recursive: true });
+  await fs9.mkdir(outDir, { recursive: true });
 }
 function assertActivationOutDirDoesNotTargetProtectedPaths(outDir, protectedInputPaths) {
-  const resolvedOut = path11.resolve(outDir);
+  const resolvedOut = path12.resolve(outDir);
   let nestedConflict;
   for (const inputPath of protectedInputPaths) {
-    const protectedPath = path11.resolve(inputPath);
+    const protectedPath = path12.resolve(inputPath);
     if (resolvedOut === protectedPath) {
       throw new Error(
         `Activation output directory cannot target a selected source path: ${resolvedOut}. Choose a separate --out directory.`
@@ -3275,21 +3241,21 @@ function protectedActivationInputPaths(records) {
   );
 }
 function isPathInside(parentPath, childPath) {
-  const relative = path11.relative(parentPath, childPath);
-  return relative !== "" && !relative.startsWith("..") && !path11.isAbsolute(relative);
+  const relative = path12.relative(parentPath, childPath);
+  return relative !== "" && !relative.startsWith("..") && !path12.isAbsolute(relative);
 }
 function uniqueResolvedPaths(paths) {
-  return Array.from(new Set(paths.map((filePath) => path11.resolve(filePath))));
+  return Array.from(new Set(paths.map((filePath) => path12.resolve(filePath))));
 }
 async function writeFileAtomically(filePath, contents) {
-  const resolved = path11.resolve(filePath);
+  const resolved = path12.resolve(filePath);
   const tempPath = `${resolved}.tmp-${process.pid}-${Date.now()}`;
-  await fs8.mkdir(path11.dirname(resolved), { recursive: true });
+  await fs9.mkdir(path12.dirname(resolved), { recursive: true });
   try {
-    await fs8.writeFile(tempPath, contents, "utf8");
-    await fs8.rename(tempPath, resolved);
+    await fs9.writeFile(tempPath, contents, "utf8");
+    await fs9.rename(tempPath, resolved);
   } catch (error) {
-    await fs8.rm(tempPath, { force: true });
+    await fs9.rm(tempPath, { force: true });
     throw error;
   }
 }
@@ -3445,7 +3411,7 @@ async function crawlWebsite(options) {
   options.onProgress?.({ type: "start", seed, maxPages, maxDepth });
   while (queue.length > 0 && visited.size < maxPages) {
     const batch = queue.splice(0, Math.min(queue.length, maxPages - visited.size));
-    const results = await Promise.all(
+    await Promise.all(
       batch.map(
         (item) => limit(async () => {
           if (visited.has(item.url)) return;
@@ -3526,7 +3492,6 @@ async function crawlWebsite(options) {
         })
       )
     );
-    void results;
   }
   if (options.dryRun) {
     return {
@@ -3576,19 +3541,19 @@ function parseDurationSeconds(input) {
 
 // src/hash.ts
 import crypto from "crypto";
-import fs9 from "fs/promises";
-import path12 from "path";
+import fs10 from "fs/promises";
+import path13 from "path";
 async function listBundleFiles(bundleDir) {
   const files = [];
   async function walk(current) {
-    for (const entry of await fs9.readdir(current, { withFileTypes: true })) {
-      const absolutePath = path12.join(current, entry.name);
+    for (const entry of await fs10.readdir(current, { withFileTypes: true })) {
+      const absolutePath = path13.join(current, entry.name);
       if (entry.isDirectory()) {
         await walk(absolutePath);
       } else if (entry.isFile()) {
         files.push({
           absolutePath,
-          relativePath: toPosixPath(path12.relative(bundleDir, absolutePath))
+          relativePath: toPosixPath(path13.relative(bundleDir, absolutePath))
         });
       }
     }
@@ -3600,7 +3565,7 @@ async function hashBundleContents(bundleDir) {
   const hash = crypto.createHash("sha256");
   const files = await listBundleFiles(bundleDir);
   for (const file of files) {
-    const contents = await fs9.readFile(file.absolutePath);
+    const contents = await fs10.readFile(file.absolutePath);
     hash.update(`${file.relativePath.length}:${file.relativePath}\0${contents.byteLength}:`);
     hash.update(contents);
     hash.update("\0");
@@ -3609,10 +3574,10 @@ async function hashBundleContents(bundleDir) {
 }
 
 // src/importer.ts
-import fs10 from "fs/promises";
-import path13 from "path";
+import fs11 from "fs/promises";
+import path14 from "path";
 function contentTypeFor(file) {
-  const ext = path13.extname(file).toLowerCase();
+  const ext = path14.extname(file).toLowerCase();
   if (ext === ".md") return "markdown";
   if (ext === ".mdx") return "mdx";
   if (ext === ".html" || ext === ".htm") return "html";
@@ -3620,12 +3585,12 @@ function contentTypeFor(file) {
   return void 0;
 }
 async function listFiles(root) {
-  const stat = await fs10.stat(root);
+  const stat = await fs11.stat(root);
   if (stat.isFile()) return [root];
   const files = [];
   async function walk(dir) {
-    for (const entry of await fs10.readdir(dir, { withFileTypes: true })) {
-      const absolute = path13.join(dir, entry.name);
+    for (const entry of await fs11.readdir(dir, { withFileTypes: true })) {
+      const absolute = path14.join(dir, entry.name);
       if (entry.isDirectory()) {
         if (![".git", "node_modules", "dist"].includes(entry.name)) await walk(absolute);
       } else if (entry.isFile()) {
@@ -3637,11 +3602,11 @@ async function listFiles(root) {
   return files.sort();
 }
 async function importLocal(options) {
-  const root = path13.resolve(options.inputPath);
+  const root = path14.resolve(options.inputPath);
   const files = await listFiles(root);
   const docs = [];
   for (const file of files) {
-    const rel = path13.relative(root, file).split(path13.sep).join("/");
+    const rel = path14.relative(root, file).split(path14.sep).join("/");
     if (options.include?.length && !matchesAnyPattern(rel, options.include)) continue;
     if (matchesAnyPattern(rel, options.exclude)) continue;
     const contentType = contentTypeFor(file);
@@ -3650,7 +3615,7 @@ async function importLocal(options) {
       sourceId: rel,
       filePath: rel,
       contentType,
-      raw: await fs10.readFile(file, "utf8"),
+      raw: await fs11.readFile(file, "utf8"),
       discoveredAt: options.timestamp ?? (/* @__PURE__ */ new Date()).toISOString()
     };
     docs.push(normalizeDocument(raw));
@@ -3669,13 +3634,13 @@ async function importLocal(options) {
 }
 
 // src/inspector.ts
-import path14 from "path";
+import path15 from "path";
 async function buildBundleInspectorReport(bundleDir, options = {}) {
-  const resolved = path14.resolve(bundleDir);
+  const resolved = path15.resolve(bundleDir);
   const record = localBundleRecord(resolved);
   return buildInspectorReport([record], {
     target: { kind: "bundle", bundleDir: resolved },
-    title: options.title ?? `${path14.basename(resolved)} OKFY Inspector`,
+    title: options.title ?? `${path15.basename(resolved)} OKFY Inspector`,
     prefixSingleSourceRefs: false
   });
 }
@@ -3760,6 +3725,8 @@ async function sourceReport(record, options) {
 }
 function inspectorConcept(concept, search, record, refFor2, includeSource) {
   const ref = refFor2(concept.id);
+  const outbound = (search.graph.outbound.get(concept.id) ?? []).map(refFor2).sort();
+  const backlinks = (search.graph.backlinks.get(concept.id) ?? []).map(refFor2).sort();
   return {
     id: concept.id,
     ref,
@@ -3775,9 +3742,9 @@ function inspectorConcept(concept, search, record, refFor2, includeSource) {
       sourceKind: record.manifest.kind,
       seedUrl: record.manifest.source.seedUrl
     } : {},
-    outbound: (search.graph.outbound.get(concept.id) ?? []).map(refFor2).sort(),
-    outboundLinks: (search.graph.outbound.get(concept.id) ?? []).map(refFor2).sort(),
-    backlinks: (search.graph.backlinks.get(concept.id) ?? []).map(refFor2).sort(),
+    outbound,
+    outboundLinks: [...outbound],
+    backlinks,
     citation: {
       ref,
       conceptPath: concept.path,
@@ -3966,13 +3933,13 @@ function isString(value) {
 }
 
 // src/refresh.ts
-import fs11 from "fs/promises";
-import path15 from "path";
+import fs12 from "fs/promises";
+import path16 from "path";
 import { randomUUID } from "crypto";
 var DEFAULT_STALE_LOCK_TIMEOUT_MS = 30 * 60 * 1e3;
 async function pathExists2(target) {
   try {
-    await fs11.access(target);
+    await fs12.access(target);
     return true;
   } catch (error) {
     if (error?.code === "ENOENT") return false;
@@ -3993,40 +3960,40 @@ function isBeforeNextRefreshAllowed(state, now) {
   return new Date(state.nextRefreshAllowedAt).getTime() > now.getTime();
 }
 function tempBundleDir(sourceDir) {
-  return path15.join(sourceDir, `bundle.tmp-${process.pid}-${randomUUID()}`);
+  return path16.join(sourceDir, `bundle.tmp-${process.pid}-${randomUUID()}`);
 }
 function lockfilePath(sourceDir) {
-  return path15.join(sourceDir, ".refresh.lock");
+  return path16.join(sourceDir, ".refresh.lock");
 }
 async function isLockStale(lockPath, now, staleLockTimeoutMs) {
   try {
-    const raw = await fs11.readFile(lockPath, "utf8");
+    const raw = await fs12.readFile(lockPath, "utf8");
     const parsed = JSON.parse(raw);
     const createdAt = parsed.createdAt ? Date.parse(parsed.createdAt) : Number.NaN;
     if (Number.isFinite(createdAt)) return now.getTime() - createdAt > staleLockTimeoutMs;
   } catch {
   }
-  const stat = await fs11.stat(lockPath);
+  const stat = await fs12.stat(lockPath);
   return now.getTime() - stat.mtimeMs > staleLockTimeoutMs;
 }
 async function acquireRefreshLock(sourceDir, now, staleLockTimeoutMs) {
   const lockPath = lockfilePath(sourceDir);
-  await fs11.mkdir(sourceDir, { recursive: true });
+  await fs12.mkdir(sourceDir, { recursive: true });
   try {
-    const handle = await fs11.open(lockPath, "wx");
+    const handle = await fs12.open(lockPath, "wx");
     await handle.writeFile(JSON.stringify({ pid: process.pid, createdAt: iso(now) }, null, 2));
     await handle.close();
     return {
       acquired: true,
       release: async () => {
-        await fs11.rm(lockPath, { force: true });
+        await fs12.rm(lockPath, { force: true });
       }
     };
   } catch (error) {
     if (error?.code !== "EEXIST") throw error;
   }
   if (await isLockStale(lockPath, now, staleLockTimeoutMs)) {
-    await fs11.rm(lockPath, { force: true });
+    await fs12.rm(lockPath, { force: true });
     return acquireRefreshLock(sourceDir, now, staleLockTimeoutMs);
   }
   return { acquired: false };
@@ -4111,16 +4078,16 @@ async function replaceActiveBundle(tempDir, bundleDir) {
   const backupDir = `${bundleDir}.backup-${process.pid}-${randomUUID()}`;
   let movedActiveToBackup = false;
   try {
-    await fs11.mkdir(path15.dirname(bundleDir), { recursive: true });
+    await fs12.mkdir(path16.dirname(bundleDir), { recursive: true });
     if (await pathExists2(bundleDir)) {
-      await fs11.rename(bundleDir, backupDir);
+      await fs12.rename(bundleDir, backupDir);
       movedActiveToBackup = true;
     }
-    await fs11.rename(tempDir, bundleDir);
-    if (movedActiveToBackup) await fs11.rm(backupDir, { recursive: true, force: true });
+    await fs12.rename(tempDir, bundleDir);
+    if (movedActiveToBackup) await fs12.rm(backupDir, { recursive: true, force: true });
   } catch (error) {
     if (movedActiveToBackup && !await pathExists2(bundleDir) && await pathExists2(backupDir)) {
-      await fs11.rename(backupDir, bundleDir);
+      await fs12.rename(backupDir, bundleDir);
     }
     throw error;
   }
@@ -4192,7 +4159,7 @@ async function refreshSource(options) {
       });
       return { status: freshness.status, skipped: false, dryRun: true, crawlResult };
     } finally {
-      await fs11.rm(tempDir, { recursive: true, force: true });
+      await fs12.rm(tempDir, { recursive: true, force: true });
     }
   }
   const lock = await acquireRefreshLock(
@@ -4243,7 +4210,7 @@ async function refreshSource(options) {
     await options.writeState(nextState);
     return { status: "fresh", skipped: false, state: nextState, crawlResult };
   } catch (error) {
-    await fs11.rm(tempDir, { recursive: true, force: true });
+    await fs12.rm(tempDir, { recursive: true, force: true });
     const failedState = stateForRefreshFailure(options.state, options.manifest, error, now);
     await options.writeState(failedState);
     return {

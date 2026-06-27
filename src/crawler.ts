@@ -211,7 +211,7 @@ export async function crawlWebsite(options: CrawlOptions): Promise<CrawlResult> 
 
   while (queue.length > 0 && visited.size < maxPages) {
     const batch = queue.splice(0, Math.min(queue.length, maxPages - visited.size));
-    const results = await Promise.all(
+    await Promise.all(
       batch.map((item) =>
         limit(async () => {
           if (visited.has(item.url)) return;
@@ -300,7 +300,6 @@ export async function crawlWebsite(options: CrawlOptions): Promise<CrawlResult> 
         })
       )
     );
-    void results;
   }
 
   if (options.dryRun) {
