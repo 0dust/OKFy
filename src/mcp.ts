@@ -125,6 +125,47 @@ const workspaceSearchSchema = searchSchema.extend({ source: z.string().optional(
 const workspaceReadSchema = readSchema.extend({ source: z.string().optional() });
 const workspaceNeighborsSchema = neighborsSchema.extend({ source: z.string().optional() });
 
+type NeighborEdge = {
+  from: string;
+  to: string;
+  direction: "outbound" | "backlink";
+  relationship_text?: string;
+};
+
+function collectNeighbors(
+  search: BundleSearch,
+  rootId: string,
+  depth: number
+): { conceptIds: string[]; edges: NeighborEdge[] } {
+  const seen = new Set([rootId]);
+  let frontier = [rootId];
+  const edges: NeighborEdge[] = [];
+
+  for (let level = 0; level < depth; level += 1) {
+    const next: string[] = [];
+    for (const id of frontier) {
+      for (const to of search.graph.outbound.get(id) ?? []) {
+        edges.push({
+          from: id,
+          to,
+          direction: "outbound",
+          relationship_text: "Markdown link"
+        });
+        if (!seen.has(to)) next.push(to);
+        seen.add(to);
+      }
+      for (const from of search.graph.backlinks.get(id) ?? []) {
+        edges.push({ from, to: id, direction: "backlink", relationship_text: "Backlink" });
+        if (!seen.has(from)) next.push(from);
+        seen.add(from);
+      }
+    }
+    frontier = next;
+  }
+
+  return { conceptIds: [...seen], edges };
+}
+
 function errorDetails(error: unknown): RefreshErrorDetails {
   if (error instanceof Error) return { message: error.message };
   if (typeof error === "string") return { message: error };
@@ -375,43 +416,14 @@ export async function createMcpServer(options: ServeOptions): Promise<Server> {
           return json({
             error: { code: "unknown_concept", message: `No concept found for ${parsed.id}` }
           });
-        const depth = parsed.depth ?? 1;
-        const seen = new Set([root.id]);
-        let frontier = [root.id];
-        const edges: Array<{
-          from: string;
-          to: string;
-          direction: "outbound" | "backlink";
-          relationship_text?: string;
-        }> = [];
-        for (let level = 0; level < depth; level += 1) {
-          const next: string[] = [];
-          for (const id of frontier) {
-            for (const to of currentSearch.graph.outbound.get(id) ?? []) {
-              edges.push({
-                from: id,
-                to,
-                direction: "outbound",
-                relationship_text: "Markdown link"
-              });
-              if (!seen.has(to)) next.push(to);
-              seen.add(to);
-            }
-            for (const from of currentSearch.graph.backlinks.get(id) ?? []) {
-              edges.push({ from, to: id, direction: "backlink", relationship_text: "Backlink" });
-              if (!seen.has(from)) next.push(from);
-              seen.add(from);
-            }
-          }
-          frontier = next;
-        }
+        const neighbors = collectNeighbors(currentSearch, root.id, parsed.depth ?? 1);
         return json({
           root: root.id,
-          concepts: [...seen].map((id) => {
+          concepts: neighbors.conceptIds.map((id) => {
             const concept = currentSearch.graph.concepts.get(id);
             return { id, title: concept?.title, type: concept?.type, resource: concept?.resource };
           }),
-          edges
+          edges: neighbors.edges
         });
       }
       if (request.params.name === LIST_TYPES_TOOL) {
@@ -862,51 +874,14 @@ export async function createWorkspaceMcpServer(options: WorkspaceServeOptions): 
         const parsed = workspaceNeighborsSchema.parse(args);
         const { source, concept: root } = workspace.getConcept(parsed);
         const currentSearch = source.search!;
-        const depth = parsed.depth ?? 1;
-        const seen = new Set([root.id]);
-        let frontier = [root.id];
-        const edges: Array<{
-          from: string;
-          to: string;
-          direction: "outbound" | "backlink";
-          relationship_text?: string;
-          sourceName: string;
-        }> = [];
-        for (let level = 0; level < depth; level += 1) {
-          const next: string[] = [];
-          for (const id of frontier) {
-            for (const to of currentSearch.graph.outbound.get(id) ?? []) {
-              edges.push({
-                from: id,
-                to,
-                direction: "outbound",
-                relationship_text: "Markdown link",
-                sourceName: source.record.name
-              });
-              if (!seen.has(to)) next.push(to);
-              seen.add(to);
-            }
-            for (const from of currentSearch.graph.backlinks.get(id) ?? []) {
-              edges.push({
-                from,
-                to: id,
-                direction: "backlink",
-                relationship_text: "Backlink",
-                sourceName: source.record.name
-              });
-              if (!seen.has(from)) next.push(from);
-              seen.add(from);
-            }
-          }
-          frontier = next;
-        }
+        const neighbors = collectNeighbors(currentSearch, root.id, parsed.depth ?? 1);
         return json({
           sourceName: source.record.name,
           sourceKind: source.record.manifest.kind,
           seedUrl: source.record.manifest.source.seedUrl,
           root: root.id,
           ref: `${source.record.name}:${root.id}`,
-          concepts: [...seen].map((id) => {
+          concepts: neighbors.conceptIds.map((id) => {
             const concept = currentSearch.graph.concepts.get(id);
             return {
               sourceName: source.record.name,
@@ -917,7 +892,7 @@ export async function createWorkspaceMcpServer(options: WorkspaceServeOptions): 
               resource: concept?.resource
             };
           }),
-          edges
+          edges: neighbors.edges.map((edge) => ({ ...edge, sourceName: source.record.name }))
         });
       }
       if (request.params.name === LIST_TYPES_TOOL) {

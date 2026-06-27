@@ -56,7 +56,7 @@ import {
   writeRefreshState,
   writeSourceManifest,
   writeWorkspaceProfile
-} from "./chunk-YYJNXQPO.js";
+} from "./chunk-7A4YHUWE.js";
 export {
   BundleSearch,
   MCP_TOOL_NAMES,
