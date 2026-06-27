@@ -396,9 +396,9 @@ export async function refreshSource(options: {
   }
 
   const startedState = stateForRefreshStart(options.state, freshness, now);
-  await options.writeState(startedState);
 
   try {
+    await options.writeState(startedState);
     const crawlResult = await crawlRunner({
       ...options.manifest.crawl,
       seedUrl: options.manifest.source.seedUrl,

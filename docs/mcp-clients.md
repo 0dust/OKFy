@@ -65,6 +65,12 @@ The packet includes:
 - `okfy-setup.md` with client-specific config snippets and the exact MCP launch command.
 - `okfy-proof.json` with a deterministic `bundle_summary`, `search_concepts`, `read_concept`, and `get_neighbors` proof over the selected docs.
 
+Add `--task "checkout sessions"` when you want the proof transcript to search and read against the task you plan to ask the agent:
+
+```bash
+npx -y okfy-ai activate stripe --client codex --task "checkout sessions" --out okfy-activation
+```
+
 For local bundle snapshots:
 
 ```bash

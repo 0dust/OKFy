@@ -5,11 +5,8 @@ import { packageVersion } from "./metadata.js";
 import { BundleSearch, type SearchResult } from "./search.js";
 import {
   listSources,
-  readRefreshState,
-  readSourceManifest,
-  resolveBundleDir,
+  readSourceRecord,
   resolveOkfyHome,
-  resolveSourceDir,
   validateSourceName,
   type SourceRecord,
   type SourceStoreOptions
@@ -101,9 +98,7 @@ export function assertUniqueWorkspaceRecordNames(records: WorkspaceSourceRecord[
   }
 }
 
-export function isRegisteredWorkspaceRecord(
-  record: WorkspaceSourceRecord
-): record is SourceRecord {
+export function isRegisteredWorkspaceRecord(record: WorkspaceSourceRecord): record is SourceRecord {
   return record.manifest.kind === "website";
 }
 
@@ -430,31 +425,4 @@ function assertUniqueSourceNames(names: string[]): void {
       });
     seen.add(name);
   }
-}
-
-async function readSourceRecord(name: string, options: SourceStoreOptions): Promise<SourceRecord> {
-  const manifest = await readSourceManifest(name, options);
-  return {
-    name: manifest.name,
-    dir: resolveSourceDir(manifest.name, options),
-    manifest,
-    state: await readRefreshStateIfExists(manifest.name, options),
-    bundleDir: resolveBundleDir(manifest, options)
-  };
-}
-
-async function readRefreshStateIfExists(
-  name: string,
-  options: SourceStoreOptions
-): Promise<SourceRecord["state"]> {
-  try {
-    return await readRefreshState(name, options);
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") return undefined;
-    throw error;
-  }
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error;
 }

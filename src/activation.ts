@@ -117,6 +117,7 @@ export interface BuildActivationPacketOptions {
   client: SetupClient;
   outDir: string;
   commandTarget: ServeCommandTarget;
+  proofTask?: string;
   protectedInputPaths?: string[];
   serverIdentity?: string[];
   autoRefresh?: boolean;
@@ -182,6 +183,7 @@ export async function buildActivationPacket(
   const proof = await buildActivationProof({
     records: options.records,
     report: options.report,
+    proofTask: options.proofTask,
     generatedAt: options.generatedAt ?? new Date().toISOString()
   });
   return {
@@ -286,15 +288,19 @@ export async function writeActivationPacketFiles(
 async function buildActivationProof(options: {
   records: WorkspaceSourceRecord[];
   report: InspectorReport;
+  proofTask?: string;
   generatedAt: string;
 }): Promise<ActivationProof> {
   const loaded = await loadSources(options.records);
   const primary = firstReadableConcept(loaded, options.report);
-  const query = primary ? queryForConcept(primary.concept) : "documentation";
-  const searchResults = primary ? searchProofResults(loaded, query, options.report) : [];
-  const readTarget = primary
-    ? (conceptForSearchResult(loaded, searchResults[0], options.report) ?? primary)
-    : undefined;
+  const taskQuery = normalizeProofTask(options.proofTask);
+  const query = taskQuery ?? (primary ? queryForConcept(primary.concept) : "documentation");
+  const searchSource = sourceScopedProofSearch(loaded, options.report);
+  const searchResults = loaded.length
+    ? searchProofResults(loaded, query, options.report, searchSource)
+    : [];
+  const searchedTarget = conceptForSearchResult(loaded, searchResults[0], options.report);
+  const readTarget = searchedTarget ?? (taskQuery ? undefined : primary);
   return {
     schemaVersion: 1,
     generatedBy: "okfy",
@@ -313,9 +319,7 @@ async function buildActivationProof(options: {
       input: {
         query,
         limit: 5,
-        ...(primary && options.report.target.kind !== "bundle"
-          ? { source: primary.record.name }
-          : {})
+        ...(searchSource ? { source: searchSource } : {})
       },
       results: searchResults
     },
@@ -328,7 +332,12 @@ async function loadSources(records: WorkspaceSourceRecord[]): Promise<LoadedSour
   const loaded: LoadedSource[] = [];
   for (const record of records) {
     if (record.loadError) continue;
-    loaded.push({ record, search: await BundleSearch.fromBundle(record.bundleDir) });
+    try {
+      loaded.push({ record, search: await BundleSearch.fromBundle(record.bundleDir) });
+    } catch {
+      // The Inspector report already carries unavailable-source diagnostics.
+      // Activation should still write setup and diagnostic proof artifacts.
+    }
   }
   return loaded;
 }
@@ -349,9 +358,13 @@ function firstReadableConcept(
 function searchProofResults(
   loaded: LoadedSource[],
   query: string,
-  report: InspectorReport
+  report: InspectorReport,
+  sourceName?: string
 ): ActivationProofSearchResult[] {
-  return loaded
+  const searchable = sourceName
+    ? loaded.filter((source) => source.record.name === sourceName)
+    : loaded;
+  return searchable
     .flatMap((source) =>
       source.search
         .search(query, { limit: 5 })
@@ -364,6 +377,14 @@ function searchProofResults(
         first.id.localeCompare(second.id)
     )
     .slice(0, 5);
+}
+
+function sourceScopedProofSearch(
+  loaded: LoadedSource[],
+  report: InspectorReport
+): string | undefined {
+  if (report.target.kind === "bundle") return undefined;
+  return loaded.length === 1 ? loaded[0]!.record.name : undefined;
 }
 
 function conceptForSearchResult(
@@ -475,6 +496,11 @@ function queryForConcept(concept: Concept): string {
       .replace(/\s+/g, " ")
       .trim() || concept.id
   );
+}
+
+function normalizeProofTask(task: string | undefined): string | undefined {
+  const normalized = task?.replace(/\s+/g, " ").trim();
+  return normalized || undefined;
 }
 
 async function ensureActivationOutDir(

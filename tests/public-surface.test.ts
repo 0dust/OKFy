@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -172,6 +173,8 @@ describe("public surface", () => {
     const files = pack[0]?.files.map((file) => file.path).sort() ?? [];
 
     expect(files).toContain("README.md");
+    expect(files).toContain("dist/setup-artifacts.js");
+    expect(files).toContain("dist/setup-artifacts.d.ts");
     expect(files).toContain("assets/logo-dark.png");
     expect(files).toContain("assets/logo-light.png");
     expect(files).not.toContain("assets/logo.png");
@@ -185,6 +188,130 @@ describe("public surface", () => {
     expect(files.some((file) => file.startsWith("docs/ideation/"))).toBe(false);
     expect(files.some((file) => file.startsWith("docs/prds/"))).toBe(false);
     expect(files).not.toContain("docs/okfy-mcp-prd.md");
+  });
+
+  it("imports only declared package API from a clean npm install", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "okfy-package-"));
+    try {
+      const { stdout } = await execFileAsync("npm", [
+        "pack",
+        "--json",
+        "--pack-destination",
+        tempRoot
+      ]);
+      const pack = JSON.parse(stdout) as Array<{ filename: string }>;
+      const tarball = path.join(tempRoot, pack[0]!.filename);
+      const appDir = path.join(tempRoot, "app");
+      await fs.mkdir(appDir);
+      await execFileAsync(
+        "npm",
+        ["install", "--ignore-scripts", "--no-audit", "--no-fund", tarball],
+        {
+          cwd: appDir
+        }
+      );
+
+      const script = String.raw`
+        const requiredRootKeys = [
+          "BundleSearch",
+          "MCP_TOOL_NAMES",
+          "WorkspaceError",
+          "WorkspaceSearch",
+          "assertUniqueWorkspaceRecordNames",
+          "buildActivationPacket",
+          "buildBundleInspectorReport",
+          "buildWorkspaceInspectorReport",
+          "bundleSourceName",
+          "createMcpServer",
+          "createWorkspaceMcpServer",
+          "crawlWebsite",
+          "importLocal",
+          "inspectBundle",
+          "localBundleRecord",
+          "okfyUserAgent",
+          "packageMetadata",
+          "packageVersion",
+          "readBundle",
+          "readConceptFile",
+          "renderActivationSetupMarkdown",
+          "serveMcpStdio",
+          "serveWorkspaceMcpStdio",
+          "validateBundle",
+          "withActivationMetadata",
+          "writeActivationPacketFiles",
+          "writeOkfBundle"
+        ].sort();
+        const legacyRootKeys = [
+          "evaluateFreshness",
+          "hashBundleContents",
+          "listSources",
+          "parseDurationSeconds",
+          "readRefreshState",
+          "readSourceManifest",
+          "refreshSource",
+          "resolveOkfyHome",
+          "writeRefreshState",
+          "writeSourceManifest"
+        ].sort();
+        const expectedSetupKeys = [
+          "codexMcpServerName",
+          "expectedMcpTools",
+          "firstAgentPrompt",
+          "mcpServerName",
+          "parseSetupClient",
+          "renderClientArtifacts",
+          "renderMcpClientArtifacts",
+          "serveCommand",
+          "serveCommandArgs"
+        ].sort();
+        const root = await import("okfy-ai");
+        const setup = await import("okfy-ai/setup");
+        const actualRootKeys = Object.keys(root).sort();
+        for (const key of requiredRootKeys) {
+          if (!(key in root)) throw new Error("Missing root export: " + key);
+        }
+        for (const key of legacyRootKeys) {
+          if (typeof root[key] !== "function") {
+            throw new Error("Missing legacy root export: " + key);
+          }
+        }
+        const actualSetupKeys = Object.keys(setup).sort();
+        if (JSON.stringify(actualSetupKeys) !== JSON.stringify(expectedSetupKeys)) {
+          throw new Error("Unexpected setup exports: " + actualSetupKeys.join(", "));
+        }
+        if (typeof root.validateBundle !== "function") throw new Error("Missing validateBundle");
+        if (typeof root.createMcpServer !== "function") throw new Error("Missing createMcpServer");
+        if (typeof root.buildActivationPacket !== "function") {
+          throw new Error("Missing buildActivationPacket");
+        }
+        if (typeof setup.renderClientArtifacts !== "function") {
+          throw new Error("Missing setup renderClientArtifacts");
+        }
+        if (!setup.expectedMcpTools().includes("search_concepts")) {
+          throw new Error("Missing setup expectedMcpTools");
+        }
+        if (!setup.serveCommand("stripe", "/tmp/okfy").display.includes("serve stripe --mcp")) {
+          throw new Error("Missing setup serveCommand");
+        }
+        async function expectBlocked(specifier) {
+          try {
+            await import(specifier);
+          } catch (error) {
+            if (error?.code === "ERR_PACKAGE_PATH_NOT_EXPORTED") return;
+            throw error;
+          }
+          throw new Error("Internal subpath unexpectedly imported: " + specifier);
+        }
+        await expectBlocked("okfy-ai/src/source-store.js");
+        await expectBlocked("okfy-ai/dist/index.js");
+        console.log("ok");
+      `;
+      await expect(
+        execFileAsync(process.execPath, ["--input-type=module", "-e", script], { cwd: appDir })
+      ).resolves.toMatchObject({ stdout: "ok\n" });
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it("documents the publishable npm package", async () => {
@@ -213,18 +340,24 @@ describe("public surface", () => {
       types: "./dist/index.d.ts",
       import: "./dist/index.js"
     });
+    expect(parsed.exports?.["./setup"]).toMatchObject({
+      types: "./dist/setup-artifacts.d.ts",
+      import: "./dist/setup-artifacts.js"
+    });
     await expect(
       execFileAsync(process.execPath, [
         "--input-type=module",
         "-e",
-        "import('okfy-ai').then((mod) => console.log(typeof mod.validateBundle))"
+        "import('okfy-ai').then((mod) => console.log(`${typeof mod.validateBundle}:${typeof mod.writeSourceManifest}`))"
       ])
-    ).resolves.toMatchObject({ stdout: "function\n" });
+    ).resolves.toMatchObject({ stdout: "function:function\n" });
     expect(readme).toContain(
       "`okfy-ai` is the npm package name. `okfy` is the installed CLI command."
     );
     expect(readme).toContain("You do not need global install for MCP configs.");
     expect(readme).toContain("MCP clients start it as a subprocess");
+    expect(readme).toContain("Programmatic imports remain compatible");
+    expect(readme).toContain("New setup-only code can import");
     expect(readme).toContain("Preflight DNS-resolved private targets");
     expect(readme).toContain("The MCP server exposes read-only tools.");
     expect(readme).toContain("okfy init <name> <url>");
@@ -238,6 +371,8 @@ describe("public surface", () => {
     expect(npmReadme).toContain(
       "`okfy-ai` is the npm package name. `okfy` is the installed CLI command."
     );
+    expect(npmReadme).toContain("Programmatic imports remain compatible");
+    expect(npmReadme).toContain("New setup-only code can import");
     expect(npmReadme).toContain("Preflight DNS-resolved private targets");
     expect(npmReadme).toContain(
       "MCP tools are read-only; refresh is server-side maintenance, not an agent-callable write tool."

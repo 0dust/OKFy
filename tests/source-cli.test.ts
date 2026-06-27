@@ -159,6 +159,13 @@ async function markSourceOld(okfyHome: string, name: string): Promise<void> {
   await fs.writeFile(statePath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
 }
 
+async function writeMalformedRefreshState(okfyHome: string, name: string): Promise<void> {
+  const statePath = path.join(okfyHome, "sources", name, "state.json");
+  const parsed = JSON.parse(await fs.readFile(statePath, "utf8")) as Record<string, unknown>;
+  parsed.status = "ready";
+  await fs.writeFile(statePath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
+}
+
 async function waitForFileContains(
   filePath: string,
   expected: string,
@@ -347,6 +354,89 @@ describe("registered source CLI flow", () => {
     expect((await runCli(["validate", bundleDir], okfyHome)).stdout).toContain("OKF bundle valid");
   });
 
+  it("writes task-scoped registered-source activation proof", async () => {
+    const okfyHome = await tempHome();
+    await registerFixtureSource(okfyHome, "stripe");
+    const outDir = path.join(okfyHome, "activation");
+
+    const result = await runCli(
+      [
+        "activate",
+        "stripe",
+        "--client",
+        "codex",
+        "--task",
+        "search_concepts",
+        "--out",
+        outDir,
+        "--json"
+      ],
+      okfyHome
+    );
+
+    const manifest = parseJson<{
+      proof: { query: string; searchResultCount: number; readRef: string | null };
+    }>(result.stdout);
+    expect(manifest.proof).toMatchObject({
+      query: "search_concepts",
+      searchResultCount: 1,
+      readRef: "stripe:reference/api"
+    });
+    const proof = parseJson<{
+      search: {
+        input: { query: string; source?: string };
+        results: Array<{ sourceName?: string; ref: string }>;
+      };
+      read: { input: { source?: string; id: string }; result: { ref: string } };
+      neighbors: { input: { source?: string; id: string } };
+    }>(await fs.readFile(path.join(outDir, "okfy-proof.json"), "utf8"));
+    expect(proof.search.input).toMatchObject({
+      query: "search_concepts",
+      source: "stripe"
+    });
+    expect(proof.search.results[0]).toMatchObject({
+      sourceName: "stripe",
+      ref: "stripe:reference/api"
+    });
+    expect(proof.read.input).toMatchObject({ source: "stripe", id: "reference/api" });
+    expect(proof.read.result.ref).toBe("stripe:reference/api");
+    expect(proof.neighbors.input).toMatchObject({ source: "stripe", id: "reference/api" });
+  });
+
+  it("writes diagnostic activation artifacts for unavailable registered bundles", async () => {
+    const okfyHome = await tempHome();
+    await registerFixtureSource(okfyHome, "stripe");
+    const bundleDir = path.join(okfyHome, "sources", "stripe", "bundle");
+    const outDir = path.join(okfyHome, "activation");
+    await fs.rm(bundleDir, { recursive: true, force: true });
+
+    const result = await runCli(
+      ["activate", "stripe", "--client", "codex", "--out", outDir, "--json"],
+      okfyHome
+    );
+
+    const manifest = parseJson<{
+      status: string;
+      proof: { searchResultCount: number; readRef: string | null; citation: string | null };
+    }>(result.stdout);
+    expect(manifest.status).toBe("ready");
+    expect(manifest.proof).toMatchObject({
+      searchResultCount: 0,
+      readRef: null,
+      citation: null
+    });
+    await expect(fs.access(path.join(outDir, "okfy-inspector.html"))).resolves.toBeUndefined();
+    await expect(fs.access(path.join(outDir, "okfy-setup.md"))).resolves.toBeUndefined();
+    const proof = parseJson<{
+      search: { results: unknown[] };
+      read: unknown | null;
+      neighbors: unknown | null;
+    }>(await fs.readFile(path.join(outDir, "okfy-proof.json"), "utf8"));
+    expect(proof.search.results).toEqual([]);
+    expect(proof.read).toBeNull();
+    expect(proof.neighbors).toBeNull();
+  });
+
   it("prints local bundle Inspector JSON without writing HTML", async () => {
     const okfyHome = await tempHome();
     const outFile = path.join(okfyHome, "should-not-exist.html");
@@ -497,6 +587,80 @@ describe("registered source CLI flow", () => {
       seedUrl: "",
       lastError: { message: expect.stringMatching(/source manifest|kind|okfyVersion/i) }
     });
+  });
+
+  it("checks explicit registered sources with malformed state as load errors", async () => {
+    const okfyHome = await tempHome();
+    await registerFixtureSource(okfyHome, "stripe");
+    await writeMalformedRefreshState(okfyHome, "stripe");
+
+    let failure: any;
+    try {
+      await runCli(["check", "stripe", "--json"], okfyHome);
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeTruthy();
+    const payload = parseJson<{
+      name: string;
+      status: string;
+      valid: boolean;
+      lastError: { message: string };
+      bundlePath: string;
+    }>(failure.stdout);
+    expect(payload).toMatchObject({
+      name: "stripe",
+      status: "failed",
+      valid: false,
+      bundlePath: path.join(okfyHome, "sources", "stripe", "bundle"),
+      lastError: {
+        message: expect.stringMatching(/Invalid refresh state.*status/i)
+      }
+    });
+  });
+
+  it("serves explicit registered sources with malformed state when the bundle is valid", async () => {
+    const okfyHome = await tempHome();
+    await registerFixtureSource(okfyHome, "stripe");
+    await writeMalformedRefreshState(okfyHome, "stripe");
+
+    await withBuiltCliMcpSession(
+      ["serve", "stripe", "--mcp"],
+      { env: { ...process.env, OKFY_HOME: okfyHome } },
+      async ({ send, waitFor }) => {
+        send(2, "tools/call", { name: "bundle_summary", arguments: {} });
+        const summaryResponse = (await waitFor(2)) as {
+          result: { content: Array<{ text: string }> };
+        };
+        const summary = JSON.parse(summaryResponse.result.content[0]?.text ?? "{}") as {
+          validationStatus: string;
+          conceptCount: number;
+          freshnessStatus: string;
+          lastRefreshError: { message: string } | null;
+        };
+        expect(summary).toMatchObject({
+          validationStatus: "valid",
+          conceptCount: 2,
+          freshnessStatus: "failed",
+          lastRefreshError: {
+            message: expect.stringMatching(/Invalid refresh state.*status/i)
+          }
+        });
+
+        send(3, "tools/call", {
+          name: "search_concepts",
+          arguments: { query: "Quickstart", limit: 5 }
+        });
+        const searchResponse = (await waitFor(3)) as {
+          result: { content: Array<{ text: string }> };
+        };
+        const results = JSON.parse(searchResponse.result.content[0]?.text ?? "[]") as Array<{
+          title: string;
+        }>;
+        expect(results[0]?.title).toBe("Quickstart");
+      }
+    );
   });
 
   it("summarizes invalid source directory names in --all MCP workspaces", async () => {

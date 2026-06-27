@@ -73,6 +73,12 @@ npx -y okfy-ai activate stripe --client codex --out okfy-activation
 
 The packet contains `okfy-inspector.html`, `okfy-setup.md`, and `okfy-proof.json`. It shows the exact MCP command/config, first prompt, readiness, and a deterministic proof path through `bundle_summary`, `search_concepts`, `read_concept`, and `get_neighbors`.
 
+Add `--task "checkout sessions"` when you want the proof search/read path to match the task you plan to ask the agent:
+
+```bash
+npx -y okfy-ai activate stripe --client codex --task "checkout sessions" --out okfy-activation
+```
+
 Use a local OKF bundle path when you already manage the bundle yourself:
 
 ```bash
@@ -199,6 +205,8 @@ okfy demo
 `okfy-ai` is the npm package name. `okfy` is the installed CLI command.
 
 Requires Node.js 20+.
+
+Programmatic imports remain compatible with the existing `okfy-ai` root surface, including source-store and refresh helpers. New setup-only code can import the pure artifact helpers from `okfy-ai/setup`, such as `serveCommand`, `renderClientArtifacts`, and `expectedMcpTools`.
 
 After installing, this MCP config is equivalent:
 

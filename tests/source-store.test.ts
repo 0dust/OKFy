@@ -1,10 +1,11 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   listSources,
   readRefreshState,
+  readSourceRecord,
   readSourceManifest,
   removeSource,
   resolveBundleDir,
@@ -161,6 +162,40 @@ describe("source manifest and state storage", () => {
     expect(stateJson.endsWith("\n")).toBe(true);
   });
 
+  it("writes concurrent refresh states through unique temp files", async () => {
+    const okfyHome = await tempHome();
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_777_777_777_777);
+    try {
+      await writeSourceManifest(manifest(), { okfyHome });
+
+      await Promise.all(
+        Array.from({ length: 8 }, (_, index) =>
+          writeRefreshState(
+            "stripe",
+            state({
+              status: index % 2 === 0 ? "fresh" : "stale",
+              bundle: {
+                conceptCount: 25 + index,
+                warningCount: 0,
+                valid: true,
+                contentHash: `sha256:test-${index}`
+              }
+            }),
+            { okfyHome }
+          )
+        )
+      );
+
+      const stored = await readRefreshState("stripe", { okfyHome });
+      expect(stored.bundle?.contentHash).toMatch(/^sha256:test-[0-7]$/);
+      const sourceDir = path.join(okfyHome, "sources", "stripe");
+      const leftovers = (await fs.readdir(sourceDir)).filter((name) => name.endsWith(".tmp"));
+      expect(leftovers).toEqual([]);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it("rejects malformed state.json instead of trusting unchecked JSON", async () => {
     const okfyHome = await tempHome();
     const sourceDir = path.join(okfyHome, "sources", "stripe");
@@ -181,6 +216,30 @@ describe("source manifest and state storage", () => {
     expect(sources[0]).toMatchObject({
       name: "stripe",
       state: undefined,
+      loadError: {
+        message: expect.stringMatching(/Invalid refresh state.*status/i)
+      }
+    });
+  });
+
+  it("loads explicit source records with malformed state as load errors", async () => {
+    const okfyHome = await tempHome();
+    const sourceDir = path.join(okfyHome, "sources", "stripe");
+
+    await writeSourceManifest(manifest(), { okfyHome });
+    await fs.mkdir(path.join(sourceDir, "bundle"), { recursive: true });
+    await fs.writeFile(
+      path.join(sourceDir, "state.json"),
+      JSON.stringify({ ...state(), status: "ready" }),
+      "utf8"
+    );
+
+    const record = await readSourceRecord("stripe", { okfyHome });
+
+    expect(record).toMatchObject({
+      name: "stripe",
+      state: undefined,
+      bundleDir: path.join(sourceDir, "bundle"),
       loadError: {
         message: expect.stringMatching(/Invalid refresh state.*status/i)
       }

@@ -108,6 +108,8 @@ npx -y okfy-ai activate stripe --client codex --out okfy-activation
 
 The packet contains an Inspector HTML file, a setup Markdown file, and a proof JSON transcript that follows the agent path: `bundle_summary`, `search_concepts`, `read_concept`, and `get_neighbors`.
 
+Add `--task "checkout sessions"` when you want the proof search/read path to be scoped to the task you are about to give the agent.
+
 If setup is not working, run:
 
 ```bash
@@ -129,6 +131,12 @@ npx -y okfy-ai activate stripe --client codex --out okfy-activation
 - `okfy-inspector.html`: static local Inspector with setup command and first prompt.
 - `okfy-setup.md`: client-specific MCP config, launch command, first prompt, readiness, and file list.
 - `okfy-proof.json`: deterministic proof of `bundle_summary`, `search_concepts`, `read_concept`, and `get_neighbors` over the selected docs.
+
+Use `--task "<question or job>"` to make `okfy-proof.json` prove a specific search/read path instead of the default first readable concept:
+
+```bash
+npx -y okfy-ai activate stripe --client codex --task "checkout sessions" --out okfy-activation
+```
 
 For a local OKF bundle path:
 
@@ -308,6 +316,8 @@ Package: [okfy-ai on npm](https://www.npmjs.com/package/okfy-ai)
 
 Requires Node.js 20+.
 
+Programmatic imports remain compatible with the existing `okfy-ai` root surface, including source-store and refresh helpers. New setup-only code can import the pure artifact helpers from `okfy-ai/setup`, such as `serveCommand`, `renderClientArtifacts`, and `expectedMcpTools`.
+
 After installing, this MCP config is equivalent:
 
 ```json
@@ -453,7 +463,7 @@ okfy update stripe --json
 okfy crawl https://docs.example.com --out ./docs-okf --max-pages 100 --max-depth 4
 okfy import ./docs --out ./docs-okf --source-name "Project docs" --force
 okfy validate ./docs-okf --json
-okfy activate stripe --client codex --out okfy-activation
+okfy activate stripe --client codex --task "checkout sessions" --out okfy-activation
 okfy map stripe --out okfy-inspector.html
 okfy serve ./docs-okf --mcp --max-result-chars 12000
 ```

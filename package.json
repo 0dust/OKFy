@@ -10,6 +10,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./setup": {
+      "types": "./dist/setup-artifacts.d.ts",
+      "import": "./dist/setup-artifacts.js"
+    },
     "./package.json": "./package.json"
   },
   "bin": {
@@ -40,7 +44,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsup src/cli.ts src/index.ts --format esm --dts --clean",
+    "build": "tsup src/cli.ts src/index.ts src/setup-artifacts.ts --format esm --dts --clean",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",

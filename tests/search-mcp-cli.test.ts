@@ -23,7 +23,11 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
 });
 
-type McpTextResult = { content: Array<{ type: "text"; text: string }> };
+type McpTextResult = {
+  content: Array<{ type: "text"; text: string }>;
+  structuredContent?: Record<string, unknown>;
+  isError?: boolean;
+};
 type Handler = (request: unknown, extra?: unknown) => Promise<McpTextResult>;
 
 function handler(server: unknown, method: string): Handler {
@@ -35,6 +39,21 @@ function handler(server: unknown, method: string): Handler {
 
 function parseText(result: McpTextResult): unknown {
   return JSON.parse(result.content[0]?.text ?? "null");
+}
+
+async function waitForValue<T>(
+  read: () => Promise<T>,
+  matches: (value: T) => boolean,
+  timeoutMs = 1_000
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  let lastValue: T;
+  while (true) {
+    lastValue = await read();
+    if (matches(lastValue)) return lastValue;
+    if (Date.now() >= deadline) return lastValue;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 async function writeSingleConceptBundle(
@@ -176,7 +195,10 @@ describe("MCP server", () => {
     const callTool = handler(server, "tools/call");
 
     const listed = (await listTools({ method: "tools/list" })) as unknown as {
-      tools: Array<{ name: string }>;
+      tools: Array<{
+        name: string;
+        inputSchema: { properties: Record<string, unknown>; required?: string[] };
+      }>;
     };
     expect(listed.tools.map((tool) => tool.name)).toEqual([
       "search_concepts",
@@ -186,32 +208,50 @@ describe("MCP server", () => {
       "list_tags",
       "bundle_summary"
     ]);
+    expect(listed.tools.find((tool) => tool.name === "search_concepts")?.inputSchema).toMatchObject(
+      {
+        properties: { limit: { type: "integer", minimum: 1, maximum: 50 } },
+        required: ["query"]
+      }
+    );
+    expect(listed.tools.find((tool) => tool.name === "get_neighbors")?.inputSchema).toMatchObject({
+      properties: { depth: { type: "integer", minimum: 1, maximum: 2 } },
+      required: ["id"]
+    });
 
-    const searchResult = parseText(
-      await callTool({
-        method: "tools/call",
-        params: { name: "search_concepts", arguments: { query: "install okfy", limit: 2 } }
-      })
-    ) as Array<{ id: string }>;
+    const searchCall = await callTool({
+      method: "tools/call",
+      params: { name: "search_concepts", arguments: { query: "install okfy", limit: 2 } }
+    });
+    const searchResult = parseText(searchCall) as Array<{ id: string }>;
     expect(searchResult.map((item) => item.id)).toContain("guides/quickstart");
+    expect(searchCall.isError).toBe(false);
+    expect(searchCall.structuredContent?.results).toEqual(searchResult);
 
-    const readResult = parseText(
-      await callTool({
-        method: "tools/call",
-        params: { name: "read_concept", arguments: { id: "reference/api", max_chars: 40 } }
-      })
-    ) as { markdown_body: string; outbound_links: string[]; backlinks: string[] };
+    const readCall = await callTool({
+      method: "tools/call",
+      params: { name: "read_concept", arguments: { id: "reference/api", max_chars: 40 } }
+    });
+    const readResult = parseText(readCall) as {
+      markdown_body: string;
+      outbound_links: string[];
+      backlinks: string[];
+    };
     expect(readResult.markdown_body.length).toBeLessThanOrEqual(40);
     expect(readResult.outbound_links).toEqual(["guides/quickstart"]);
     expect(readResult.backlinks).toEqual(["guides/quickstart"]);
+    expect(readCall.structuredContent).toEqual(readResult);
 
-    const reservedRead = parseText(
-      await callTool({
-        method: "tools/call",
-        params: { name: "read_concept", arguments: { id: "index" } }
-      })
-    ) as { error: { code: string } };
+    const reservedReadCall = await callTool({
+      method: "tools/call",
+      params: { name: "read_concept", arguments: { id: "index" } }
+    });
+    const reservedRead = parseText(reservedReadCall) as { error: { code: string } };
     expect(reservedRead.error.code).toBe("unknown_concept");
+    expect(reservedReadCall.isError).toBe(true);
+    expect(reservedReadCall.structuredContent?.error).toMatchObject({
+      code: "unknown_concept"
+    });
 
     const neighbors = parseText(
       await callTool({
@@ -239,6 +279,37 @@ describe("MCP server", () => {
       warningCount: 0,
       validationStatus: "valid"
     });
+  });
+
+  it("returns structured MCP errors for invalid tool arguments", async () => {
+    const server = await createMcpServer({ bundleDir, maxResultChars: 2000 });
+    const callTool = handler(server, "tools/call");
+
+    for (const [name, args] of [
+      ["search_concepts", { query: "install okfy", limit: 0 }],
+      ["read_concept", { id: "guides/quickstart", max_chars: 0 }],
+      ["get_neighbors", { id: "guides/quickstart", depth: 3 }]
+    ] as const) {
+      const result = await callTool({ method: "tools/call", params: { name, arguments: args } });
+      const body = parseText(result) as { error: { code: string; issues: unknown[] } };
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent?.error).toMatchObject({ code: "invalid_arguments" });
+      expect(body.error.code).toBe("invalid_arguments");
+      expect(body.error.issues.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("omits structuredContent when the text payload is truncated", async () => {
+    const server = await createMcpServer({ bundleDir, maxResultChars: 25 });
+    const callTool = handler(server, "tools/call");
+
+    const result = await callTool({
+      method: "tools/call",
+      params: { name: "bundle_summary", arguments: {} }
+    });
+
+    expect(result.content[0]?.text).toContain("...truncated");
+    expect(result.structuredContent).toBeUndefined();
   });
 
   it("adds registered source freshness fields to bundle_summary without changing tools", async () => {
@@ -347,16 +418,30 @@ describe("MCP server", () => {
     expect(
       listed.tools.find((tool) => tool.name === "search_concepts")?.inputSchema.properties.source
     ).toBeTruthy();
+    expect(listed.tools.find((tool) => tool.name === "search_concepts")?.inputSchema).toMatchObject(
+      {
+        properties: { limit: { type: "integer", minimum: 1, maximum: 50 } },
+        required: ["query"]
+      }
+    );
+    expect(listed.tools.find((tool) => tool.name === "get_neighbors")?.inputSchema).toMatchObject({
+      properties: { depth: { type: "integer", minimum: 1, maximum: 2 } },
+      required: ["id"]
+    });
 
-    const filteredSearch = parseText(
-      await callTool({
-        method: "tools/call",
-        params: {
-          name: "search_concepts",
-          arguments: { query: "quickstart", source: "stripe", limit: 10 }
-        }
-      })
-    ) as Array<{ sourceName: string; id: string; ref: string; seedUrl: string }>;
+    const filteredSearchCall = await callTool({
+      method: "tools/call",
+      params: {
+        name: "search_concepts",
+        arguments: { query: "quickstart", source: "stripe", limit: 10 }
+      }
+    });
+    const filteredSearch = parseText(filteredSearchCall) as Array<{
+      sourceName: string;
+      id: string;
+      ref: string;
+      seedUrl: string;
+    }>;
     expect(filteredSearch).toMatchObject([
       {
         sourceName: "stripe",
@@ -365,19 +450,25 @@ describe("MCP server", () => {
         seedUrl: "https://docs.example.com/stripe"
       }
     ]);
+    expect(filteredSearchCall.structuredContent?.results).toEqual(filteredSearch);
 
-    const ambiguousRead = parseText(
-      await callTool({
-        method: "tools/call",
-        params: { name: "read_concept", arguments: { id: "concept" } }
-      })
-    ) as { error: { code: string; candidates: Array<{ sourceName: string; id: string }> } };
+    const ambiguousReadCall = await callTool({
+      method: "tools/call",
+      params: { name: "read_concept", arguments: { id: "concept" } }
+    });
+    const ambiguousRead = parseText(ambiguousReadCall) as {
+      error: { code: string; candidates: Array<{ sourceName: string; id: string }> };
+    };
     expect(ambiguousRead.error).toMatchObject({
       code: "ambiguous_concept",
       candidates: [
         { sourceName: "stripe", id: "concept" },
         { sourceName: "clerk", id: "concept" }
       ]
+    });
+    expect(ambiguousReadCall.isError).toBe(true);
+    expect(ambiguousReadCall.structuredContent?.error).toMatchObject({
+      code: "ambiguous_concept"
     });
 
     const stripeRead = parseText(
@@ -469,24 +560,30 @@ describe("MCP server", () => {
       ])
     );
 
-    const unselected = parseText(
-      await callTool({
-        method: "tools/call",
-        params: { name: "search_concepts", arguments: { query: "anything", source: "supabase" } }
-      })
-    ) as { error: { code: string; source: string } };
+    const unselectedCall = await callTool({
+      method: "tools/call",
+      params: { name: "search_concepts", arguments: { query: "anything", source: "supabase" } }
+    });
+    const unselected = parseText(unselectedCall) as { error: { code: string; source: string } };
     expect(unselected.error).toMatchObject({ code: "source_not_in_workspace", source: "supabase" });
+    expect(unselectedCall.isError).toBe(true);
+    expect(unselectedCall.structuredContent?.error).toMatchObject({
+      code: "source_not_in_workspace",
+      source: "supabase"
+    });
 
-    const unselectedSummary = parseText(
-      await callTool({
-        method: "tools/call",
-        params: { name: "bundle_summary", arguments: { source: "supabase" } }
-      })
-    ) as { error: { code: string; source: string } };
+    const unselectedSummaryCall = await callTool({
+      method: "tools/call",
+      params: { name: "bundle_summary", arguments: { source: "supabase" } }
+    });
+    const unselectedSummary = parseText(unselectedSummaryCall) as {
+      error: { code: string; source: string };
+    };
     expect(unselectedSummary.error).toMatchObject({
       code: "source_not_in_workspace",
       source: "supabase"
     });
+    expect(unselectedSummaryCall.isError).toBe(true);
   });
 
   it("keeps workspace MCP usable when one selected bundle is unavailable", async () => {
@@ -545,16 +642,22 @@ describe("MCP server", () => {
       lastRefreshError: { code: "ENOENT", message: "source.json is missing" }
     });
 
-    const missingSearch = parseText(
-      await callTool({
-        method: "tools/call",
-        params: { name: "search_concepts", arguments: { query: "anything", source: "missing" } }
-      })
-    ) as { error: { code: string; sourceName: string } };
+    const missingSearchCall = await callTool({
+      method: "tools/call",
+      params: { name: "search_concepts", arguments: { query: "anything", source: "missing" } }
+    });
+    const missingSearch = parseText(missingSearchCall) as {
+      error: { code: string; sourceName: string };
+    };
     expect(missingSearch.error).toMatchObject({
       code: "bundle_unavailable",
       sourceName: "missing",
       message: "source.json is missing"
+    });
+    expect(missingSearchCall.isError).toBe(true);
+    expect(missingSearchCall.structuredContent?.error).toMatchObject({
+      code: "bundle_unavailable",
+      sourceName: "missing"
     });
   });
 
@@ -749,17 +852,20 @@ describe("MCP server", () => {
     await refreshDidStart;
 
     releaseRefresh();
-    await new Promise((resolve) => setTimeout(resolve, 25));
 
-    const refreshedSearch = parseText(
-      await callTool({
-        method: "tools/call",
-        params: {
-          name: "search_concepts",
-          arguments: { query: "new-stripe-token", source: "stripe", limit: 10 }
-        }
-      })
-    ) as Array<{ title: string; sourceName: string }>;
+    const refreshedSearch = await waitForValue(
+      async () =>
+        parseText(
+          await callTool({
+            method: "tools/call",
+            params: {
+              name: "search_concepts",
+              arguments: { query: "new-stripe-token", source: "stripe", limit: 10 }
+            }
+          })
+        ) as Array<{ title: string; sourceName: string }>,
+      (results) => results.some((result) => result.title === "New Stripe Concept")
+    );
     expect(refreshedSearch).toMatchObject([{ title: "New Stripe Concept", sourceName: "stripe" }]);
   });
 
@@ -951,14 +1057,17 @@ describe("MCP server", () => {
     await refreshDidStart;
 
     releaseRefresh();
-    await new Promise((resolve) => setTimeout(resolve, 25));
 
-    const refreshedSearch = parseText(
-      await callTool({
-        method: "tools/call",
-        params: { name: "search_concepts", arguments: { query: "new-only-token", limit: 5 } }
-      })
-    ) as Array<{ title: string }>;
+    const refreshedSearch = await waitForValue(
+      async () =>
+        parseText(
+          await callTool({
+            method: "tools/call",
+            params: { name: "search_concepts", arguments: { query: "new-only-token", limit: 5 } }
+          })
+        ) as Array<{ title: string }>,
+      (results) => results.some((result) => result.title === "New Concept")
+    );
     expect(refreshedSearch.map((item) => item.title)).toEqual(["New Concept"]);
   });
 
@@ -1178,7 +1287,7 @@ describe("CLI smoke", () => {
 
         send(3, "tools/call", { name: "bundle_summary", arguments: {} });
         const summaryResponse = (await waitFor(3)) as {
-          result: { content: Array<{ text: string }> };
+          result: { content: Array<{ text: string }>; structuredContent?: Record<string, unknown> };
         };
         const summary = JSON.parse(summaryResponse.result.content[0]?.text ?? "{}") as {
           conceptCount: number;
@@ -1190,6 +1299,16 @@ describe("CLI smoke", () => {
           reservedFileCount: 4,
           validationStatus: "valid"
         });
+        expect(summaryResponse.result.structuredContent).toMatchObject(summary);
+
+        send(4, "tools/call", { name: "read_concept", arguments: { id: "index" } });
+        const missingConceptResponse = (await waitFor(4)) as {
+          result: { isError?: boolean; structuredContent?: { error?: { code?: string } } };
+        };
+        expect(missingConceptResponse.result.isError).toBe(true);
+        expect(missingConceptResponse.result.structuredContent?.error?.code).toBe(
+          "unknown_concept"
+        );
 
         for (const line of stdoutLines) {
           const parsed = JSON.parse(line) as { jsonrpc?: string };
@@ -1241,5 +1360,32 @@ describe("CLI smoke", () => {
       'type: "Guide"'
     );
     await expect(fs.access(sourceFile)).rejects.toThrow();
+  });
+
+  it("rejects force output paths that would delete OKFY_HOME", async () => {
+    const cli = path.resolve("dist/cli.js");
+    await fs.access(cli);
+    const root = await tempRoot();
+    const inputRoot = await tempRoot();
+    const input = path.join(inputRoot, "docs");
+    const okfyHome = path.join(root, ".okfy");
+    await fs.mkdir(input);
+    await fs.mkdir(okfyHome, { recursive: true });
+    await fs.writeFile(path.join(input, "guide.md"), "# Guide\n\nHello.", "utf8");
+    const sentinel = path.join(okfyHome, "sentinel.txt");
+    await fs.writeFile(sentinel, "keep me", "utf8");
+
+    await expect(
+      execFileAsync(
+        process.execPath,
+        [cli, "import", input, "--out", root, "--force", "--stable-timestamps"],
+        {
+          env: { ...process.env, OKFY_HOME: okfyHome }
+        }
+      )
+    ).rejects.toMatchObject({
+      stderr: expect.stringMatching(/ancestor of OKFY_HOME/i)
+    });
+    await expect(fs.readFile(sentinel, "utf8")).resolves.toBe("keep me");
   });
 });
