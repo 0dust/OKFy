@@ -182,6 +182,63 @@ describe("writer and validator", () => {
     }
   );
 
+  it("rejects force output paths that contain the current working directory", async () => {
+    const root = await tempOut();
+    const project = path.join(root, "project");
+    await fs.mkdir(path.join(project, "docs"), { recursive: true });
+    const previousCwd = process.cwd();
+
+    try {
+      process.chdir(project);
+      await expect(
+        assertSafeForceOutDir("..", {
+          outDir: "..",
+          force: true,
+          inputPath: "docs"
+        })
+      ).rejects.toThrow(/ancestor of current working directory/);
+    } finally {
+      process.chdir(previousCwd);
+    }
+  });
+
+  it("rejects force output paths that contain an input path through higher ancestors", async () => {
+    const root = await tempOut();
+    const inputPath = path.join(root, "project", "docs");
+    await fs.mkdir(inputPath, { recursive: true });
+
+    await expect(
+      assertSafeForceOutDir(root, {
+        outDir: root,
+        force: true,
+        inputPath
+      })
+    ).rejects.toThrow(/ancestor of input path/);
+  });
+
+  it("rejects force output paths that contain OKFY_HOME", async () => {
+    const root = await tempOut();
+    const okfyHome = path.join(root, "okfy-home");
+    await fs.mkdir(okfyHome, { recursive: true });
+    const previousOkfyHome = process.env.OKFY_HOME;
+    process.env.OKFY_HOME = okfyHome;
+
+    try {
+      await expect(
+        assertSafeForceOutDir(root, {
+          outDir: root,
+          force: true
+        })
+      ).rejects.toThrow(/ancestor of OKFY_HOME/);
+    } finally {
+      if (previousOkfyHome === undefined) {
+        delete process.env.OKFY_HOME;
+      } else {
+        process.env.OKFY_HOME = previousOkfyHome;
+      }
+    }
+  });
+
   it("reports only Google OKF conformance errors for malformed concept docs", async () => {
     const report = await validateBundle(path.join(fixtureRoot, "okf-invalid"));
 

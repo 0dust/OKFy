@@ -19,7 +19,13 @@ import { importLocal } from "./importer.js";
 import { buildBundleInspectorReport, buildWorkspaceInspectorReport } from "./inspector.js";
 import { renderInspectorHtml } from "./inspector-html.js";
 import { packageVersion, runtimePackageRoot } from "./metadata.js";
-import { MCP_TOOL_NAMES, serveMcpStdio, serveWorkspaceMcpStdio, type RefreshHooks } from "./mcp.js";
+import {
+  MCP_TOOL_NAMES,
+  serveMcpStdio,
+  serveWorkspaceMcpStdio,
+  type FreshnessState,
+  type RefreshHooks
+} from "./mcp.js";
 import { evaluateFreshness, refreshSource } from "./refresh.js";
 import {
   createSetupReport,
@@ -39,6 +45,7 @@ import {
 import {
   listSources,
   readRefreshState,
+  readSourceRecord,
   readSourceManifest,
   removeSource,
   resolveBundleDir,
@@ -155,6 +162,14 @@ async function readStateIfExists(name: string): Promise<RefreshState | undefined
   } catch (error: any) {
     if (error?.code === "ENOENT") return undefined;
     throw error;
+  }
+}
+
+async function readStateIfReadable(name: string): Promise<RefreshState | undefined> {
+  try {
+    return await readStateIfExists(name);
+  } catch {
+    return undefined;
   }
 }
 
@@ -352,7 +367,7 @@ async function runSourceRefresh(
   manifest: SourceManifest,
   options: { force?: boolean; dryRun?: boolean } = {}
 ) {
-  const state = await readStateIfExists(manifest.name);
+  const state = await readStateIfReadable(manifest.name);
   const sourceDir = resolveSourceDir(manifest.name);
   const bundleDir = resolveBundleDir(manifest);
   return refreshSource({
@@ -371,15 +386,7 @@ async function runSourceRefresh(
 }
 
 async function registeredRecord(name: string): Promise<SourceRecord> {
-  const manifest = await readSourceManifest(name);
-  const state = await readStateIfExists(name);
-  return {
-    name,
-    dir: resolveSourceDir(name),
-    manifest,
-    state,
-    bundleDir: resolveBundleDir(manifest)
-  };
+  return readSourceRecord(name);
 }
 
 type CliTargetResolution =
@@ -490,6 +497,19 @@ function activationInputForResolution(resolution: CliTargetResolution): {
   };
 }
 
+function freshnessFromStoredState(
+  state: RefreshState,
+  loadError?: SourceRecord["loadError"]
+): FreshnessState {
+  return {
+    status: state.status,
+    lastSuccessfulRefreshAt: state.lastSuccessfulRefreshAt,
+    refreshInProgress: state.refreshInProgress,
+    lastRefreshError: loadError ? { ...loadError } : state.lastError,
+    nextRefreshAllowedAt: state.nextRefreshAllowedAt
+  };
+}
+
 function mcpRefreshHooksForRecord(
   record: SourceRecord,
   mode: RefreshMode,
@@ -500,8 +520,8 @@ function mcpRefreshHooksForRecord(
     getFreshness: async () => {
       const latest = await registeredRecord(record.name);
       const nextState = await summarizeState(latest, maxAgeSeconds);
-      await writeRefreshState(record.name, nextState);
-      return nextState;
+      if (!latest.loadError) await writeRefreshState(record.name, nextState);
+      return freshnessFromStoredState(nextState, latest.loadError);
     },
     refreshIfNeeded: async () => {
       const latestManifest = await readSourceManifest(record.name);
@@ -511,7 +531,7 @@ function mcpRefreshHooksForRecord(
         bundleDir,
         freshness:
           result.state ??
-          (await readStateIfExists(record.name)) ??
+          (await readStateIfReadable(record.name)) ??
           emptyState(result.status, new Date().toISOString())
       };
     }
@@ -588,6 +608,15 @@ function setupHomeCheck(okfyHome: string): SetupCheck {
 }
 
 function setupFreshnessCheck(record: SourceRecord, state: RefreshState): SetupCheck {
+  if (record.loadError) {
+    return setupCheck(
+      "freshness",
+      "Freshness",
+      "fail",
+      record.loadError.message,
+      `Run npx -y okfy-ai update ${record.name} to refresh the source state.`
+    );
+  }
   if (state.status === "fresh" && state.bundle?.valid === true) {
     return setupCheck(
       "freshness",
@@ -738,7 +767,7 @@ async function setupReportForRecord(options: {
   probeTimeoutSeconds: number;
 }): Promise<SetupReport> {
   const state = await summarizeState(options.record, options.maxAge);
-  await writeRefreshState(options.record.name, state);
+  if (!options.record.loadError) await writeRefreshState(options.record.name, state);
   const bundleCheck = await setupBundleCheck(options.record.bundleDir);
   const npxCheck = await setupNpxCheck();
   const checks: SetupCheck[] = [
@@ -1161,7 +1190,7 @@ program
 
       const record = await registeredRecord(target);
       const nextState = await summarizeState(record, options.maxAge);
-      await writeRefreshState(record.name, nextState);
+      if (!record.loadError) await writeRefreshState(record.name, nextState);
       const payload = sourceRow(record, nextState);
       if (options.json) printJson(payload);
       else printSourceRows([payload]);
@@ -1371,6 +1400,7 @@ program
     "generic"
   )
   .option("--out <dir>", "Activation packet output directory", "okfy-activation")
+  .option("--task <text>", "Task or question to prove with search_concepts in okfy-proof.json")
   .option("--force", "Overwrite a non-empty activation output directory", false)
   .option("--json", "Print activation packet manifest JSON", false)
   .action(async (targets: string[] = [], options) => {
@@ -1383,6 +1413,7 @@ program
         report,
         client: options.client,
         outDir: options.out,
+        proofTask: options.task,
         okfyHome: resolveOkfyHome()
       });
       const reportWithActivation = withActivationMetadata(report, packet);

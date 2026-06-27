@@ -10,6 +10,7 @@ import {
   urlToOutputPath
 } from "./util/path.js";
 import { descriptionFromMarkdown } from "./normalize.js";
+import { resolveOkfyHome } from "./source-store.js";
 import type { NormalizedDocument } from "./types.js";
 
 export type WriteBundleOptions = {
@@ -187,6 +188,15 @@ async function findRepoRoot(start: string): Promise<string | undefined> {
   }
 }
 
+function containsOrEquals(parent: string, child: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+async function okfyHomeForSafety(): Promise<string> {
+  return resolveForSafety(resolveOkfyHome());
+}
+
 export async function assertSafeForceOutDir(
   outDir: string,
   options: WriteBundleOptions
@@ -206,20 +216,26 @@ export async function assertSafeForceOutDir(
   const forbidden = new Map<string, string>([
     [path.parse(realOutDir).root, "filesystem root"],
     [await fs.realpath(os.homedir()), "home directory"],
-    [await fs.realpath(process.cwd()), "current working directory"]
+    [await fs.realpath(process.cwd()), "current working directory"],
+    [await okfyHomeForSafety(), "OKFY_HOME"]
   ]);
+  const addForbidden = (filePath: string, reason: string) => {
+    if (!forbidden.has(filePath)) forbidden.set(filePath, reason);
+  };
   const repoRoot = await findRepoRoot(process.cwd());
-  if (repoRoot) forbidden.set(repoRoot, "repository root");
+  if (repoRoot) addForbidden(repoRoot, "repository root");
   if (options.inputPath) {
     const inputReal = await resolveForSafety(options.inputPath);
-    forbidden.set(inputReal, "input path");
-    forbidden.set(path.dirname(inputReal), "parent of input path");
+    addForbidden(inputReal, "input path");
+    addForbidden(path.dirname(inputReal), "parent of input path");
   }
-  const reason = forbidden.get(realOutDir);
-  if (reason)
+  for (const [protectedPath, reason] of forbidden.entries()) {
+    if (!containsOrEquals(realOutDir, protectedPath)) continue;
+    const relation = realOutDir === protectedPath ? "delete" : "delete ancestor of";
     throw new Error(
-      `Unsafe output directory for --force: refusing to delete ${reason} (${realOutDir}).`
+      `Unsafe output directory for --force: refusing to ${relation} ${reason} (${protectedPath}) from ${realOutDir}.`
     );
+  }
 }
 
 async function ensureCleanOutDir(outDir: string, options: WriteBundleOptions): Promise<void> {

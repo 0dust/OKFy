@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import type { Dirent } from "node:fs";
@@ -210,6 +211,45 @@ export async function readRefreshState(
   return validateRefreshState(await readJson<unknown>(path.join(sourceDir, "state.json")), name);
 }
 
+export async function readSourceRecord(
+  name: string,
+  options: SourceStoreOptions = {}
+): Promise<SourceRecord> {
+  const manifest = await readSourceManifest(name, options);
+  return sourceRecordFromManifest(manifest, options);
+}
+
+async function sourceRecordFromManifest(
+  manifest: SourceManifest,
+  options: SourceStoreOptions = {}
+): Promise<SourceRecord> {
+  const dir = resolveSourceDir(manifest.name, options);
+  let state: RefreshState | undefined;
+  let loadError: SourceLoadError | undefined;
+  try {
+    state = await readRefreshStateIfExists(manifest.name, options);
+  } catch (error) {
+    loadError = errorDetails(error);
+  }
+
+  let bundleDir: string;
+  try {
+    bundleDir = resolveBundleDir(manifest, options);
+  } catch (error) {
+    bundleDir = path.join(dir, "bundle");
+    loadError ??= errorDetails(error);
+  }
+
+  return {
+    name: manifest.name,
+    dir,
+    manifest,
+    state,
+    bundleDir,
+    loadError
+  };
+}
+
 export async function listSources(options: SourceStoreOptions = {}): Promise<SourceRecord[]> {
   const sourcesRoot = resolveSourcesRoot(options);
   let entries: Dirent[];
@@ -231,31 +271,7 @@ export async function listSources(options: SourceStoreOptions = {}): Promise<Sou
       continue;
     }
 
-    const dir = resolveSourceDir(manifest.name, options);
-    let state: RefreshState | undefined;
-    let loadError: SourceLoadError | undefined;
-    try {
-      state = await readRefreshStateIfExists(entry.name, options);
-    } catch (error) {
-      loadError = errorDetails(error);
-    }
-
-    let bundleDir: string;
-    try {
-      bundleDir = resolveBundleDir(manifest, options);
-    } catch (error) {
-      bundleDir = path.join(dir, "bundle");
-      loadError ??= errorDetails(error);
-    }
-
-    records.push({
-      name: manifest.name,
-      dir,
-      manifest,
-      state,
-      bundleDir,
-      loadError
-    });
+    records.push(await sourceRecordFromManifest(manifest, options));
   }
 
   return records.sort((first, second) => first.name.localeCompare(second.name));
@@ -608,8 +624,19 @@ async function readJson<T>(filePath: string): Promise<T> {
 }
 
 async function writeStableJson(filePath: string, value: unknown): Promise<void> {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, `${JSON.stringify(orderJson(value), null, 2)}\n`, "utf8");
+  const dir = path.dirname(filePath);
+  const tempPath = path.join(
+    dir,
+    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`
+  );
+  await fs.mkdir(dir, { recursive: true });
+  try {
+    await fs.writeFile(tempPath, `${JSON.stringify(orderJson(value), null, 2)}\n`, "utf8");
+    await fs.rename(tempPath, filePath);
+  } catch (error) {
+    await fs.rm(tempPath, { force: true });
+    throw error;
+  }
 }
 
 function orderJson(value: unknown): unknown {
@@ -644,8 +671,7 @@ function sortByPreferredOrder(keys: string[], preferredOrder: string[]): string[
   return keys.sort((first, second) => {
     const firstIndex = preferredIndexes.get(first);
     const secondIndex = preferredIndexes.get(second);
-    if (firstIndex === undefined && secondIndex === undefined)
-      return first.localeCompare(second);
+    if (firstIndex === undefined && secondIndex === undefined) return first.localeCompare(second);
     if (firstIndex === undefined) return 1;
     if (secondIndex === undefined) return -1;
     return firstIndex - secondIndex;

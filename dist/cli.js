@@ -1,31 +1,36 @@
 #!/usr/bin/env node
 import {
-  MCP_TOOL_NAMES,
-  assertUniqueWorkspaceRecordNames,
   buildActivationPacket,
   buildBundleInspectorReport,
   buildWorkspaceInspectorReport,
   crawlWebsite,
-  createSetupReport,
-  defaultOkfyHome,
   evaluateFreshness,
-  executableOnPath,
   hashBundleContents,
   importLocal,
+  parseDurationSeconds,
+  protectedActivationInputPaths,
+  refreshSource,
+  renderActivationSetupMarkdown,
+  withActivationMetadata,
+  writeActivationPacketFiles
+} from "./chunk-3ABA7KKD.js";
+import {
+  MCP_TOOL_NAMES,
+  assertUniqueWorkspaceRecordNames,
+  createSetupReport,
+  defaultOkfyHome,
+  executableOnPath,
   inspectBundle,
   isRegisteredWorkspaceRecord,
   listSources,
   localBundleRecord,
   packageVersion,
-  parseDurationSeconds,
   parseSetupClient,
   probeMcpStdio,
-  protectedActivationInputPaths,
   readRefreshState,
   readSourceManifest,
-  refreshSource,
+  readSourceRecord,
   removeSource,
-  renderActivationSetupMarkdown,
   resolveBundleDir,
   resolveOkfyHome,
   resolveSourceDir,
@@ -38,11 +43,9 @@ import {
   setupCheck,
   validateBundle,
   validateSourceName,
-  withActivationMetadata,
-  writeActivationPacketFiles,
   writeRefreshState,
   writeSourceManifest
-} from "./chunk-7A4YHUWE.js";
+} from "./chunk-2RPFN6R3.js";
 
 // src/cli.ts
 import fs from "fs";
@@ -495,6 +498,13 @@ async function readStateIfExists(name) {
     throw error;
   }
 }
+async function readStateIfReadable(name) {
+  try {
+    return await readStateIfExists(name);
+  } catch {
+    return void 0;
+  }
+}
 function emptyState(status, checkedAt) {
   return {
     schemaVersion: 1,
@@ -655,7 +665,7 @@ async function restoreSourceBackup(sourceDir, backupDir) {
   if (await pathExists(backupDir)) await fs.promises.rename(backupDir, sourceDir);
 }
 async function runSourceRefresh(manifest, options = {}) {
-  const state = await readStateIfExists(manifest.name);
+  const state = await readStateIfReadable(manifest.name);
   const sourceDir = resolveSourceDir(manifest.name);
   const bundleDir = resolveBundleDir(manifest);
   return refreshSource({
@@ -672,15 +682,7 @@ async function runSourceRefresh(manifest, options = {}) {
   });
 }
 async function registeredRecord(name) {
-  const manifest = await readSourceManifest(name);
-  const state = await readStateIfExists(name);
-  return {
-    name,
-    dir: resolveSourceDir(name),
-    manifest,
-    state,
-    bundleDir: resolveBundleDir(manifest)
-  };
+  return readSourceRecord(name);
 }
 async function resolveLocalBundleTarget(target, label = "Bundle path") {
   if (!await pathExists(target)) throw new Error(`${label} does not exist: ${target}`);
@@ -757,14 +759,23 @@ function activationInputForResolution(resolution) {
     serverIdentity: resolution.all ? ["all"] : resolution.records.map((record) => record.name)
   };
 }
+function freshnessFromStoredState(state, loadError) {
+  return {
+    status: state.status,
+    lastSuccessfulRefreshAt: state.lastSuccessfulRefreshAt,
+    refreshInProgress: state.refreshInProgress,
+    lastRefreshError: loadError ? { ...loadError } : state.lastError,
+    nextRefreshAllowedAt: state.nextRefreshAllowedAt
+  };
+}
 function mcpRefreshHooksForRecord(record, mode, maxAgeSeconds) {
   return {
     mode,
     getFreshness: async () => {
       const latest = await registeredRecord(record.name);
       const nextState = await summarizeState(latest, maxAgeSeconds);
-      await writeRefreshState(record.name, nextState);
-      return nextState;
+      if (!latest.loadError) await writeRefreshState(record.name, nextState);
+      return freshnessFromStoredState(nextState, latest.loadError);
     },
     refreshIfNeeded: async () => {
       const latestManifest = await readSourceManifest(record.name);
@@ -772,7 +783,7 @@ function mcpRefreshHooksForRecord(record, mode, maxAgeSeconds) {
       const bundleDir = resolveBundleDir(latestManifest);
       return {
         bundleDir,
-        freshness: result.state ?? await readStateIfExists(record.name) ?? emptyState(result.status, (/* @__PURE__ */ new Date()).toISOString())
+        freshness: result.state ?? await readStateIfReadable(record.name) ?? emptyState(result.status, (/* @__PURE__ */ new Date()).toISOString())
       };
     }
   };
@@ -843,6 +854,15 @@ function setupHomeCheck(okfyHome) {
   );
 }
 function setupFreshnessCheck(record, state) {
+  if (record.loadError) {
+    return setupCheck(
+      "freshness",
+      "Freshness",
+      "fail",
+      record.loadError.message,
+      `Run npx -y okfy-ai update ${record.name} to refresh the source state.`
+    );
+  }
   if (state.status === "fresh" && state.bundle?.valid === true) {
     return setupCheck(
       "freshness",
@@ -967,7 +987,7 @@ async function commandHealth(command, args, env) {
 }
 async function setupReportForRecord(options) {
   const state = await summarizeState(options.record, options.maxAge);
-  await writeRefreshState(options.record.name, state);
+  if (!options.record.loadError) await writeRefreshState(options.record.name, state);
   const bundleCheck = await setupBundleCheck(options.record.bundleDir);
   const npxCheck = await setupNpxCheck();
   const checks = [
@@ -1324,7 +1344,7 @@ program.command("check").argument("<name-or-bundle>", "Registered source name or
     }
     const record = await registeredRecord(target);
     const nextState = await summarizeState(record, options.maxAge);
-    await writeRefreshState(record.name, nextState);
+    if (!record.loadError) await writeRefreshState(record.name, nextState);
     const payload = sourceRow(record, nextState);
     if (options.json) printJson(payload);
     else printSourceRows([payload]);
@@ -1474,7 +1494,7 @@ program.command("activate").argument(
   "Target client: claude-code, claude-desktop, cursor, codex, or generic",
   setupClient,
   "generic"
-).option("--out <dir>", "Activation packet output directory", "okfy-activation").option("--force", "Overwrite a non-empty activation output directory", false).option("--json", "Print activation packet manifest JSON", false).action(async (targets = [], options) => {
+).option("--out <dir>", "Activation packet output directory", "okfy-activation").option("--task <text>", "Task or question to prove with search_concepts in okfy-proof.json").option("--force", "Overwrite a non-empty activation output directory", false).option("--json", "Print activation packet manifest JSON", false).action(async (targets = [], options) => {
   try {
     const resolution = await resolveCliTargets(targets, { all: options.all });
     const report = await inspectorReportForResolution(resolution);
@@ -1484,6 +1504,7 @@ program.command("activate").argument(
       report,
       client: options.client,
       outDir: options.out,
+      proofTask: options.task,
       okfyHome: resolveOkfyHome()
     });
     const reportWithActivation = withActivationMetadata(report, packet);

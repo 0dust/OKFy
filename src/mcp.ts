@@ -100,13 +100,50 @@ export type WorkspaceServeOptions = {
   availableSourceNames?: string[];
 };
 
-function json(
-  value: unknown,
-  maxChars = 12000
-): { content: Array<{ type: "text"; text: string }> } {
-  let text = JSON.stringify(value, null, 2);
+type ToolResult = {
+  content: Array<{ type: "text"; text: string }>;
+  structuredContent?: Record<string, unknown>;
+  isError?: boolean;
+};
+
+function json(value: unknown, maxChars = 12000): ToolResult {
+  return toolResult(value, structuredContentFor(value), maxChars);
+}
+
+function toolResult(
+  textPayload: unknown,
+  structuredContent: Record<string, unknown> | undefined,
+  maxChars: number,
+  isError = false
+): ToolResult {
+  const serialized = JSON.stringify(textPayload, null, 2);
+  const boundedStructuredContent = serialized.length <= maxChars ? structuredContent : undefined;
+  let text = serialized;
   if (text.length > maxChars) text = `${text.slice(0, maxChars)}\n...truncated`;
-  return { content: [{ type: "text", text }] };
+  return {
+    content: [{ type: "text", text }],
+    structuredContent: boundedStructuredContent,
+    isError
+  };
+}
+
+function toolError(error: Record<string, unknown>, maxChars = 12000): ToolResult {
+  return toolResult({ error }, { error }, maxChars, true);
+}
+
+function structuredContentFor(value: unknown): Record<string, unknown> | undefined {
+  if (Array.isArray(value)) return { results: value };
+  if (value && typeof value === "object") return value as Record<string, unknown>;
+  if (value === undefined) return undefined;
+  return { value };
+}
+
+function argumentError(error: z.ZodError): Record<string, unknown> {
+  return {
+    code: "invalid_arguments",
+    message: "Invalid tool arguments.",
+    issues: error.issues
+  };
 }
 
 const searchSchema = z.object({
@@ -124,6 +161,65 @@ const sourceFilterSchema = z.object({ source: z.string().optional() });
 const workspaceSearchSchema = searchSchema.extend({ source: z.string().optional() });
 const workspaceReadSchema = readSchema.extend({ source: z.string().optional() });
 const workspaceNeighborsSchema = neighborsSchema.extend({ source: z.string().optional() });
+
+type ToolInputSchema = {
+  type: "object";
+  properties: Record<string, unknown>;
+  required?: string[];
+};
+
+const stringInputProperty = { type: "string" };
+const sourceInputProperty = { type: "string" };
+const tagsInputProperty = { type: "array", items: { type: "string" } };
+const limitInputProperty = { type: "integer", minimum: 1, maximum: 50, default: 10 };
+const maxCharsInputProperty = { type: "integer", minimum: 1 };
+const depthInputProperty = { type: "integer", minimum: 1, maximum: 2, default: 1 };
+
+function withOptionalSourceInputSchema(
+  schema: ToolInputSchema,
+  sourcePosition: "first" | "afterQuery" = "first"
+): ToolInputSchema {
+  if (sourcePosition === "afterQuery" && "query" in schema.properties) {
+    const { query, ...properties } = schema.properties;
+    return { ...schema, properties: { query, source: sourceInputProperty, ...properties } };
+  }
+  return { ...schema, properties: { source: sourceInputProperty, ...schema.properties } };
+}
+
+const searchInputSchema = {
+  type: "object",
+  properties: {
+    query: stringInputProperty,
+    type: stringInputProperty,
+    tags: tagsInputProperty,
+    limit: limitInputProperty
+  },
+  required: ["query"]
+} satisfies ToolInputSchema;
+
+const readInputSchema = {
+  type: "object",
+  properties: { id: stringInputProperty, max_chars: maxCharsInputProperty },
+  required: ["id"]
+} satisfies ToolInputSchema;
+
+const neighborsInputSchema = {
+  type: "object",
+  properties: {
+    id: stringInputProperty,
+    depth: depthInputProperty
+  },
+  required: ["id"]
+} satisfies ToolInputSchema;
+
+const sourceFilterInputSchema = {
+  type: "object",
+  properties: { source: sourceInputProperty }
+} satisfies ToolInputSchema;
+
+const workspaceSearchInputSchema = withOptionalSourceInputSchema(searchInputSchema, "afterQuery");
+const workspaceReadInputSchema = withOptionalSourceInputSchema(readInputSchema);
+const workspaceNeighborsInputSchema = withOptionalSourceInputSchema(neighborsInputSchema);
 
 type NeighborEdge = {
   from: string;
@@ -269,15 +365,13 @@ export async function createMcpServer(options: ServeOptions): Promise<Server> {
 
   function bundleUnavailable() {
     const details = lastRefreshError ?? errorDetails("No OKF bundle is available.");
-    return json(
+    return toolError(
       {
-        error: {
-          code: "bundle_unavailable",
-          message: details.message,
-          sourceName: options.source?.name,
-          seedUrl: options.source?.seedUrl,
-          lastRefreshError: details
-        }
+        code: "bundle_unavailable",
+        message: details.message,
+        sourceName: options.source?.name,
+        seedUrl: options.source?.seedUrl,
+        lastRefreshError: details
       },
       maxResultChars
     );
@@ -330,34 +424,17 @@ export async function createMcpServer(options: ServeOptions): Promise<Server> {
       {
         name: SEARCH_CONCEPTS_TOOL,
         description: "Search OKF concepts by query, type, and tags.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            query: { type: "string" },
-            type: { type: "string" },
-            tags: { type: "array", items: { type: "string" } },
-            limit: { type: "number", default: 10 }
-          },
-          required: ["query"]
-        }
+        inputSchema: searchInputSchema
       },
       {
         name: READ_CONCEPT_TOOL,
         description: "Read one OKF concept by id or path.",
-        inputSchema: {
-          type: "object",
-          properties: { id: { type: "string" }, max_chars: { type: "number" } },
-          required: ["id"]
-        }
+        inputSchema: readInputSchema
       },
       {
         name: GET_NEIGHBORS_TOOL,
         description: "Return outbound links and backlinks for a concept.",
-        inputSchema: {
-          type: "object",
-          properties: { id: { type: "string" }, depth: { type: "number", default: 1 } },
-          required: ["id"]
-        }
+        inputSchema: neighborsInputSchema
       },
       {
         name: LIST_TYPES_TOOL,
@@ -392,9 +469,10 @@ export async function createMcpServer(options: ServeOptions): Promise<Server> {
         const parsed = readSchema.parse(args);
         const concept = search.getConcept(parsed.id);
         if (!concept)
-          return json({
-            error: { code: "unknown_concept", message: `No concept found for ${parsed.id}` }
-          });
+          return toolError(
+            { code: "unknown_concept", message: `No concept found for ${parsed.id}` },
+            maxResultChars
+          );
         const max = parsed.max_chars ?? maxResultChars;
         return json(
           {
@@ -413,28 +491,37 @@ export async function createMcpServer(options: ServeOptions): Promise<Server> {
         const parsed = neighborsSchema.parse(args);
         const root = currentSearch.getConcept(parsed.id);
         if (!root)
-          return json({
-            error: { code: "unknown_concept", message: `No concept found for ${parsed.id}` }
-          });
+          return toolError(
+            { code: "unknown_concept", message: `No concept found for ${parsed.id}` },
+            maxResultChars
+          );
         const neighbors = collectNeighbors(currentSearch, root.id, parsed.depth ?? 1);
-        return json({
-          root: root.id,
-          concepts: neighbors.conceptIds.map((id) => {
-            const concept = currentSearch.graph.concepts.get(id);
-            return { id, title: concept?.title, type: concept?.type, resource: concept?.resource };
-          }),
-          edges: neighbors.edges
-        });
+        return json(
+          {
+            root: root.id,
+            concepts: neighbors.conceptIds.map((id) => {
+              const concept = currentSearch.graph.concepts.get(id);
+              return {
+                id,
+                title: concept?.title,
+                type: concept?.type,
+                resource: concept?.resource
+              };
+            }),
+            edges: neighbors.edges
+          },
+          maxResultChars
+        );
       }
       if (request.params.name === LIST_TYPES_TOOL) {
         if (!search) return bundleUnavailable();
         const stats = await inspectBundle(activeBundleDir);
-        return json(stats.typeDistribution);
+        return json(stats.typeDistribution, maxResultChars);
       }
       if (request.params.name === LIST_TAGS_TOOL) {
         if (!search) return bundleUnavailable();
         const stats = await inspectBundle(activeBundleDir);
-        return json(stats.tagDistribution);
+        return json(stats.tagDistribution, maxResultChars);
       }
       if (request.params.name === BUNDLE_SUMMARY_TOOL) {
         if (!search) return bundleUnavailable();
@@ -442,20 +529,28 @@ export async function createMcpServer(options: ServeOptions): Promise<Server> {
           inspectBundle(activeBundleDir),
           validateBundle(activeBundleDir)
         ]);
-        return json({
-          ...stats,
-          reservedFileCount: validation.reservedFileCount,
-          warningCount: validation.warningCount,
-          validationStatus: validation.valid ? "valid" : "invalid",
-          validationIssues: validation.issues,
-          ...sourceSummaryFields()
-        });
+        return json(
+          {
+            ...stats,
+            reservedFileCount: validation.reservedFileCount,
+            warningCount: validation.warningCount,
+            validationStatus: validation.valid ? "valid" : "invalid",
+            validationIssues: validation.issues,
+            ...sourceSummaryFields()
+          },
+          maxResultChars
+        );
       }
-      return json({
-        error: { code: "unknown_tool", message: `Unknown tool: ${request.params.name}` }
-      });
+      return toolError(
+        { code: "unknown_tool", message: `Unknown tool: ${request.params.name}` },
+        maxResultChars
+      );
     } catch (error: any) {
-      return json({ error: { code: "tool_error", message: error?.message ?? "Tool failed." } });
+      if (error instanceof z.ZodError) return toolError(argumentError(error), maxResultChars);
+      return toolError(
+        { code: "tool_error", message: error?.message ?? "Tool failed." },
+        maxResultChars
+      );
     }
   });
   return server;
@@ -649,17 +744,15 @@ export async function createWorkspaceMcpServer(options: WorkspaceServeOptions): 
   }
 
   function workspaceUnavailable() {
-    return json(
+    return toolError(
       {
-        error: {
-          code: "bundle_unavailable",
-          message: "No usable OKF bundle is available in this workspace.",
-          sources: runtimes.map((runtime) => ({
-            sourceName: runtime.record.name,
-            seedUrl: runtime.record.manifest.source.seedUrl,
-            lastRefreshError: runtime.lastRefreshError
-          }))
-        }
+        code: "bundle_unavailable",
+        message: "No usable OKF bundle is available in this workspace.",
+        sources: runtimes.map((runtime) => ({
+          sourceName: runtime.record.name,
+          seedUrl: runtime.record.manifest.source.seedUrl,
+          lastRefreshError: runtime.lastRefreshError
+        }))
       },
       maxResultChars
     );
@@ -668,15 +761,13 @@ export async function createWorkspaceMcpServer(options: WorkspaceServeOptions): 
   function sourceUnavailable(runtime: WorkspaceSourceRuntime) {
     const details =
       runtime.lastRefreshError ?? errorDetails("No OKF bundle is available for this source.");
-    return json(
+    return toolError(
       {
-        error: {
-          code: "bundle_unavailable",
-          message: details.message,
-          sourceName: runtime.record.name,
-          seedUrl: runtime.record.manifest.source.seedUrl,
-          lastRefreshError: details
-        }
+        code: "bundle_unavailable",
+        message: details.message,
+        sourceName: runtime.record.name,
+        seedUrl: runtime.record.manifest.source.seedUrl,
+        lastRefreshError: details
       },
       maxResultChars
     );
@@ -774,59 +865,33 @@ export async function createWorkspaceMcpServer(options: WorkspaceServeOptions): 
       {
         name: SEARCH_CONCEPTS_TOOL,
         description: "Search workspace OKF concepts by query, source, type, and tags.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            query: { type: "string" },
-            source: { type: "string" },
-            type: { type: "string" },
-            tags: { type: "array", items: { type: "string" } },
-            limit: { type: "number", default: 10 }
-          },
-          required: ["query"]
-        }
+        inputSchema: workspaceSearchInputSchema
       },
       {
         name: READ_CONCEPT_TOOL,
         description:
           "Read one workspace OKF concept by source and id. Id-only reads work when the id is unique.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            source: { type: "string" },
-            id: { type: "string" },
-            max_chars: { type: "number" }
-          },
-          required: ["id"]
-        }
+        inputSchema: workspaceReadInputSchema
       },
       {
         name: GET_NEIGHBORS_TOOL,
         description: "Return outbound links and backlinks for a workspace concept.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            source: { type: "string" },
-            id: { type: "string" },
-            depth: { type: "number", default: 1 }
-          },
-          required: ["id"]
-        }
+        inputSchema: workspaceNeighborsInputSchema
       },
       {
         name: LIST_TYPES_TOOL,
         description: "List workspace concept types and counts.",
-        inputSchema: { type: "object", properties: { source: { type: "string" } } }
+        inputSchema: sourceFilterInputSchema
       },
       {
         name: LIST_TAGS_TOOL,
         description: "List workspace concept tags and counts.",
-        inputSchema: { type: "object", properties: { source: { type: "string" } } }
+        inputSchema: sourceFilterInputSchema
       },
       {
         name: BUNDLE_SUMMARY_TOOL,
         description: "Return workspace stats, per-source validation, and freshness status.",
-        inputSchema: { type: "object", properties: { source: { type: "string" } } }
+        inputSchema: sourceFilterInputSchema
       }
     ]
   }));
@@ -903,13 +968,15 @@ export async function createWorkspaceMcpServer(options: WorkspaceServeOptions): 
         const parsed = sourceFilterSchema.parse(args);
         return json(workspace.listTags(parsed.source), maxResultChars);
       }
-      return json({
-        error: { code: "unknown_tool", message: `Unknown tool: ${request.params.name}` }
-      });
+      return toolError(
+        { code: "unknown_tool", message: `Unknown tool: ${request.params.name}` },
+        maxResultChars
+      );
     } catch (error: any) {
-      if (error instanceof WorkspaceError) return json({ error: error.toJSON() }, maxResultChars);
-      return json(
-        { error: { code: "tool_error", message: error?.message ?? "Tool failed." } },
+      if (error instanceof WorkspaceError) return toolError(error.toJSON(), maxResultChars);
+      if (error instanceof z.ZodError) return toolError(argumentError(error), maxResultChars);
+      return toolError(
+        { code: "tool_error", message: error?.message ?? "Tool failed." },
         maxResultChars
       );
     }

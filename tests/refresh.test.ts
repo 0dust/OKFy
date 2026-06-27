@@ -442,6 +442,54 @@ describe("refreshSource", () => {
     });
   });
 
+  it("releases the refresh lock when the initial refreshing state write fails", async () => {
+    const root = await tempOut();
+    const bundleDir = path.join(root, "bundle");
+    await fs.mkdir(bundleDir);
+    await fs.writeFile(path.join(bundleDir, "old.md"), "old bundle\n", "utf8");
+    let writeCount = 0;
+
+    const result = await refreshSource({
+      manifest: manifest(),
+      state: state({
+        status: "stale",
+        lastSuccessfulRefreshAt: "2026-06-15T23:00:00.000Z",
+        nextRefreshAllowedAt: "2026-06-16T00:00:00.000Z"
+      }),
+      sourceDir: root,
+      bundleDir,
+      force: true,
+      now: new Date("2026-06-16T00:12:00.000Z"),
+      validateBundle: async (dir) => {
+        expect(dir).toBe(bundleDir);
+        return { valid: true, issues: [], conceptCount: 1, reservedFileCount: 1, warningCount: 0 };
+      },
+      crawlRunner: async () => {
+        throw new Error("crawler should not run when initial state write fails");
+      },
+      inspectBundle: async () => {
+        throw new Error("inspector should not run when initial state write fails");
+      },
+      hashBundleContent: async () => {
+        throw new Error("hasher should not run when initial state write fails");
+      },
+      writeState: async () => {
+        writeCount += 1;
+        if (writeCount === 1) throw new Error("state write failed");
+      }
+    });
+
+    expect(result).toMatchObject({
+      status: "failed",
+      skipped: false,
+      error: { message: "state write failed" }
+    });
+    expect(writeCount).toBe(2);
+    await expect(fs.access(path.join(root, ".refresh.lock"))).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+  });
+
   it("uses force to bypass throttling during dry-run without writing bundle or state", async () => {
     const root = await tempOut();
     const bundleDir = path.join(root, "bundle");
