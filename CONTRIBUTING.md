@@ -56,7 +56,7 @@ When changing generated output, include focused fixture updates and explain why 
 
 ## Dependencies
 
-Add dependencies only when they clearly improve correctness, portability, or maintainability. Keep the CLI fast to install and usable through `npx okfy`.
+Add dependencies only when they clearly improve correctness, portability, or maintainability. Keep the CLI fast to install and usable through `npx -y okfy-ai`.
 
 ## Security and Responsible Crawling
 
