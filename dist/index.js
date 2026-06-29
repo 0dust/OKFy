@@ -20,7 +20,7 @@ import {
   withActivationMetadata,
   writeActivationPacketFiles,
   writeOkfBundle
-} from "./chunk-3ABA7KKD.js";
+} from "./chunk-SIDDLE4T.js";
 import {
   BundleSearch,
   MCP_TOOL_NAMES,
@@ -47,7 +47,7 @@ import {
   readWorkspaceProfile,
   removeSource,
   resolveBundleDir,
-  resolveOkfyHome,
+  resolveOkfyHome2 as resolveOkfyHome,
   resolveSourceDir,
   resolveWorkspaceSources,
   runtimePackageRoot,
@@ -59,7 +59,7 @@ import {
   writeRefreshState,
   writeSourceManifest,
   writeWorkspaceProfile
-} from "./chunk-2RPFN6R3.js";
+} from "./chunk-2AYKAJHP.js";
 export {
   BundleSearch,
   MCP_TOOL_NAMES,

@@ -1,10 +1,49 @@
+// src/metadata.ts
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+var FALLBACK_NAME = "okfy-ai";
+var FALLBACK_VERSION = "0.0.0";
+var cachedMetadata;
+function runtimePackageRoot() {
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+}
+function packageMetadata() {
+  cachedMetadata ??= readPackageMetadata();
+  return cachedMetadata;
+}
+function packageVersion() {
+  return packageMetadata().version;
+}
+function okfyUserAgent() {
+  return `okfy/${packageVersion()} (+https://github.com/0dust/OKFy)`;
+}
+function readPackageMetadata() {
+  const root = runtimePackageRoot();
+  try {
+    const raw = fs.readFileSync(path.join(root, "package.json"), "utf8");
+    const parsed = JSON.parse(raw);
+    return {
+      name: parsed.name ?? FALLBACK_NAME,
+      version: parsed.version ?? FALLBACK_VERSION,
+      root
+    };
+  } catch {
+    return {
+      name: FALLBACK_NAME,
+      version: FALLBACK_VERSION,
+      root
+    };
+  }
+}
+
 // src/graph.ts
-import path2 from "path";
+import path3 from "path";
 
 // src/util/path.ts
-import path from "path";
+import path2 from "path";
 function toPosixPath(input) {
-  return input.split(path.sep).join("/");
+  return input.split(path2.sep).join("/");
 }
 function stripMdExtension(input) {
   return input.replace(/\.md$/i, "");
@@ -43,8 +82,8 @@ function urlToOutputPath(url) {
   return ensureMarkdownPath(parsed.pathname);
 }
 function relativeMarkdownLink(fromPath, toPath) {
-  const fromDir = path.posix.dirname(toPosixPath(fromPath));
-  let rel = path.posix.relative(fromDir, toPosixPath(toPath));
+  const fromDir = path2.posix.dirname(toPosixPath(fromPath));
+  let rel = path2.posix.relative(fromDir, toPosixPath(toPath));
   if (!rel.startsWith(".")) rel = `./${rel}`;
   return rel;
 }
@@ -58,7 +97,7 @@ function extractInternalLinks(concept) {
     if (!noHash) continue;
     if (/^(https?:)?\/\//i.test(noHash) || /^mailto:/i.test(noHash)) continue;
     if (/^[a-z][a-z0-9+.-]*:/i.test(noHash)) continue;
-    const resolved = noHash.startsWith("/") ? path2.posix.normalize(noHash.slice(1)) : path2.posix.normalize(path2.posix.join(path2.posix.dirname(concept.path), noHash));
+    const resolved = noHash.startsWith("/") ? path3.posix.normalize(noHash.slice(1)) : path3.posix.normalize(path3.posix.join(path3.posix.dirname(concept.path), noHash));
     if (!resolved || resolved === ".") continue;
     links.add(stripMdExtension(resolved));
   }
@@ -84,8 +123,8 @@ function buildGraph(conceptsByAnyKey) {
 }
 
 // src/reader.ts
-import fs2 from "fs/promises";
-import path5 from "path";
+import fs3 from "fs/promises";
+import path6 from "path";
 
 // src/frontmatter.ts
 import { load } from "js-yaml";
@@ -113,26 +152,26 @@ function isRecord(value) {
 }
 
 // src/okf.ts
-import path3 from "path";
+import path4 from "path";
 var RESERVED_FILENAMES = /* @__PURE__ */ new Set(["index.md", "log.md"]);
 function toOkfPath(input) {
-  return input.split(path3.sep).join("/");
+  return input.split(path4.sep).join("/");
 }
 function isReservedOkfPath(input) {
-  return RESERVED_FILENAMES.has(path3.posix.basename(toOkfPath(input)).toLowerCase());
+  return RESERVED_FILENAMES.has(path4.posix.basename(toOkfPath(input)).toLowerCase());
 }
 function isConceptMarkdownPath(input) {
   return input.toLowerCase().endsWith(".md") && !isReservedOkfPath(input);
 }
 
 // src/util/markdown-files.ts
-import fs from "fs/promises";
-import path4 from "path";
+import fs2 from "fs/promises";
+import path5 from "path";
 async function listMarkdownFiles(dir) {
   const result = [];
   async function walk(current) {
-    for (const entry of await fs.readdir(current, { withFileTypes: true })) {
-      const absolute = path4.join(current, entry.name);
+    for (const entry of await fs2.readdir(current, { withFileTypes: true })) {
+      const absolute = path5.join(current, entry.name);
       if (entry.isDirectory()) await walk(absolute);
       else if (entry.isFile() && entry.name.endsWith(".md")) result.push(absolute);
     }
@@ -147,9 +186,9 @@ function stringArray(value) {
   return value.filter((item) => typeof item === "string");
 }
 async function readConceptFile(bundleDir, absolutePath) {
-  const raw = await fs2.readFile(absolutePath, "utf8");
+  const raw = await fs3.readFile(absolutePath, "utf8");
   const parsed = parseFrontmatter(raw);
-  const relPath = toPosixPath(path5.relative(bundleDir, absolutePath));
+  const relPath = toPosixPath(path6.relative(bundleDir, absolutePath));
   if (isReservedOkfPath(relPath)) throw new Error(`Reserved OKF file is not a concept: ${relPath}`);
   const id = stripMdExtension(relPath);
   const frontmatter = parsed.data;
@@ -169,178 +208,13 @@ async function readBundle(bundleDir) {
   const files = await listMarkdownFiles(bundleDir);
   const concepts = /* @__PURE__ */ new Map();
   for (const file of files) {
-    const relPath = toPosixPath(path5.relative(bundleDir, file));
+    const relPath = toPosixPath(path6.relative(bundleDir, file));
     if (!isConceptMarkdownPath(relPath)) continue;
     const concept = await readConceptFile(bundleDir, file);
     concepts.set(concept.id, concept);
     concepts.set(concept.path, concept);
   }
   return concepts;
-}
-
-// src/search.ts
-import MiniSearch from "minisearch";
-function snippet(concept, query, max = 240) {
-  const text = `${concept.description ?? ""} ${concept.body}`.replace(/\s+/g, " ").trim();
-  const lower = text.toLowerCase();
-  const term = query.toLowerCase().split(/\s+/).find(Boolean) ?? "";
-  const index = term ? lower.indexOf(term) : -1;
-  const start = Math.max(0, index - 80);
-  return text.slice(start, start + max);
-}
-var STOPWORDS = /* @__PURE__ */ new Set([
-  "about",
-  "after",
-  "and",
-  "are",
-  "can",
-  "could",
-  "does",
-  "for",
-  "from",
-  "had",
-  "has",
-  "have",
-  "how",
-  "into",
-  "onto",
-  "should",
-  "that",
-  "the",
-  "their",
-  "there",
-  "this",
-  "what",
-  "when",
-  "where",
-  "who",
-  "why",
-  "with",
-  "would",
-  "you",
-  "your"
-]);
-function meaningfulQueryTerms(query) {
-  const terms = /* @__PURE__ */ new Set();
-  for (const token of query.match(/[A-Za-z0-9]+/g) ?? []) {
-    const normalized = token.toLowerCase();
-    const isAcronym = normalized.length >= 2 && ["api", "cli", "mcp", "okf", "sdk"].includes(normalized);
-    if ((normalized.length >= 4 || isAcronym) && !STOPWORDS.has(normalized)) {
-      terms.add(normalized);
-    }
-  }
-  return terms;
-}
-function matchesMeaningfulQueryTerm(hit, terms) {
-  if (terms.size === 0) return false;
-  return (hit.queryTerms ?? []).some((term) => terms.has(term.toLowerCase()));
-}
-var BundleSearch = class _BundleSearch {
-  graph;
-  index;
-  constructor(conceptsByAnyKey) {
-    this.graph = buildGraph(conceptsByAnyKey);
-    this.index = new MiniSearch({
-      fields: ["title", "description", "tags", "type", "body"],
-      storeFields: ["id"],
-      searchOptions: {
-        boost: { title: 4, tags: 3, type: 2, description: 2 },
-        fuzzy: 0.2,
-        prefix: true
-      }
-    });
-    this.index.addAll(
-      [...this.graph.concepts.values()].map((concept) => ({
-        id: concept.id,
-        title: concept.title ?? concept.id,
-        type: concept.type,
-        description: concept.description ?? "",
-        tags: concept.tags.join(" "),
-        body: concept.body
-      }))
-    );
-  }
-  static async fromBundle(bundleDir) {
-    return new _BundleSearch(await readBundle(bundleDir));
-  }
-  search(query, options = {}) {
-    const limit = options.limit ?? 10;
-    const trimmedQuery = query.trim();
-    const strict = this.resultsForHits(
-      this.index.search(trimmedQuery || MiniSearch.wildcard, { combineWith: "AND" }).slice(0, 100),
-      query,
-      options
-    );
-    if (!trimmedQuery || strict.length > 0 || trimmedQuery.split(/\s+/).length < 2)
-      return strict.slice(0, limit);
-    const fallbackTerms = meaningfulQueryTerms(trimmedQuery);
-    const fallback = this.resultsForHits(
-      this.index.search(trimmedQuery, { combineWith: "OR" }).filter((hit) => matchesMeaningfulQueryTerm(hit, fallbackTerms)).slice(0, 100),
-      query,
-      options
-    );
-    return fallback.slice(0, limit);
-  }
-  resultsForHits(hits, query, options) {
-    const tagFilter = new Set(options.tags ?? []);
-    return hits.map((hit) => ({ hit, concept: this.graph.concepts.get(hit.id) })).filter(
-      (row) => Boolean(row.concept)
-    ).filter(({ concept }) => !options.type || concept.type === options.type).filter(
-      ({ concept }) => tagFilter.size === 0 || concept.tags.some((tag) => tagFilter.has(tag))
-    ).map(({ hit, concept }) => ({
-      id: concept.id,
-      title: concept.title,
-      type: concept.type,
-      description: concept.description,
-      tags: concept.tags,
-      resource: concept.resource,
-      snippet: snippet(concept, query),
-      score: hit.score
-    }));
-  }
-  getConcept(idOrPath) {
-    const id = idOrPath.replace(/\.md$/i, "");
-    return this.graph.concepts.get(id) ?? [...this.graph.concepts.values()].find((concept) => concept.path === idOrPath);
-  }
-};
-
-// src/metadata.ts
-import fs3 from "fs";
-import path6 from "path";
-import { fileURLToPath } from "url";
-var FALLBACK_NAME = "okfy-ai";
-var FALLBACK_VERSION = "0.0.0";
-var cachedMetadata;
-function runtimePackageRoot() {
-  return path6.resolve(path6.dirname(fileURLToPath(import.meta.url)), "..");
-}
-function packageMetadata() {
-  cachedMetadata ??= readPackageMetadata();
-  return cachedMetadata;
-}
-function packageVersion() {
-  return packageMetadata().version;
-}
-function okfyUserAgent() {
-  return `okfy/${packageVersion()} (+https://github.com/0dust/OKFy)`;
-}
-function readPackageMetadata() {
-  const root = runtimePackageRoot();
-  try {
-    const raw = fs3.readFileSync(path6.join(root, "package.json"), "utf8");
-    const parsed = JSON.parse(raw);
-    return {
-      name: parsed.name ?? FALLBACK_NAME,
-      version: parsed.version ?? FALLBACK_VERSION,
-      root
-    };
-  } catch {
-    return {
-      name: FALLBACK_NAME,
-      version: FALLBACK_VERSION,
-      root
-    };
-  }
 }
 
 // src/validate.ts
@@ -588,8 +462,18 @@ async function inspectBundle(bundleDir) {
 // src/source-store.ts
 import fs5 from "fs/promises";
 import { randomUUID } from "crypto";
+import path9 from "path";
+
+// src/okfy-home.ts
 import os from "os";
 import path8 from "path";
+function resolveOkfyHome(options = {}) {
+  const configured = options.okfyHome ?? options.env?.OKFY_HOME ?? process.env.OKFY_HOME;
+  if (configured && configured.trim() !== "") return path8.resolve(configured);
+  return path8.join(os.homedir(), ".okfy");
+}
+
+// src/source-store.ts
 var SOURCE_NAME_PATTERN = /^[a-z0-9._-]+$/;
 var MANIFEST_KEYS = [
   "schemaVersion",
@@ -627,10 +511,8 @@ var STATE_KEYS = [
   "bundle"
 ];
 var STATE_BUNDLE_KEYS = ["conceptCount", "warningCount", "valid", "contentHash"];
-function resolveOkfyHome(options = {}) {
-  const configured = options.okfyHome ?? options.env?.OKFY_HOME ?? process.env.OKFY_HOME;
-  if (configured && configured.trim() !== "") return path8.resolve(configured);
-  return path8.join(os.homedir(), ".okfy");
+function resolveOkfyHome2(options = {}) {
+  return resolveOkfyHome(options);
 }
 function validateSourceName(name) {
   if (!name || name === "." || name === ".." || !SOURCE_NAME_PATTERN.test(name)) {
@@ -643,7 +525,7 @@ function validateSourceName(name) {
 function resolveSourceDir(name, options = {}) {
   const safeName = validateSourceName(name);
   const sourcesRoot = resolveSourcesRoot(options);
-  const sourceDir = path8.resolve(sourcesRoot, safeName);
+  const sourceDir = path9.resolve(sourcesRoot, safeName);
   if (!isInsideOrEqual(sourcesRoot, sourceDir)) {
     throw new Error(`Invalid source name "${name}". Source directory escapes OKFY_HOME.`);
   }
@@ -655,8 +537,8 @@ function resolveBundleDir(manifest, options = {}) {
   if (!bundleDir || bundleDir.trim() === "") {
     throw new Error(`Invalid bundle directory for source "${manifest.name}".`);
   }
-  if (path8.isAbsolute(bundleDir)) return path8.normalize(bundleDir);
-  const resolved = path8.resolve(sourceDir, bundleDir);
+  if (path9.isAbsolute(bundleDir)) return path9.normalize(bundleDir);
+  const resolved = path9.resolve(sourceDir, bundleDir);
   if (resolved === sourceDir || !isInsideOrEqual(sourceDir, resolved)) {
     throw new Error(
       `Invalid bundle directory for source "${manifest.name}". Relative bundle paths must stay inside the source directory.`
@@ -666,12 +548,12 @@ function resolveBundleDir(manifest, options = {}) {
 }
 async function writeSourceManifest(manifest, options = {}) {
   const sourceDir = resolveSourceDir(manifest.name, options);
-  await writeStableJson(path8.join(sourceDir, "source.json"), manifest);
+  await writeStableJson(path9.join(sourceDir, "source.json"), manifest);
 }
 async function readSourceManifest(name, options = {}) {
   const sourceDir = resolveSourceDir(name, options);
   const manifest = validateSourceManifest(
-    await readJson(path8.join(sourceDir, "source.json")),
+    await readJson(path9.join(sourceDir, "source.json")),
     name
   );
   if (manifest.name !== name) {
@@ -681,11 +563,11 @@ async function readSourceManifest(name, options = {}) {
 }
 async function writeRefreshState(name, state, options = {}) {
   const sourceDir = resolveSourceDir(name, options);
-  await writeStableJson(path8.join(sourceDir, "state.json"), state);
+  await writeStableJson(path9.join(sourceDir, "state.json"), state);
 }
 async function readRefreshState(name, options = {}) {
   const sourceDir = resolveSourceDir(name, options);
-  return validateRefreshState(await readJson(path8.join(sourceDir, "state.json")), name);
+  return validateRefreshState(await readJson(path9.join(sourceDir, "state.json")), name);
 }
 async function readSourceRecord(name, options = {}) {
   const manifest = await readSourceManifest(name, options);
@@ -704,7 +586,7 @@ async function sourceRecordFromManifest(manifest, options = {}) {
   try {
     bundleDir = resolveBundleDir(manifest, options);
   } catch (error) {
-    bundleDir = path8.join(dir, "bundle");
+    bundleDir = path9.join(dir, "bundle");
     loadError ??= errorDetails(error);
   }
   return {
@@ -744,16 +626,16 @@ async function removeSource(name, options = {}) {
   await fs5.rm(sourceDir, { recursive: true, force: true });
 }
 function resolveSourcesRoot(options) {
-  return path8.join(resolveOkfyHome(options), "sources");
+  return path9.join(resolveOkfyHome2(options), "sources");
 }
 function invalidSourceRecord(sourcesRoot, name, error) {
-  const dir = path8.join(sourcesRoot, name);
+  const dir = path9.join(sourcesRoot, name);
   const sourceName = fallbackSourceName(name);
   return {
     name: sourceName,
     dir,
     manifest: fallbackSourceManifest(sourceName),
-    bundleDir: path8.join(dir, "bundle"),
+    bundleDir: path9.join(dir, "bundle"),
     loadError: errorDetails(error, name)
   };
 }
@@ -996,10 +878,10 @@ async function readJson(filePath) {
   return JSON.parse(await fs5.readFile(filePath, "utf8"));
 }
 async function writeStableJson(filePath, value) {
-  const dir = path8.dirname(filePath);
-  const tempPath = path8.join(
+  const dir = path9.dirname(filePath);
+  const tempPath = path9.join(
     dir,
-    `.${path8.basename(filePath)}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`
+    `.${path9.basename(filePath)}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`
   );
   await fs5.mkdir(dir, { recursive: true });
   try {
@@ -1049,24 +931,304 @@ function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function isInsideOrEqual(parent, child) {
-  const relative = path8.relative(parent, child);
-  return relative === "" || !relative.startsWith("..") && !path8.isAbsolute(relative);
+  const relative = path9.relative(parent, child);
+  return relative === "" || !relative.startsWith("..") && !path9.isAbsolute(relative);
 }
 function isNodeError(error) {
   return error instanceof Error && "code" in error;
 }
 
+// src/mcp-contract.ts
+import { z } from "zod";
+var MCP_TOOL_NAMES = [
+  "search_concepts",
+  "read_concept",
+  "get_neighbors",
+  "list_types",
+  "list_tags",
+  "bundle_summary"
+];
+var [
+  SEARCH_CONCEPTS_TOOL,
+  READ_CONCEPT_TOOL,
+  GET_NEIGHBORS_TOOL,
+  LIST_TYPES_TOOL,
+  LIST_TAGS_TOOL,
+  BUNDLE_SUMMARY_TOOL
+] = MCP_TOOL_NAMES;
+var REFRESHABLE_TOOL_NAMES = new Set(
+  MCP_TOOL_NAMES.filter((tool) => tool !== BUNDLE_SUMMARY_TOOL)
+);
+function refreshableTool(name) {
+  return REFRESHABLE_TOOL_NAMES.has(name);
+}
+var searchSchema = z.object({
+  query: z.string(),
+  type: z.string().optional(),
+  tags: z.array(z.string()).optional(),
+  limit: z.number().int().positive().max(50).optional()
+});
+var readSchema = z.object({
+  id: z.string(),
+  max_chars: z.number().int().positive().optional()
+});
+var neighborsSchema = z.object({
+  id: z.string(),
+  depth: z.number().int().min(1).max(2).optional()
+});
+var sourceFilterSchema = z.object({ source: z.string().optional() });
+var workspaceSearchSchema = searchSchema.extend({ source: z.string().optional() });
+var workspaceReadSchema = readSchema.extend({ source: z.string().optional() });
+var workspaceNeighborsSchema = neighborsSchema.extend({ source: z.string().optional() });
+var stringInputProperty = { type: "string" };
+var sourceInputProperty = { type: "string" };
+var tagsInputProperty = { type: "array", items: { type: "string" } };
+var limitInputProperty = { type: "integer", minimum: 1, maximum: 50, default: 10 };
+var maxCharsInputProperty = { type: "integer", minimum: 1 };
+var depthInputProperty = { type: "integer", minimum: 1, maximum: 2, default: 1 };
+function withOptionalSourceInputSchema(schema, sourcePosition = "first") {
+  if (sourcePosition === "afterQuery" && "query" in schema.properties) {
+    const { query, ...properties } = schema.properties;
+    return { ...schema, properties: { query, source: sourceInputProperty, ...properties } };
+  }
+  return { ...schema, properties: { source: sourceInputProperty, ...schema.properties } };
+}
+var searchInputSchema = {
+  type: "object",
+  properties: {
+    query: stringInputProperty,
+    type: stringInputProperty,
+    tags: tagsInputProperty,
+    limit: limitInputProperty
+  },
+  required: ["query"]
+};
+var readInputSchema = {
+  type: "object",
+  properties: { id: stringInputProperty, max_chars: maxCharsInputProperty },
+  required: ["id"]
+};
+var neighborsInputSchema = {
+  type: "object",
+  properties: {
+    id: stringInputProperty,
+    depth: depthInputProperty
+  },
+  required: ["id"]
+};
+var sourceFilterInputSchema = {
+  type: "object",
+  properties: { source: sourceInputProperty }
+};
+var workspaceSearchInputSchema = withOptionalSourceInputSchema(searchInputSchema, "afterQuery");
+var workspaceReadInputSchema = withOptionalSourceInputSchema(readInputSchema);
+var workspaceNeighborsInputSchema = withOptionalSourceInputSchema(neighborsInputSchema);
+function mcpToolDefinitions(mode) {
+  if (mode === "bundle") {
+    return [
+      {
+        name: SEARCH_CONCEPTS_TOOL,
+        description: "Search OKF concepts by query, type, and tags.",
+        inputSchema: searchInputSchema
+      },
+      {
+        name: READ_CONCEPT_TOOL,
+        description: "Read one OKF concept by id or path.",
+        inputSchema: readInputSchema
+      },
+      {
+        name: GET_NEIGHBORS_TOOL,
+        description: "Return outbound links and backlinks for a concept.",
+        inputSchema: neighborsInputSchema
+      },
+      {
+        name: LIST_TYPES_TOOL,
+        description: "List concept types and counts.",
+        inputSchema: { type: "object", properties: {} }
+      },
+      {
+        name: LIST_TAGS_TOOL,
+        description: "List concept tags and counts.",
+        inputSchema: { type: "object", properties: {} }
+      },
+      {
+        name: BUNDLE_SUMMARY_TOOL,
+        description: "Return bundle stats and validation status.",
+        inputSchema: { type: "object", properties: {} }
+      }
+    ];
+  }
+  return [
+    {
+      name: SEARCH_CONCEPTS_TOOL,
+      description: "Search workspace OKF concepts by query, source, type, and tags.",
+      inputSchema: workspaceSearchInputSchema
+    },
+    {
+      name: READ_CONCEPT_TOOL,
+      description: "Read one workspace OKF concept by source and id. Id-only reads work when the id is unique.",
+      inputSchema: workspaceReadInputSchema
+    },
+    {
+      name: GET_NEIGHBORS_TOOL,
+      description: "Return outbound links and backlinks for a workspace concept.",
+      inputSchema: workspaceNeighborsInputSchema
+    },
+    {
+      name: LIST_TYPES_TOOL,
+      description: "List workspace concept types and counts.",
+      inputSchema: sourceFilterInputSchema
+    },
+    {
+      name: LIST_TAGS_TOOL,
+      description: "List workspace concept tags and counts.",
+      inputSchema: sourceFilterInputSchema
+    },
+    {
+      name: BUNDLE_SUMMARY_TOOL,
+      description: "Return workspace stats, per-source validation, and freshness status.",
+      inputSchema: sourceFilterInputSchema
+    }
+  ];
+}
+
+// src/search.ts
+import MiniSearch from "minisearch";
+function snippet(concept, query, max = 240) {
+  const text = `${concept.description ?? ""} ${concept.body}`.replace(/\s+/g, " ").trim();
+  const lower = text.toLowerCase();
+  const term = query.toLowerCase().split(/\s+/).find(Boolean) ?? "";
+  const index = term ? lower.indexOf(term) : -1;
+  const start = Math.max(0, index - 80);
+  return text.slice(start, start + max);
+}
+var STOPWORDS = /* @__PURE__ */ new Set([
+  "about",
+  "after",
+  "and",
+  "are",
+  "can",
+  "could",
+  "does",
+  "for",
+  "from",
+  "had",
+  "has",
+  "have",
+  "how",
+  "into",
+  "onto",
+  "should",
+  "that",
+  "the",
+  "their",
+  "there",
+  "this",
+  "what",
+  "when",
+  "where",
+  "who",
+  "why",
+  "with",
+  "would",
+  "you",
+  "your"
+]);
+function meaningfulQueryTerms(query) {
+  const terms = /* @__PURE__ */ new Set();
+  for (const token of query.match(/[A-Za-z0-9]+/g) ?? []) {
+    const normalized = token.toLowerCase();
+    const isAcronym = normalized.length >= 2 && ["api", "cli", "mcp", "okf", "sdk"].includes(normalized);
+    if ((normalized.length >= 4 || isAcronym) && !STOPWORDS.has(normalized)) {
+      terms.add(normalized);
+    }
+  }
+  return terms;
+}
+function matchesMeaningfulQueryTerm(hit, terms) {
+  if (terms.size === 0) return false;
+  return (hit.queryTerms ?? []).some((term) => terms.has(term.toLowerCase()));
+}
+var BundleSearch = class _BundleSearch {
+  graph;
+  index;
+  constructor(conceptsByAnyKey) {
+    this.graph = buildGraph(conceptsByAnyKey);
+    this.index = new MiniSearch({
+      fields: ["title", "description", "tags", "type", "body"],
+      storeFields: ["id"],
+      searchOptions: {
+        boost: { title: 4, tags: 3, type: 2, description: 2 },
+        fuzzy: 0.2,
+        prefix: true
+      }
+    });
+    this.index.addAll(
+      [...this.graph.concepts.values()].map((concept) => ({
+        id: concept.id,
+        title: concept.title ?? concept.id,
+        type: concept.type,
+        description: concept.description ?? "",
+        tags: concept.tags.join(" "),
+        body: concept.body
+      }))
+    );
+  }
+  static async fromBundle(bundleDir) {
+    return new _BundleSearch(await readBundle(bundleDir));
+  }
+  search(query, options = {}) {
+    const limit = options.limit ?? 10;
+    const trimmedQuery = query.trim();
+    const strict = this.resultsForHits(
+      this.index.search(trimmedQuery || MiniSearch.wildcard, { combineWith: "AND" }).slice(0, 100),
+      query,
+      options
+    );
+    if (!trimmedQuery || strict.length > 0 || trimmedQuery.split(/\s+/).length < 2)
+      return strict.slice(0, limit);
+    const fallbackTerms = meaningfulQueryTerms(trimmedQuery);
+    const fallback = this.resultsForHits(
+      this.index.search(trimmedQuery, { combineWith: "OR" }).filter((hit) => matchesMeaningfulQueryTerm(hit, fallbackTerms)).slice(0, 100),
+      query,
+      options
+    );
+    return fallback.slice(0, limit);
+  }
+  resultsForHits(hits, query, options) {
+    const tagFilter = new Set(options.tags ?? []);
+    return hits.map((hit) => ({ hit, concept: this.graph.concepts.get(hit.id) })).filter(
+      (row) => Boolean(row.concept)
+    ).filter(({ concept }) => !options.type || concept.type === options.type).filter(
+      ({ concept }) => tagFilter.size === 0 || concept.tags.some((tag) => tagFilter.has(tag))
+    ).map(({ hit, concept }) => ({
+      id: concept.id,
+      title: concept.title,
+      type: concept.type,
+      description: concept.description,
+      tags: concept.tags,
+      resource: concept.resource,
+      snippet: snippet(concept, query),
+      score: hit.score
+    }));
+  }
+  getConcept(idOrPath) {
+    const id = idOrPath.replace(/\.md$/i, "");
+    return this.graph.concepts.get(id) ?? [...this.graph.concepts.values()].find((concept) => concept.path === idOrPath);
+  }
+};
+
 // src/workspace.ts
 import fs6 from "fs/promises";
-import path9 from "path";
+import path10 from "path";
 import { pathToFileURL } from "url";
 function bundleSourceName(bundleDir) {
-  const baseName = path9.basename(path9.resolve(bundleDir));
+  const baseName = path10.basename(path10.resolve(bundleDir));
   const candidate = baseName.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[._-]+|[._-]+$/g, "");
   return validateSourceName(candidate || "bundle");
 }
 function localBundleRecord(bundleDir) {
-  const resolved = path9.resolve(bundleDir);
+  const resolved = path10.resolve(bundleDir);
   const name = bundleSourceName(resolved);
   const timestamp = "1970-01-01T00:00:00.000Z";
   return {
@@ -1134,7 +1296,7 @@ var WorkspaceError = class extends Error {
   }
 };
 function workspaceProfilePath(name, options = {}) {
-  return path9.join(resolveOkfyHome(options), "workspaces", `${validateSourceName(name)}.json`);
+  return path10.join(resolveOkfyHome2(options), "workspaces", `${validateSourceName(name)}.json`);
 }
 async function readWorkspaceProfile(name, options = {}) {
   const profile = JSON.parse(
@@ -1146,7 +1308,7 @@ async function readWorkspaceProfile(name, options = {}) {
 async function writeWorkspaceProfile(profile, options = {}) {
   validateWorkspaceProfile(profile);
   const filePath = workspaceProfilePath(profile.name, options);
-  await fs6.mkdir(path9.dirname(filePath), { recursive: true });
+  await fs6.mkdir(path10.dirname(filePath), { recursive: true });
   await fs6.writeFile(filePath, `${JSON.stringify(profile, null, 2)}
 `, "utf8");
 }
@@ -1347,26 +1509,9 @@ function assertUniqueSourceNames(names) {
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { z } from "zod";
-var MCP_TOOL_NAMES = [
-  "search_concepts",
-  "read_concept",
-  "get_neighbors",
-  "list_types",
-  "list_tags",
-  "bundle_summary"
-];
-var [
-  SEARCH_CONCEPTS_TOOL,
-  READ_CONCEPT_TOOL,
-  GET_NEIGHBORS_TOOL,
-  LIST_TYPES_TOOL,
-  LIST_TAGS_TOOL,
-  BUNDLE_SUMMARY_TOOL
-] = MCP_TOOL_NAMES;
-var REFRESHABLE_TOOL_NAMES = new Set(
-  MCP_TOOL_NAMES.filter((tool) => tool !== BUNDLE_SUMMARY_TOOL)
-);
+import { z as z2 } from "zod";
+
+// src/mcp-results.ts
 function json(value, maxChars = 12e3) {
   return toolResult(value, structuredContentFor(value), maxChars);
 }
@@ -1398,91 +1543,8 @@ function argumentError(error) {
     issues: error.issues
   };
 }
-var searchSchema = z.object({
-  query: z.string(),
-  type: z.string().optional(),
-  tags: z.array(z.string()).optional(),
-  limit: z.number().int().positive().max(50).optional()
-});
-var readSchema = z.object({ id: z.string(), max_chars: z.number().int().positive().optional() });
-var neighborsSchema = z.object({
-  id: z.string(),
-  depth: z.number().int().min(1).max(2).optional()
-});
-var sourceFilterSchema = z.object({ source: z.string().optional() });
-var workspaceSearchSchema = searchSchema.extend({ source: z.string().optional() });
-var workspaceReadSchema = readSchema.extend({ source: z.string().optional() });
-var workspaceNeighborsSchema = neighborsSchema.extend({ source: z.string().optional() });
-var stringInputProperty = { type: "string" };
-var sourceInputProperty = { type: "string" };
-var tagsInputProperty = { type: "array", items: { type: "string" } };
-var limitInputProperty = { type: "integer", minimum: 1, maximum: 50, default: 10 };
-var maxCharsInputProperty = { type: "integer", minimum: 1 };
-var depthInputProperty = { type: "integer", minimum: 1, maximum: 2, default: 1 };
-function withOptionalSourceInputSchema(schema, sourcePosition = "first") {
-  if (sourcePosition === "afterQuery" && "query" in schema.properties) {
-    const { query, ...properties } = schema.properties;
-    return { ...schema, properties: { query, source: sourceInputProperty, ...properties } };
-  }
-  return { ...schema, properties: { source: sourceInputProperty, ...schema.properties } };
-}
-var searchInputSchema = {
-  type: "object",
-  properties: {
-    query: stringInputProperty,
-    type: stringInputProperty,
-    tags: tagsInputProperty,
-    limit: limitInputProperty
-  },
-  required: ["query"]
-};
-var readInputSchema = {
-  type: "object",
-  properties: { id: stringInputProperty, max_chars: maxCharsInputProperty },
-  required: ["id"]
-};
-var neighborsInputSchema = {
-  type: "object",
-  properties: {
-    id: stringInputProperty,
-    depth: depthInputProperty
-  },
-  required: ["id"]
-};
-var sourceFilterInputSchema = {
-  type: "object",
-  properties: { source: sourceInputProperty }
-};
-var workspaceSearchInputSchema = withOptionalSourceInputSchema(searchInputSchema, "afterQuery");
-var workspaceReadInputSchema = withOptionalSourceInputSchema(readInputSchema);
-var workspaceNeighborsInputSchema = withOptionalSourceInputSchema(neighborsInputSchema);
-function collectNeighbors(search, rootId, depth) {
-  const seen = /* @__PURE__ */ new Set([rootId]);
-  let frontier = [rootId];
-  const edges = [];
-  for (let level = 0; level < depth; level += 1) {
-    const next = [];
-    for (const id of frontier) {
-      for (const to of search.graph.outbound.get(id) ?? []) {
-        edges.push({
-          from: id,
-          to,
-          direction: "outbound",
-          relationship_text: "Markdown link"
-        });
-        if (!seen.has(to)) next.push(to);
-        seen.add(to);
-      }
-      for (const from of search.graph.backlinks.get(id) ?? []) {
-        edges.push({ from, to: id, direction: "backlink", relationship_text: "Backlink" });
-        if (!seen.has(from)) next.push(from);
-        seen.add(from);
-      }
-    }
-    frontier = next;
-  }
-  return { conceptIds: [...seen], edges };
-}
+
+// src/mcp-source-runtime.ts
 function errorDetails2(error) {
   if (error instanceof Error) return { message: error.message };
   if (typeof error === "string") return { message: error };
@@ -1512,8 +1574,34 @@ function shouldRefresh(status, hasSearch) {
   if (!hasSearch) return status !== "fresh";
   return status === "stale" || status === "missing" || status === "failed";
 }
-function refreshableTool(name) {
-  return REFRESHABLE_TOOL_NAMES.has(name);
+
+// src/mcp.ts
+function collectNeighbors(search, rootId, depth) {
+  const seen = /* @__PURE__ */ new Set([rootId]);
+  let frontier = [rootId];
+  const edges = [];
+  for (let level = 0; level < depth; level += 1) {
+    const next = [];
+    for (const id of frontier) {
+      for (const to of search.graph.outbound.get(id) ?? []) {
+        edges.push({
+          from: id,
+          to,
+          direction: "outbound",
+          relationship_text: "Markdown link"
+        });
+        if (!seen.has(to)) next.push(to);
+        seen.add(to);
+      }
+      for (const from of search.graph.backlinks.get(id) ?? []) {
+        edges.push({ from, to: id, direction: "backlink", relationship_text: "Backlink" });
+        if (!seen.has(from)) next.push(from);
+        seen.add(from);
+      }
+    }
+    frontier = next;
+  }
+  return { conceptIds: [...seen], edges };
 }
 async function createMcpServer(options) {
   let activeBundleDir = options.bundleDir;
@@ -1612,38 +1700,7 @@ async function createMcpServer(options) {
     if (mode === "blocking" || !search) await refresh;
   }
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
-      {
-        name: SEARCH_CONCEPTS_TOOL,
-        description: "Search OKF concepts by query, type, and tags.",
-        inputSchema: searchInputSchema
-      },
-      {
-        name: READ_CONCEPT_TOOL,
-        description: "Read one OKF concept by id or path.",
-        inputSchema: readInputSchema
-      },
-      {
-        name: GET_NEIGHBORS_TOOL,
-        description: "Return outbound links and backlinks for a concept.",
-        inputSchema: neighborsInputSchema
-      },
-      {
-        name: LIST_TYPES_TOOL,
-        description: "List concept types and counts.",
-        inputSchema: { type: "object", properties: {} }
-      },
-      {
-        name: LIST_TAGS_TOOL,
-        description: "List concept tags and counts.",
-        inputSchema: { type: "object", properties: {} }
-      },
-      {
-        name: BUNDLE_SUMMARY_TOOL,
-        description: "Return bundle stats and validation status.",
-        inputSchema: { type: "object", properties: {} }
-      }
-    ]
+    tools: mcpToolDefinitions("bundle")
   }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const args = request.params.arguments ?? {};
@@ -1737,7 +1794,7 @@ async function createMcpServer(options) {
         maxResultChars
       );
     } catch (error) {
-      if (error instanceof z.ZodError) return toolError(argumentError(error), maxResultChars);
+      if (error instanceof z2.ZodError) return toolError(argumentError(error), maxResultChars);
       return toolError(
         { code: "tool_error", message: error?.message ?? "Tool failed." },
         maxResultChars
@@ -2004,38 +2061,7 @@ async function createWorkspaceMcpServer(options) {
     };
   }
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
-      {
-        name: SEARCH_CONCEPTS_TOOL,
-        description: "Search workspace OKF concepts by query, source, type, and tags.",
-        inputSchema: workspaceSearchInputSchema
-      },
-      {
-        name: READ_CONCEPT_TOOL,
-        description: "Read one workspace OKF concept by source and id. Id-only reads work when the id is unique.",
-        inputSchema: workspaceReadInputSchema
-      },
-      {
-        name: GET_NEIGHBORS_TOOL,
-        description: "Return outbound links and backlinks for a workspace concept.",
-        inputSchema: workspaceNeighborsInputSchema
-      },
-      {
-        name: LIST_TYPES_TOOL,
-        description: "List workspace concept types and counts.",
-        inputSchema: sourceFilterInputSchema
-      },
-      {
-        name: LIST_TAGS_TOOL,
-        description: "List workspace concept tags and counts.",
-        inputSchema: sourceFilterInputSchema
-      },
-      {
-        name: BUNDLE_SUMMARY_TOOL,
-        description: "Return workspace stats, per-source validation, and freshness status.",
-        inputSchema: sourceFilterInputSchema
-      }
-    ]
+    tools: mcpToolDefinitions("workspace")
   }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const args = request.params.arguments ?? {};
@@ -2113,7 +2139,7 @@ async function createWorkspaceMcpServer(options) {
       );
     } catch (error) {
       if (error instanceof WorkspaceError) return toolError(error.toJSON(), maxResultChars);
-      if (error instanceof z.ZodError) return toolError(argumentError(error), maxResultChars);
+      if (error instanceof z2.ZodError) return toolError(argumentError(error), maxResultChars);
       return toolError(
         { code: "tool_error", message: error?.message ?? "Tool failed." },
         maxResultChars
@@ -2138,7 +2164,7 @@ async function serveWorkspaceMcpStdio(options) {
 
 // src/setup.ts
 import fs7 from "fs/promises";
-import path10 from "path";
+import path11 from "path";
 import { spawn } from "child_process";
 var EXPECTED_MCP_TOOLS = [...MCP_TOOL_NAMES];
 var MAX_CAPTURE_CHARS = 64e3;
@@ -2160,7 +2186,7 @@ function expectedMcpTools() {
   return [...EXPECTED_MCP_TOOLS];
 }
 function defaultOkfyHome() {
-  return resolveOkfyHome({ env: { OKFY_HOME: "" } });
+  return resolveOkfyHome2({ env: { OKFY_HOME: "" } });
 }
 function setupStatus(checks) {
   if (checks.some((check) => check.severity === "fail")) return "failed";
@@ -2168,7 +2194,7 @@ function setupStatus(checks) {
   return "ready";
 }
 function createSetupReport(input) {
-  const okfyHome = path10.resolve(input.okfyHome ?? resolveOkfyHome());
+  const okfyHome = path11.resolve(input.okfyHome ?? resolveOkfyHome2());
   const defaultHome = defaultOkfyHome();
   const sourceNames = setupSourceNames(input);
   const workspace = Boolean(input.workspaceAll) || sourceNames.length > 1;
@@ -2203,7 +2229,7 @@ function createSetupReport(input) {
   };
 }
 function renderClientArtifacts(input) {
-  const okfyHome = path10.resolve(input.okfyHome ?? resolveOkfyHome());
+  const okfyHome = path11.resolve(input.okfyHome ?? resolveOkfyHome2());
   const defaultHome = input.defaultOkfyHome ?? defaultOkfyHome();
   const sourceNames = setupSourceNames(input);
   const serverIdentity = input.workspaceAll ? ["all"] : sourceNames;
@@ -2276,7 +2302,7 @@ function firstAgentPrompt(serverName, options = {}) {
 }
 function serveCommand(sourceNameOrNames, okfyHome, defaultHome = defaultOkfyHome(), options = {}) {
   const args = ["-y", "okfy-ai", ...serveCommandArgs(sourceNameOrNames, options)];
-  const env = needsOkfyHomeEnv(okfyHome, defaultHome) ? { OKFY_HOME: path10.resolve(okfyHome) } : {};
+  const env = needsOkfyHomeEnv(okfyHome, defaultHome) ? { OKFY_HOME: path11.resolve(okfyHome) } : {};
   return {
     command: "npx",
     args,
@@ -2304,10 +2330,10 @@ function setupCheck(id, label, severity, message, fix) {
 async function executableOnPath(command, env = process.env) {
   const searchPath = env.PATH ?? "";
   const extensions = process.platform === "win32" ? (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";") : [""];
-  for (const directory of searchPath.split(path10.delimiter)) {
+  for (const directory of searchPath.split(path11.delimiter)) {
     if (!directory) continue;
     for (const extension of extensions) {
-      const candidate = path10.join(directory, `${command}${extension}`);
+      const candidate = path11.join(directory, `${command}${extension}`);
       try {
         await fs7.access(candidate, fs7.constants.X_OK);
         return true;
@@ -2495,7 +2521,7 @@ function formatExit(exit) {
   return `exit code ${exit.code ?? "unknown"}`;
 }
 function needsOkfyHomeEnv(okfyHome, defaultHome) {
-  return path10.resolve(okfyHome) !== path10.resolve(defaultHome);
+  return path11.resolve(okfyHome) !== path11.resolve(defaultHome);
 }
 function mcpServerName(sourceNameOrNames) {
   const sourceNames = Array.isArray(sourceNameOrNames) ? sourceNameOrNames : [sourceNameOrNames];
@@ -2534,24 +2560,24 @@ function codexToml(serverName, command, env) {
 }
 
 export {
+  runtimePackageRoot,
+  packageMetadata,
+  packageVersion,
+  okfyUserAgent,
   toPosixPath,
   safeSegment,
   ensureMarkdownPath,
   urlToOutputPath,
   relativeMarkdownLink,
+  isReservedOkfPath,
+  resolveOkfyHome,
   extractInternalLinks,
   buildGraph,
-  isReservedOkfPath,
   readConceptFile,
   readBundle,
-  BundleSearch,
-  runtimePackageRoot,
-  packageMetadata,
-  packageVersion,
-  okfyUserAgent,
   validateBundle,
   inspectBundle,
-  resolveOkfyHome,
+  resolveOkfyHome2,
   validateSourceName,
   resolveSourceDir,
   resolveBundleDir,
@@ -2562,6 +2588,8 @@ export {
   readSourceRecord,
   listSources,
   removeSource,
+  MCP_TOOL_NAMES,
+  BundleSearch,
   bundleSourceName,
   localBundleRecord,
   assertUniqueWorkspaceRecordNames,
@@ -2572,7 +2600,6 @@ export {
   writeWorkspaceProfile,
   resolveWorkspaceSources,
   WorkspaceSearch,
-  MCP_TOOL_NAMES,
   createMcpServer,
   createWorkspaceMcpServer,
   serveMcpStdio,
