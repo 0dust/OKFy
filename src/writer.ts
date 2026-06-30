@@ -10,7 +10,7 @@ import {
   urlToOutputPath
 } from "./util/path.js";
 import { descriptionFromMarkdown } from "./normalize.js";
-import { resolveOkfyHome } from "./source-store.js";
+import { resolveOkfyHome } from "./okfy-home.js";
 import type { NormalizedDocument } from "./types.js";
 
 export type WriteBundleOptions = {

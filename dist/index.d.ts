@@ -137,6 +137,7 @@ type CrawlResult = {
     documents: NormalizedDocument[];
     dryRunPages?: string[];
 };
+
 declare function crawlWebsite(options: CrawlOptions): Promise<CrawlResult>;
 
 type SearchResult = {
@@ -163,15 +164,17 @@ declare class BundleSearch {
     getConcept(idOrPath: string): Concept | undefined;
 }
 
-type SourceKind = "website";
-type RefreshMode$1 = "off" | "stale-while-refresh" | "blocking";
-type RefreshStatus = "missing" | "fresh" | "stale" | "refreshing" | "failed";
-interface SourceStoreOptions {
+interface OkfyHomeOptions {
     okfyHome?: string;
     env?: {
         OKFY_HOME?: string;
     };
 }
+
+type SourceKind = "website";
+type RefreshMode$1 = "off" | "stale-while-refresh" | "blocking";
+type RefreshStatus = "missing" | "fresh" | "stale" | "refreshing" | "failed";
+type SourceStoreOptions = OkfyHomeOptions;
 interface SourceManifest {
     schemaVersion: 1;
     okfyVersion: string;
@@ -611,9 +614,10 @@ declare function importLocal(options: ImportOptions): Promise<{
     documents: NormalizedDocument[];
 }>;
 
+declare const MCP_TOOL_NAMES: readonly ["search_concepts", "read_concept", "get_neighbors", "list_types", "list_tags", "bundle_summary"];
+
 type RefreshMode = "off" | "stale-while-refresh" | "blocking";
 type FreshnessStatus = "fresh" | "stale" | "missing" | "failed" | "refreshing";
-declare const MCP_TOOL_NAMES: readonly ["search_concepts", "read_concept", "get_neighbors", "list_types", "list_tags", "bundle_summary"];
 type SourceMetadata = {
     name: string;
     kind: string;
@@ -648,6 +652,7 @@ type RefreshHooks = {
     getFreshness?: () => FreshnessState | Promise<FreshnessState>;
     refreshIfNeeded?: (context: RefreshContext) => void | RefreshResult$1 | Promise<void | RefreshResult$1>;
 };
+
 type ServeOptions = {
     bundleDir: string;
     name?: string;

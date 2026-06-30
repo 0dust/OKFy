@@ -3,6 +3,46 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { packageVersion } from "./metadata.js";
+import {
+  BUNDLE_SUMMARY_TOOL,
+  GET_NEIGHBORS_TOOL,
+  LIST_TAGS_TOOL,
+  LIST_TYPES_TOOL,
+  READ_CONCEPT_TOOL,
+  SEARCH_CONCEPTS_TOOL,
+  mcpToolDefinitions,
+  neighborsSchema,
+  readSchema,
+  refreshableTool,
+  searchSchema,
+  sourceFilterSchema,
+  workspaceNeighborsSchema,
+  workspaceReadSchema,
+  workspaceSearchSchema
+} from "./mcp-contract.js";
+export { MCP_TOOL_NAMES } from "./mcp-contract.js";
+import { argumentError, json, toolError } from "./mcp-results.js";
+import {
+  errorDetails,
+  normalizeFreshness,
+  shouldRefresh,
+  type FreshnessState,
+  type RefreshErrorDetails,
+  type RefreshHooks,
+  type RefreshMode,
+  type SourceMetadata,
+  type WorkspaceSourceRuntime
+} from "./mcp-source-runtime.js";
+export type {
+  FreshnessState,
+  FreshnessStatus,
+  RefreshContext,
+  RefreshErrorDetails,
+  RefreshHooks,
+  RefreshMode,
+  RefreshResult,
+  SourceMetadata
+} from "./mcp-source-runtime.js";
 import { BundleSearch } from "./search.js";
 import { inspectBundle, validateBundle } from "./validate.js";
 import {
@@ -11,72 +51,6 @@ import {
   type WorkspaceSearchSource,
   type WorkspaceSourceRecord
 } from "./workspace.js";
-
-export type RefreshMode = "off" | "stale-while-refresh" | "blocking";
-export type FreshnessStatus = "fresh" | "stale" | "missing" | "failed" | "refreshing";
-
-export const MCP_TOOL_NAMES = [
-  "search_concepts",
-  "read_concept",
-  "get_neighbors",
-  "list_types",
-  "list_tags",
-  "bundle_summary"
-] as const;
-
-const [
-  SEARCH_CONCEPTS_TOOL,
-  READ_CONCEPT_TOOL,
-  GET_NEIGHBORS_TOOL,
-  LIST_TYPES_TOOL,
-  LIST_TAGS_TOOL,
-  BUNDLE_SUMMARY_TOOL
-] = MCP_TOOL_NAMES;
-const REFRESHABLE_TOOL_NAMES = new Set<string>(
-  MCP_TOOL_NAMES.filter((tool) => tool !== BUNDLE_SUMMARY_TOOL)
-);
-
-export type SourceMetadata = {
-  name: string;
-  kind: string;
-  seedUrl: string;
-};
-
-export type RefreshErrorDetails = {
-  code?: string;
-  message: string;
-  [key: string]: unknown;
-};
-
-export type FreshnessState = {
-  freshnessStatus?: FreshnessStatus;
-  status?: FreshnessStatus;
-  lastSuccessfulRefreshAt?: string | null;
-  refreshInProgress?: boolean;
-  lastRefreshError?: RefreshErrorDetails | string | Error | null;
-  lastError?: RefreshErrorDetails | string | Error | null;
-  nextRefreshAllowedAt?: string | null;
-};
-
-export type RefreshContext = {
-  mode: Exclude<RefreshMode, "off">;
-  bundleDir: string;
-  source?: SourceMetadata;
-  freshness: FreshnessState;
-};
-
-export type RefreshResult = {
-  bundleDir?: string;
-  freshness?: FreshnessState;
-};
-
-export type RefreshHooks = {
-  mode?: RefreshMode;
-  getFreshness?: () => FreshnessState | Promise<FreshnessState>;
-  refreshIfNeeded?: (
-    context: RefreshContext
-  ) => void | RefreshResult | Promise<void | RefreshResult>;
-};
 
 export type ServeOptions = {
   bundleDir: string;
@@ -99,127 +73,6 @@ export type WorkspaceServeOptions = {
   maxResultChars?: number;
   availableSourceNames?: string[];
 };
-
-type ToolResult = {
-  content: Array<{ type: "text"; text: string }>;
-  structuredContent?: Record<string, unknown>;
-  isError?: boolean;
-};
-
-function json(value: unknown, maxChars = 12000): ToolResult {
-  return toolResult(value, structuredContentFor(value), maxChars);
-}
-
-function toolResult(
-  textPayload: unknown,
-  structuredContent: Record<string, unknown> | undefined,
-  maxChars: number,
-  isError = false
-): ToolResult {
-  const serialized = JSON.stringify(textPayload, null, 2);
-  const boundedStructuredContent = serialized.length <= maxChars ? structuredContent : undefined;
-  let text = serialized;
-  if (text.length > maxChars) text = `${text.slice(0, maxChars)}\n...truncated`;
-  return {
-    content: [{ type: "text", text }],
-    structuredContent: boundedStructuredContent,
-    isError
-  };
-}
-
-function toolError(error: Record<string, unknown>, maxChars = 12000): ToolResult {
-  return toolResult({ error }, { error }, maxChars, true);
-}
-
-function structuredContentFor(value: unknown): Record<string, unknown> | undefined {
-  if (Array.isArray(value)) return { results: value };
-  if (value && typeof value === "object") return value as Record<string, unknown>;
-  if (value === undefined) return undefined;
-  return { value };
-}
-
-function argumentError(error: z.ZodError): Record<string, unknown> {
-  return {
-    code: "invalid_arguments",
-    message: "Invalid tool arguments.",
-    issues: error.issues
-  };
-}
-
-const searchSchema = z.object({
-  query: z.string(),
-  type: z.string().optional(),
-  tags: z.array(z.string()).optional(),
-  limit: z.number().int().positive().max(50).optional()
-});
-const readSchema = z.object({ id: z.string(), max_chars: z.number().int().positive().optional() });
-const neighborsSchema = z.object({
-  id: z.string(),
-  depth: z.number().int().min(1).max(2).optional()
-});
-const sourceFilterSchema = z.object({ source: z.string().optional() });
-const workspaceSearchSchema = searchSchema.extend({ source: z.string().optional() });
-const workspaceReadSchema = readSchema.extend({ source: z.string().optional() });
-const workspaceNeighborsSchema = neighborsSchema.extend({ source: z.string().optional() });
-
-type ToolInputSchema = {
-  type: "object";
-  properties: Record<string, unknown>;
-  required?: string[];
-};
-
-const stringInputProperty = { type: "string" };
-const sourceInputProperty = { type: "string" };
-const tagsInputProperty = { type: "array", items: { type: "string" } };
-const limitInputProperty = { type: "integer", minimum: 1, maximum: 50, default: 10 };
-const maxCharsInputProperty = { type: "integer", minimum: 1 };
-const depthInputProperty = { type: "integer", minimum: 1, maximum: 2, default: 1 };
-
-function withOptionalSourceInputSchema(
-  schema: ToolInputSchema,
-  sourcePosition: "first" | "afterQuery" = "first"
-): ToolInputSchema {
-  if (sourcePosition === "afterQuery" && "query" in schema.properties) {
-    const { query, ...properties } = schema.properties;
-    return { ...schema, properties: { query, source: sourceInputProperty, ...properties } };
-  }
-  return { ...schema, properties: { source: sourceInputProperty, ...schema.properties } };
-}
-
-const searchInputSchema = {
-  type: "object",
-  properties: {
-    query: stringInputProperty,
-    type: stringInputProperty,
-    tags: tagsInputProperty,
-    limit: limitInputProperty
-  },
-  required: ["query"]
-} satisfies ToolInputSchema;
-
-const readInputSchema = {
-  type: "object",
-  properties: { id: stringInputProperty, max_chars: maxCharsInputProperty },
-  required: ["id"]
-} satisfies ToolInputSchema;
-
-const neighborsInputSchema = {
-  type: "object",
-  properties: {
-    id: stringInputProperty,
-    depth: depthInputProperty
-  },
-  required: ["id"]
-} satisfies ToolInputSchema;
-
-const sourceFilterInputSchema = {
-  type: "object",
-  properties: { source: sourceInputProperty }
-} satisfies ToolInputSchema;
-
-const workspaceSearchInputSchema = withOptionalSourceInputSchema(searchInputSchema, "afterQuery");
-const workspaceReadInputSchema = withOptionalSourceInputSchema(readInputSchema);
-const workspaceNeighborsInputSchema = withOptionalSourceInputSchema(neighborsInputSchema);
 
 type NeighborEdge = {
   from: string;
@@ -260,51 +113,6 @@ function collectNeighbors(
   }
 
   return { conceptIds: [...seen], edges };
-}
-
-function errorDetails(error: unknown): RefreshErrorDetails {
-  if (error instanceof Error) return { message: error.message };
-  if (typeof error === "string") return { message: error };
-  if (error && typeof error === "object") {
-    const record = error as Record<string, unknown>;
-    return {
-      ...record,
-      message: typeof record.message === "string" ? record.message : "Refresh failed."
-    };
-  }
-  return { message: "Refresh failed." };
-}
-
-function nullableErrorDetails(
-  error: FreshnessState["lastRefreshError"]
-): RefreshErrorDetails | null {
-  if (error === undefined || error === null) return null;
-  return errorDetails(error);
-}
-
-function normalizeFreshness(state: FreshnessState | undefined): {
-  freshnessStatus?: FreshnessStatus;
-  lastSuccessfulRefreshAt: string | null;
-  refreshInProgress: boolean;
-  lastRefreshError: RefreshErrorDetails | null;
-  nextRefreshAllowedAt: string | null;
-} {
-  return {
-    freshnessStatus: state?.freshnessStatus ?? state?.status,
-    lastSuccessfulRefreshAt: state?.lastSuccessfulRefreshAt ?? null,
-    refreshInProgress: Boolean(state?.refreshInProgress),
-    lastRefreshError: nullableErrorDetails(state?.lastRefreshError ?? state?.lastError),
-    nextRefreshAllowedAt: state?.nextRefreshAllowedAt ?? null
-  };
-}
-
-function shouldRefresh(status: FreshnessStatus | undefined, hasSearch: boolean): boolean {
-  if (!hasSearch) return status !== "fresh";
-  return status === "stale" || status === "missing" || status === "failed";
-}
-
-function refreshableTool(name: string): boolean {
-  return REFRESHABLE_TOOL_NAMES.has(name);
 }
 
 export async function createMcpServer(options: ServeOptions): Promise<Server> {
@@ -420,38 +228,7 @@ export async function createMcpServer(options: ServeOptions): Promise<Server> {
   }
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
-      {
-        name: SEARCH_CONCEPTS_TOOL,
-        description: "Search OKF concepts by query, type, and tags.",
-        inputSchema: searchInputSchema
-      },
-      {
-        name: READ_CONCEPT_TOOL,
-        description: "Read one OKF concept by id or path.",
-        inputSchema: readInputSchema
-      },
-      {
-        name: GET_NEIGHBORS_TOOL,
-        description: "Return outbound links and backlinks for a concept.",
-        inputSchema: neighborsInputSchema
-      },
-      {
-        name: LIST_TYPES_TOOL,
-        description: "List concept types and counts.",
-        inputSchema: { type: "object", properties: {} }
-      },
-      {
-        name: LIST_TAGS_TOOL,
-        description: "List concept tags and counts.",
-        inputSchema: { type: "object", properties: {} }
-      },
-      {
-        name: BUNDLE_SUMMARY_TOOL,
-        description: "Return bundle stats and validation status.",
-        inputSchema: { type: "object", properties: {} }
-      }
-    ]
+    tools: mcpToolDefinitions("bundle")
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -555,16 +332,6 @@ export async function createMcpServer(options: ServeOptions): Promise<Server> {
   });
   return server;
 }
-
-type WorkspaceSourceRuntime = {
-  record: WorkspaceSourceRecord;
-  activeBundleDir: string;
-  search?: BundleSearch;
-  observedFreshness?: FreshnessState;
-  lastRefreshError: RefreshErrorDetails | null;
-  inFlightRefresh?: Promise<void>;
-  refresh?: RefreshHooks;
-};
 
 export async function createWorkspaceMcpServer(options: WorkspaceServeOptions): Promise<Server> {
   const maxResultChars = options.maxResultChars ?? 12000;
@@ -861,39 +628,7 @@ export async function createWorkspaceMcpServer(options: WorkspaceServeOptions): 
   }
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
-      {
-        name: SEARCH_CONCEPTS_TOOL,
-        description: "Search workspace OKF concepts by query, source, type, and tags.",
-        inputSchema: workspaceSearchInputSchema
-      },
-      {
-        name: READ_CONCEPT_TOOL,
-        description:
-          "Read one workspace OKF concept by source and id. Id-only reads work when the id is unique.",
-        inputSchema: workspaceReadInputSchema
-      },
-      {
-        name: GET_NEIGHBORS_TOOL,
-        description: "Return outbound links and backlinks for a workspace concept.",
-        inputSchema: workspaceNeighborsInputSchema
-      },
-      {
-        name: LIST_TYPES_TOOL,
-        description: "List workspace concept types and counts.",
-        inputSchema: sourceFilterInputSchema
-      },
-      {
-        name: LIST_TAGS_TOOL,
-        description: "List workspace concept tags and counts.",
-        inputSchema: sourceFilterInputSchema
-      },
-      {
-        name: BUNDLE_SUMMARY_TOOL,
-        description: "Return workspace stats, per-source validation, and freshness status.",
-        inputSchema: sourceFilterInputSchema
-      }
-    ]
+    tools: mcpToolDefinitions("workspace")
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {

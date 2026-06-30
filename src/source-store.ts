@@ -1,19 +1,17 @@
 import fs from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import os from "node:os";
 import path from "node:path";
 import type { Dirent } from "node:fs";
+import {
+  resolveOkfyHome as resolveConfiguredOkfyHome,
+  type OkfyHomeOptions
+} from "./okfy-home.js";
 
 export type SourceKind = "website";
 export type RefreshMode = "off" | "stale-while-refresh" | "blocking";
 export type RefreshStatus = "missing" | "fresh" | "stale" | "refreshing" | "failed";
 
-export interface SourceStoreOptions {
-  okfyHome?: string;
-  env?: {
-    OKFY_HOME?: string;
-  };
-}
+export type SourceStoreOptions = OkfyHomeOptions;
 
 export interface SourceManifest {
   schemaVersion: 1;
@@ -127,9 +125,7 @@ const STATE_KEYS = [
 const STATE_BUNDLE_KEYS = ["conceptCount", "warningCount", "valid", "contentHash"];
 
 export function resolveOkfyHome(options: SourceStoreOptions = {}): string {
-  const configured = options.okfyHome ?? options.env?.OKFY_HOME ?? process.env.OKFY_HOME;
-  if (configured && configured.trim() !== "") return path.resolve(configured);
-  return path.join(os.homedir(), ".okfy");
+  return resolveConfiguredOkfyHome(options);
 }
 
 export function validateSourceName(name: string): string {
