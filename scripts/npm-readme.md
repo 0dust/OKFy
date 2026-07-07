@@ -55,6 +55,8 @@ enabled = true
 
 Claude Desktop, Cursor, and other `mcpServers` clients can use the JSON config above. More setup: https://github.com/0dust/OKFy/blob/main/docs/mcp-clients.md
 
+The official OKFy agent skill at `skills/okfy/SKILL.md` ships with the package and gives skill-aware agents the OKFy setup workflow, MCP tool order, workspace source filters, and safety rules.
+
 If setup is not working, run:
 
 ```bash

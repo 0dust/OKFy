@@ -23,6 +23,7 @@
 
   <p>
     <a href="#use-with-agents">Use with agents</a> |
+    <a href="#official-agent-skill">Agent skill</a> |
     <a href="#activation-packet">Activation packet</a> |
     <a href="#preview-the-inspector">Preview Inspector</a> |
     <a href="#project-stack-workspaces">Project stack workspaces</a> |
@@ -99,6 +100,10 @@ Use the stripe-okf MCP server. Search for Checkout Sessions, read the most relev
 ```
 
 More setup details: [docs/mcp-clients.md](docs/mcp-clients.md).
+
+### Official Agent Skill
+
+The official OKFy agent skill at [skills/okfy/SKILL.md](skills/okfy/SKILL.md) gives Codex, Claude, Cursor, and other skill-aware agents the setup workflow, MCP tool order, workspace source-filtering guidance, and safety rules for using OKFy without re-reading the README.
 
 Create a local activation packet when you want proof before or alongside client setup:
 

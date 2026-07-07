@@ -1,0 +1,4 @@
+interface:
+  display_name: "OKFy"
+  short_description: "Use docs as local MCP knowledge"
+  default_prompt: "Use $okfy to connect docs as a local OKFy MCP source and answer with cited source context."
