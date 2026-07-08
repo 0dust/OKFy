@@ -131,6 +131,8 @@ describe("public surface", () => {
     expect(readme).toContain("claude mcp add --transport stdio stripe-okf");
     expect(readme).toContain(".cursor/mcp.json");
     expect(readme).toContain("[mcp_servers.stripe_okf]");
+    expect(readme).toContain("[skills/okfy/SKILL.md](skills/okfy/SKILL.md)");
+    expect(readme).toContain("official OKFy agent skill");
   });
 
   it("ships public README assets", async () => {
@@ -182,12 +184,48 @@ describe("public surface", () => {
     expect(files).toContain("assets/demo.gif");
     expect(files).toContain("docs/mcp-clients.md");
     expect(files).toContain("examples/bundles/okfy-docs/index.md");
+    expect(files).toContain("skills/okfy/SKILL.md");
+    expect(files).toContain("skills/okfy/agents/openai.yaml");
     expect(files.some((file) => file.startsWith("launch/"))).toBe(false);
     expect(files.some((file) => file.startsWith("docs/plans/"))).toBe(false);
     expect(files.some((file) => file.startsWith("docs/brainstorms/"))).toBe(false);
     expect(files.some((file) => file.startsWith("docs/ideation/"))).toBe(false);
     expect(files.some((file) => file.startsWith("docs/prds/"))).toBe(false);
     expect(files).not.toContain("docs/okfy-mcp-prd.md");
+  });
+
+  it("ships an official OKFy agent skill", async () => {
+    const [skill, openaiYaml] = await Promise.all([
+      fs.readFile("skills/okfy/SKILL.md", "utf8"),
+      fs.readFile("skills/okfy/agents/openai.yaml", "utf8")
+    ]);
+
+    expect(skill).toMatch(/^---\nname: okfy\ndescription: Use when /);
+    expect(skill).toContain("# OKFy");
+    expect(skill).toContain("npx -y okfy-ai init <name> <url> --client codex");
+    expect(skill).toContain(
+      'npx -y okfy-ai import ./docs --out ./docs-okf --source-name "Project docs"'
+    );
+    expect(skill).not.toContain(
+      'npx -y okfy-ai import ./docs --out ./docs-okf --source-name "Project docs" --force'
+    );
+    expect(skill).toContain("Only add `--force` after the user explicitly approves overwriting");
+    expect(skill).toContain("npx -y okfy-ai activate <name-or-bundle>");
+    expect(skill).toContain("npx -y okfy-ai doctor <name>");
+    expect(skill).toContain("npx -y okfy-ai map <name-or-bundle>");
+    expect(skill).toContain("npx -y okfy-ai serve <name-or-bundle> --mcp --auto-refresh");
+    expect(skill).toContain("bundle_summary");
+    expect(skill).toContain("search_concepts");
+    expect(skill).toContain("read_concept");
+    expect(skill).toContain("get_neighbors");
+    expect(skill).toContain("Use `source` filters");
+    expect(skill).toContain("MCP tools are read-only");
+    expect(skill).not.toContain("npx okfy ");
+    expect(openaiYaml).toContain('display_name: "OKFy"');
+    expect(openaiYaml).toContain("short_description:");
+    expect(openaiYaml).toContain("default_prompt:");
+    expect(openaiYaml).toContain("okfy");
+    expect(openaiYaml).toContain("MCP");
   });
 
   it("imports only declared package API from a clean npm install", async () => {
@@ -419,6 +457,8 @@ describe("public surface", () => {
     expect(npmReadme).toContain("okfy doctor <name> [more-names...]");
     expect(npmReadme).toContain("claude mcp add --transport stdio stripe-okf");
     expect(npmReadme).toContain("[mcp_servers.stripe_okf]");
+    expect(npmReadme).toContain("skills/okfy/SKILL.md");
+    expect(npmReadme).toContain("official OKFy agent skill");
     expect(npmReadme).not.toContain("assets/logo.svg");
     expect(mcpDocs).toContain("The default setup uses `npx -y okfy-ai`");
     expect(mcpDocs).toContain(
