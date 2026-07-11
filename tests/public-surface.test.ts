@@ -3,21 +3,30 @@ import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 const execFileAsync = promisify(execFile);
 
 describe("public surface", () => {
-  it("README points at public product assets and current demo output", async () => {
+  let demoOutput: string;
+  let versionOutput: string;
+  let serveError: string;
+  let transportError: string;
+  let maxCharsError: string;
+  let readme: string;
+  let parsedPackage: { dependencies?: Record<string, string>; version?: string };
+  let parsedManifest: Record<string, string>;
+
+  beforeAll(async () => {
     const cli = path.resolve("dist/cli.js");
     await fs.access(cli);
     const [
-      { stdout: demoOutput },
-      { stdout: versionOutput },
-      { stderr: serveError },
-      { stderr: transportError },
-      { stderr: maxCharsError },
-      readme,
+      demoResult,
+      versionResult,
+      serveResult,
+      transportResult,
+      maxCharsResult,
+      readmeContents,
       packageJson,
       manifest
     ] = await Promise.all([
@@ -50,12 +59,20 @@ describe("public surface", () => {
       fs.readFile("package.json", "utf8"),
       fs.readFile(".release-please-manifest.json", "utf8")
     ]);
-    const parsedPackage = JSON.parse(packageJson) as {
+    demoOutput = demoResult.stdout;
+    versionOutput = versionResult.stdout;
+    serveError = serveResult.stderr;
+    transportError = transportResult.stderr;
+    maxCharsError = maxCharsResult.stderr;
+    readme = readmeContents;
+    parsedPackage = JSON.parse(packageJson) as {
       dependencies?: Record<string, string>;
       version?: string;
     };
-    const parsedManifest = JSON.parse(manifest) as Record<string, string>;
+    parsedManifest = JSON.parse(manifest) as Record<string, string>;
+  });
 
+  it("keeps CLI demo and validation errors on the public contract", () => {
     for (const expected of [
       "Offline bundle: examples/bundles/okfy-docs",
       "OKF bundle valid",
@@ -65,16 +82,21 @@ describe("public surface", () => {
     ]) {
       expect(demoOutput).toContain(expected);
     }
-    expect(parsedPackage.version).not.toBe("0.3.0");
-    expect(parsedPackage.dependencies).not.toHaveProperty("gray-matter");
-    expect(parsedPackage.dependencies?.["js-yaml"]).toMatch(/^\^4\./);
     expect(versionOutput.trim()).toBe(parsedPackage.version);
-    expect(parsedManifest["."]).toBe(parsedPackage.version);
     expect(serveError).toContain("Only MCP server mode is supported.");
     expect(transportError).toContain("Only stdio transport is supported.");
     expect(maxCharsError).toContain("Expected max-result-chars to be an integer >= 1");
     expect(`${serveError}\n${transportError}\n${maxCharsError}`).not.toContain("v0.1");
+  });
 
+  it("keeps package and release versions aligned", () => {
+    expect(parsedPackage.version).not.toBe("0.3.0");
+    expect(parsedPackage.dependencies).not.toHaveProperty("gray-matter");
+    expect(parsedPackage.dependencies?.["js-yaml"]).toMatch(/^\^4\./);
+    expect(parsedManifest["."]).toBe(parsedPackage.version);
+  });
+
+  it("README points at public product assets and documents current workflows", () => {
     expect(readme).toContain("![okfy terminal demo](assets/demo.gif)");
     expect(readme).toContain(
       '<source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.png">'
@@ -170,13 +192,20 @@ describe("public surface", () => {
   });
 
   it("keeps npm package contents public and self-contained", async () => {
-    const { stdout } = await execFileAsync("npm", ["pack", "--dry-run", "--json"]);
+    const { stdout } = await execFileAsync("npm", [
+      "pack",
+      "--ignore-scripts",
+      "--dry-run",
+      "--json"
+    ]);
     const pack = JSON.parse(stdout) as Array<{ files: Array<{ path: string }> }>;
     const files = pack[0]?.files.map((file) => file.path).sort() ?? [];
 
     expect(files).toContain("README.md");
     expect(files).toContain("dist/setup-artifacts.js");
     expect(files).toContain("dist/setup-artifacts.d.ts");
+    expect(files).toContain("dist/public/mcp.js");
+    expect(files).toContain("dist/public/mcp.d.ts");
     expect(files).toContain("assets/logo-dark.png");
     expect(files).toContain("assets/logo-light.png");
     expect(files).not.toContain("assets/logo.png");
@@ -233,6 +262,7 @@ describe("public surface", () => {
     try {
       const { stdout } = await execFileAsync("npm", [
         "pack",
+        "--ignore-scripts",
         "--json",
         "--pack-destination",
         tempRoot
@@ -250,46 +280,65 @@ describe("public surface", () => {
       );
 
       const script = String.raw`
-        const requiredRootKeys = [
+        const expectedRootKeys = [
           "BundleSearch",
           "MCP_TOOL_NAMES",
           "WorkspaceError",
           "WorkspaceSearch",
+          "assertSafeForceOutDir",
           "assertUniqueWorkspaceRecordNames",
           "buildActivationPacket",
           "buildBundleInspectorReport",
+          "buildGraph",
           "buildWorkspaceInspectorReport",
           "bundleSourceName",
+          "crawlWebsite",
           "createMcpServer",
           "createWorkspaceMcpServer",
-          "crawlWebsite",
+          "descriptionFromMarkdown",
+          "evaluateFreshness",
+          "extractHeadings",
+          "extractInternalLinks",
+          "extractMarkdownLinks",
+          "hashBundleContents",
           "importLocal",
+          "inferTags",
+          "inferType",
           "inspectBundle",
+          "isRegisteredWorkspaceRecord",
+          "listSources",
           "localBundleRecord",
+          "normalizeDocument",
           "okfyUserAgent",
           "packageMetadata",
           "packageVersion",
+          "parseDurationSeconds",
+          "protectedActivationInputPaths",
           "readBundle",
           "readConceptFile",
+          "readRefreshState",
+          "readSourceManifest",
+          "readSourceRecord",
+          "readWorkspaceProfile",
+          "refreshSource",
+          "removeSource",
           "renderActivationSetupMarkdown",
+          "resolveBundleDir",
+          "resolveOkfyHome",
+          "resolveSourceDir",
+          "resolveWorkspaceSources",
+          "runtimePackageRoot",
           "serveMcpStdio",
           "serveWorkspaceMcpStdio",
           "validateBundle",
+          "validateSourceName",
           "withActivationMetadata",
+          "workspaceProfilePath",
           "writeActivationPacketFiles",
-          "writeOkfBundle"
-        ].sort();
-        const legacyRootKeys = [
-          "evaluateFreshness",
-          "hashBundleContents",
-          "listSources",
-          "parseDurationSeconds",
-          "readRefreshState",
-          "readSourceManifest",
-          "refreshSource",
-          "resolveOkfyHome",
+          "writeOkfBundle",
           "writeRefreshState",
-          "writeSourceManifest"
+          "writeSourceManifest",
+          "writeWorkspaceProfile"
         ].sort();
         const expectedSetupKeys = [
           "codexMcpServerName",
@@ -302,18 +351,25 @@ describe("public surface", () => {
           "serveCommand",
           "serveCommandArgs"
         ].sort();
+        const expectedMcpKeys = [
+          "MCP_TOOL_NAMES",
+          "createMcpServer",
+          "createWorkspaceMcpServer",
+          "serveMcpStdio",
+          "serveWorkspaceMcpStdio"
+        ].sort();
         const root = await import("okfy-ai");
+        const mcp = await import("okfy-ai/mcp");
         const setup = await import("okfy-ai/setup");
         const actualRootKeys = Object.keys(root).sort();
-        for (const key of requiredRootKeys) {
-          if (!(key in root)) throw new Error("Missing root export: " + key);
-        }
-        for (const key of legacyRootKeys) {
-          if (typeof root[key] !== "function") {
-            throw new Error("Missing legacy root export: " + key);
-          }
+        if (JSON.stringify(actualRootKeys) !== JSON.stringify(expectedRootKeys)) {
+          throw new Error("Unexpected root exports: " + actualRootKeys.join(", "));
         }
         const actualSetupKeys = Object.keys(setup).sort();
+        const actualMcpKeys = Object.keys(mcp).sort();
+        if (JSON.stringify(actualMcpKeys) !== JSON.stringify(expectedMcpKeys)) {
+          throw new Error("Unexpected MCP exports: " + actualMcpKeys.join(", "));
+        }
         if (JSON.stringify(actualSetupKeys) !== JSON.stringify(expectedSetupKeys)) {
           throw new Error("Unexpected setup exports: " + actualSetupKeys.join(", "));
         }
@@ -342,6 +398,8 @@ describe("public surface", () => {
         }
         await expectBlocked("okfy-ai/src/source-store.js");
         await expectBlocked("okfy-ai/dist/index.js");
+        await expectBlocked("okfy-ai/bundles");
+        await expectBlocked("okfy-ai/sources");
         console.log("ok");
       `;
       await expect(
@@ -382,6 +440,10 @@ describe("public surface", () => {
       types: "./dist/setup-artifacts.d.ts",
       import: "./dist/setup-artifacts.js"
     });
+    expect(parsed.exports?.["./mcp"]).toEqual({
+      types: "./dist/public/mcp.d.ts",
+      import: "./dist/public/mcp.js"
+    });
     await expect(
       execFileAsync(process.execPath, [
         "--input-type=module",
@@ -395,6 +457,7 @@ describe("public surface", () => {
     expect(readme).toContain("You do not need global install for MCP configs.");
     expect(readme).toContain("MCP clients start it as a subprocess");
     expect(readme).toContain("Programmatic imports remain compatible");
+    expect(readme).toContain('from "okfy-ai/mcp"');
     expect(readme).toContain("New setup-only code can import");
     expect(readme).toContain("Preflight DNS-resolved private targets");
     expect(readme).toContain("The MCP server exposes read-only tools.");
@@ -410,6 +473,7 @@ describe("public surface", () => {
       "`okfy-ai` is the npm package name. `okfy` is the installed CLI command."
     );
     expect(npmReadme).toContain("Programmatic imports remain compatible");
+    expect(npmReadme).toContain('from "okfy-ai/mcp"');
     expect(npmReadme).toContain("New setup-only code can import");
     expect(npmReadme).toContain("Preflight DNS-resolved private targets");
     expect(npmReadme).toContain(

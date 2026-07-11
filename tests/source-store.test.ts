@@ -262,6 +262,71 @@ describe("source manifest and state storage", () => {
     );
   });
 
+  it("strips unknown outer fields while preserving refresh error metadata", async () => {
+    const okfyHome = await tempHome();
+    const sourceDir = path.join(okfyHome, "sources", "stripe");
+    await fs.mkdir(sourceDir, { recursive: true });
+    await fs.writeFile(
+      path.join(sourceDir, "source.json"),
+      JSON.stringify({ ...manifest(), ignoredManifestField: "remove me" }),
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(sourceDir, "state.json"),
+      JSON.stringify({
+        ...state(),
+        ignoredStateField: "remove me",
+        lastError: { message: "network failed", retryable: true, attempt: 3 }
+      }),
+      "utf8"
+    );
+
+    await expect(readSourceManifest("stripe", { okfyHome })).resolves.toEqual(manifest());
+    await expect(readRefreshState("stripe", { okfyHome })).resolves.toEqual({
+      ...state(),
+      lastError: { message: "network failed", retryable: true, attempt: 3 }
+    });
+  });
+
+  it("retains surrounding whitespace but rejects blank strings and non-finite numbers", async () => {
+    const okfyHome = await tempHome();
+    const sourceDir = path.join(okfyHome, "sources", "stripe");
+    await fs.mkdir(sourceDir, { recursive: true });
+    await fs.writeFile(
+      path.join(sourceDir, "source.json"),
+      JSON.stringify({ ...manifest(), okfyVersion: " 0.1.4 " }),
+      "utf8"
+    );
+    await expect(readSourceManifest("stripe", { okfyHome })).resolves.toMatchObject({
+      okfyVersion: " 0.1.4 "
+    });
+
+    await fs.writeFile(
+      path.join(sourceDir, "source.json"),
+      JSON.stringify({ ...manifest(), okfyVersion: "   " }),
+      "utf8"
+    );
+    await expect(readSourceManifest("stripe", { okfyHome })).rejects.toThrow(
+      'Invalid source manifest for "stripe": okfyVersion must be non-empty string.'
+    );
+
+    await writeRefreshState(
+      "stripe",
+      state({
+        bundle: {
+          conceptCount: Number.POSITIVE_INFINITY,
+          warningCount: 0,
+          valid: true,
+          contentHash: "sha256:test"
+        }
+      }),
+      { okfyHome }
+    );
+    await expect(readRefreshState("stripe", { okfyHome })).rejects.toThrow(
+      'Invalid refresh state for "stripe": bundle.conceptCount must be number.'
+    );
+  });
+
   it("lists registered sources sorted by source name", async () => {
     const okfyHome = await tempHome();
 
