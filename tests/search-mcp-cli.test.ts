@@ -5,6 +5,11 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { createMcpServer, createWorkspaceMcpServer } from "../src/mcp.js";
+import {
+  createSourceRuntime,
+  getSourceFreshness,
+  prepareSourceRuntime
+} from "../src/mcp-source-runtime.js";
 import { BundleSearch } from "../src/search.js";
 import type { SourceRecord } from "../src/source-store.js";
 import { withBuiltCliMcpSession } from "./support/mcp-session.js";
@@ -1244,14 +1249,107 @@ describe("MCP server", () => {
   });
 });
 
+describe("MCP source runtime", () => {
+  it("preserves the original load error for an unregistered missing bundle", async () => {
+    const missingBundle = path.join(os.tmpdir(), `okfy-missing-bundle-${Date.now()}`);
+
+    await expect(createMcpServer({ bundleDir: missingBundle })).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+  });
+
+  it("coalesces concurrent blocking refreshes into one in-flight operation", async () => {
+    let release!: () => void;
+    const canFinish = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let refreshCount = 0;
+    const runtime = await createSourceRuntime({
+      bundleDir,
+      refresh: {
+        getFreshness: () => ({ freshnessStatus: "stale" }),
+        refreshIfNeeded: async () => {
+          refreshCount += 1;
+          await canFinish;
+        }
+      }
+    });
+
+    const first = prepareSourceRuntime(runtime, "blocking", true);
+    const second = prepareSourceRuntime(runtime, "blocking", true);
+    await waitForValue(
+      async () => refreshCount,
+      (count) => count === 1
+    );
+    expect(refreshCount).toBe(1);
+    release();
+    await Promise.all([first, second]);
+  });
+
+  it("retries after a refresh hook throws synchronously", async () => {
+    let refreshCount = 0;
+    const runtime = await createSourceRuntime({
+      bundleDir,
+      refresh: {
+        getFreshness: () => ({ freshnessStatus: "stale" }),
+        refreshIfNeeded: () => {
+          refreshCount += 1;
+          throw new Error("refresh failed synchronously");
+        }
+      }
+    });
+
+    await prepareSourceRuntime(runtime, "blocking", true);
+    await prepareSourceRuntime(runtime, "blocking", true);
+
+    expect(refreshCount).toBe(2);
+    expect(runtime.inFlightRefresh).toBeUndefined();
+    expect(runtime.lastRefreshError).toMatchObject({
+      message: "refresh failed synchronously"
+    });
+  });
+
+  it("does not call freshness hooks when a registered source has a load error", async () => {
+    let freshnessCalls = 0;
+    const runtime = await createSourceRuntime({
+      bundleDir,
+      loadError: { code: "ENOENT", message: "source.json is missing" },
+      refresh: {
+        getFreshness: () => {
+          freshnessCalls += 1;
+          return { freshnessStatus: "fresh" };
+        }
+      }
+    });
+
+    expect(await getSourceFreshness(runtime)).toMatchObject({ freshnessStatus: "failed" });
+    expect(freshnessCalls).toBe(0);
+  });
+
+  it("keeps refresh disabled by default for an unregistered bundle", async () => {
+    let refreshCount = 0;
+    const server = await createMcpServer({
+      bundleDir,
+      refresh: {
+        getFreshness: () => ({ freshnessStatus: "stale" }),
+        refreshIfNeeded: () => {
+          refreshCount += 1;
+        }
+      }
+    });
+    const callTool = handler(server, "tools/call");
+    await callTool({
+      method: "tools/call",
+      params: { name: "search_concepts", arguments: { query: "MCP" } }
+    });
+    expect(refreshCount).toBe(0);
+  });
+});
+
 describe("CLI smoke", () => {
-  it("runs dist validate when build output is present", async () => {
+  it("runs dist validate from the current build output", async () => {
     const cli = path.resolve("dist/cli.js");
-    try {
-      await fs.access(cli);
-    } catch {
-      return;
-    }
+    await fs.access(cli);
 
     const { stdout, stderr } = await execFileAsync(process.execPath, [
       cli,

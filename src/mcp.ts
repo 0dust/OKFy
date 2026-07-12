@@ -23,11 +23,11 @@ import {
 export { MCP_TOOL_NAMES } from "./mcp-contract.js";
 import { argumentError, json, toolError } from "./mcp-results.js";
 import {
+  createSourceRuntime,
   errorDetails,
+  getSourceFreshness,
   normalizeFreshness,
-  shouldRefresh,
-  type FreshnessState,
-  type RefreshErrorDetails,
+  prepareSourceRuntime,
   type RefreshHooks,
   type RefreshMode,
   type SourceMetadata,
@@ -116,20 +116,8 @@ function collectNeighbors(
 }
 
 export async function createMcpServer(options: ServeOptions): Promise<Server> {
-  let activeBundleDir = options.bundleDir;
-  let search: BundleSearch | undefined = options.search;
-  let observedFreshness: FreshnessState | undefined;
-  let lastRefreshError: RefreshErrorDetails | null = null;
-  let inFlightRefresh: Promise<void> | undefined;
-
-  if (!search) {
-    try {
-      search = await BundleSearch.fromBundle(activeBundleDir);
-    } catch (error) {
-      if (!options.source) throw error;
-      lastRefreshError = errorDetails(error);
-    }
-  }
+  const runtime = await createSourceRuntime(options);
+  if (!runtime.search && !options.source) throw runtime.initialLoadError;
 
   const server = new Server(
     { name: options.name ?? "okfy", version: packageVersion() },
@@ -139,40 +127,27 @@ export async function createMcpServer(options: ServeOptions): Promise<Server> {
   const refreshMode = (): RefreshMode =>
     options.refresh?.mode ?? (options.source ? "stale-while-refresh" : "off");
 
-  async function getFreshness(): Promise<FreshnessState> {
-    if (options.refresh?.getFreshness) {
-      observedFreshness = await options.refresh.getFreshness();
-      return observedFreshness;
-    }
-    observedFreshness ??= {
-      freshnessStatus: search ? "fresh" : "missing",
-      refreshInProgress: false,
-      lastRefreshError: null
-    };
-    return observedFreshness;
-  }
-
   function sourceSummaryFields(): Record<string, unknown> {
     if (!options.source) return {};
-    const normalized = normalizeFreshness(observedFreshness);
-    const lastError = lastRefreshError ?? normalized.lastRefreshError;
+    const normalized = normalizeFreshness(runtime.observedFreshness);
+    const lastError = runtime.lastRefreshError ?? normalized.lastRefreshError;
     const status = lastError
       ? "failed"
-      : (normalized.freshnessStatus ?? (search ? "fresh" : "missing"));
+      : (normalized.freshnessStatus ?? (runtime.search ? "fresh" : "missing"));
     return {
       sourceName: options.source.name,
       sourceKind: options.source.kind,
       seedUrl: options.source.seedUrl,
       freshnessStatus: status,
       lastSuccessfulRefreshAt: normalized.lastSuccessfulRefreshAt,
-      refreshInProgress: Boolean(inFlightRefresh) || normalized.refreshInProgress,
+      refreshInProgress: Boolean(runtime.inFlightRefresh) || normalized.refreshInProgress,
       lastRefreshError: lastError,
       nextRefreshAllowedAt: normalized.nextRefreshAllowedAt
     };
   }
 
   function bundleUnavailable() {
-    const details = lastRefreshError ?? errorDetails("No OKF bundle is available.");
+    const details = runtime.lastRefreshError ?? errorDetails("No OKF bundle is available.");
     return toolError(
       {
         code: "bundle_unavailable",
@@ -185,46 +160,11 @@ export async function createMcpServer(options: ServeOptions): Promise<Server> {
     );
   }
 
-  function startRefresh(
-    mode: Exclude<RefreshMode, "off">,
-    freshness: FreshnessState
-  ): Promise<void> | undefined {
-    if (!options.refresh?.refreshIfNeeded) return undefined;
-    if (inFlightRefresh) return inFlightRefresh;
-    inFlightRefresh = (async () => {
-      try {
-        const result = await options.refresh?.refreshIfNeeded?.({
-          mode,
-          bundleDir: activeBundleDir,
-          source: options.source,
-          freshness
-        });
-        if (result?.freshness) observedFreshness = result.freshness;
-        const nextBundleDir = result?.bundleDir ?? activeBundleDir;
-        const nextSearch = await BundleSearch.fromBundle(nextBundleDir);
-        activeBundleDir = nextBundleDir;
-        search = nextSearch;
-        lastRefreshError = null;
-      } catch (error) {
-        lastRefreshError = errorDetails(error);
-      } finally {
-        inFlightRefresh = undefined;
-      }
-    })();
-    return inFlightRefresh;
-  }
-
   async function prepareBundleForTool(toolName: string): Promise<void> {
     const mode = refreshMode();
     if (mode === "off" || !refreshableTool(toolName)) return;
 
-    const freshness = await getFreshness();
-    const normalized = normalizeFreshness(freshness);
-    if (!shouldRefresh(normalized.freshnessStatus, Boolean(search))) return;
-
-    const refresh = startRefresh(mode, freshness);
-    if (!refresh) return;
-    if (mode === "blocking" || !search) await refresh;
+    await prepareSourceRuntime(runtime, mode, mode === "blocking" || !runtime.search);
   }
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -234,8 +174,10 @@ export async function createMcpServer(options: ServeOptions): Promise<Server> {
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const args = request.params.arguments ?? {};
     try {
-      if (request.params.name === BUNDLE_SUMMARY_TOOL && options.source) await getFreshness();
+      if (request.params.name === BUNDLE_SUMMARY_TOOL && options.source)
+        await getSourceFreshness(runtime);
       await prepareBundleForTool(request.params.name);
+      const search = runtime.search;
       if (request.params.name === SEARCH_CONCEPTS_TOOL) {
         if (!search) return bundleUnavailable();
         const parsed = searchSchema.parse(args);
@@ -292,19 +234,19 @@ export async function createMcpServer(options: ServeOptions): Promise<Server> {
       }
       if (request.params.name === LIST_TYPES_TOOL) {
         if (!search) return bundleUnavailable();
-        const stats = await inspectBundle(activeBundleDir);
+        const stats = await inspectBundle(runtime.activeBundleDir);
         return json(stats.typeDistribution, maxResultChars);
       }
       if (request.params.name === LIST_TAGS_TOOL) {
         if (!search) return bundleUnavailable();
-        const stats = await inspectBundle(activeBundleDir);
+        const stats = await inspectBundle(runtime.activeBundleDir);
         return json(stats.tagDistribution, maxResultChars);
       }
       if (request.params.name === BUNDLE_SUMMARY_TOOL) {
         if (!search) return bundleUnavailable();
         const [stats, validation] = await Promise.all([
-          inspectBundle(activeBundleDir),
-          validateBundle(activeBundleDir)
+          inspectBundle(runtime.activeBundleDir),
+          validateBundle(runtime.activeBundleDir)
         ]);
         return json(
           {
@@ -337,20 +279,21 @@ export async function createWorkspaceMcpServer(options: WorkspaceServeOptions): 
   const maxResultChars = options.maxResultChars ?? 12000;
   const runtimes: WorkspaceSourceRuntime[] = await Promise.all(
     options.sources.map(async (source) => {
-      const runtime: WorkspaceSourceRuntime = {
-        record: source.record,
-        activeBundleDir: source.record.bundleDir,
+      const lifecycle = await createSourceRuntime({
+        bundleDir: source.record.bundleDir,
         search: source.search,
-        lastRefreshError: source.record.loadError ? errorDetails(source.record.loadError) : null,
-        refresh: source.refresh
-      };
-      if (!runtime.search) {
-        try {
-          runtime.search = await BundleSearch.fromBundle(runtime.activeBundleDir);
-        } catch (error) {
-          runtime.lastRefreshError ??= errorDetails(error);
+        refresh: source.refresh,
+        loadError: source.record.loadError,
+        source: {
+          name: source.record.name,
+          kind: source.record.manifest.kind,
+          seedUrl: source.record.manifest.source.seedUrl
         }
-      }
+      });
+      const runtime: WorkspaceSourceRuntime = {
+        ...lifecycle,
+        record: source.record
+      };
       return runtime;
     })
   );
@@ -394,28 +337,6 @@ export async function createWorkspaceMcpServer(options: WorkspaceServeOptions): 
     );
   }
 
-  async function getRuntimeFreshness(runtime: WorkspaceSourceRuntime): Promise<FreshnessState> {
-    if (runtime.record.loadError) {
-      const freshness = runtime.observedFreshness ?? {
-        freshnessStatus: "failed",
-        refreshInProgress: false,
-        lastRefreshError: errorDetails(runtime.record.loadError)
-      };
-      runtime.observedFreshness = freshness;
-      return freshness;
-    }
-    if (runtime.refresh?.getFreshness) {
-      runtime.observedFreshness = await runtime.refresh.getFreshness();
-      return runtime.observedFreshness;
-    }
-    runtime.observedFreshness ??= {
-      freshnessStatus: runtime.search ? "fresh" : "missing",
-      refreshInProgress: false,
-      lastRefreshError: null
-    };
-    return runtime.observedFreshness;
-  }
-
   function runtimeRefreshMode(runtime: WorkspaceSourceRuntime): RefreshMode {
     return runtime.refresh?.mode ?? "stale-while-refresh";
   }
@@ -441,39 +362,6 @@ export async function createWorkspaceMcpServer(options: WorkspaceServeOptions): 
     };
   }
 
-  function startRuntimeRefresh(
-    runtime: WorkspaceSourceRuntime,
-    mode: Exclude<RefreshMode, "off">,
-    freshness: FreshnessState
-  ): Promise<void> | undefined {
-    if (!runtime.refresh?.refreshIfNeeded) return undefined;
-    if (runtime.inFlightRefresh) return runtime.inFlightRefresh;
-    runtime.inFlightRefresh = (async () => {
-      try {
-        const result = await runtime.refresh?.refreshIfNeeded?.({
-          mode,
-          bundleDir: runtime.activeBundleDir,
-          source: {
-            name: runtime.record.name,
-            kind: runtime.record.manifest.kind,
-            seedUrl: runtime.record.manifest.source.seedUrl
-          },
-          freshness
-        });
-        if (result?.freshness) runtime.observedFreshness = result.freshness;
-        const nextBundleDir = result?.bundleDir ?? runtime.activeBundleDir;
-        runtime.search = await BundleSearch.fromBundle(nextBundleDir);
-        runtime.activeBundleDir = nextBundleDir;
-        runtime.lastRefreshError = null;
-      } catch (error) {
-        runtime.lastRefreshError = errorDetails(error);
-      } finally {
-        runtime.inFlightRefresh = undefined;
-      }
-    })();
-    return runtime.inFlightRefresh;
-  }
-
   async function prepareRuntime(
     runtime: WorkspaceSourceRuntime,
     toolName: string,
@@ -484,16 +372,10 @@ export async function createWorkspaceMcpServer(options: WorkspaceServeOptions): 
       const mode = runtimeRefreshMode(runtime);
       if (mode === "off" || !refreshableTool(toolName)) return;
 
-      const freshness = await getRuntimeFreshness(runtime);
-      const normalized = normalizeFreshness(freshness);
-      if (!shouldRefresh(normalized.freshnessStatus, Boolean(runtime.search))) return;
-
-      const refresh = startRuntimeRefresh(runtime, mode, freshness);
-      if (!refresh) return;
-      const shouldAwait = sourceFiltered
+      const awaitRefresh = sourceFiltered
         ? mode === "blocking" || !runtime.search
         : !workspaceHadUsableSource && !runtime.search;
-      if (shouldAwait) await refresh;
+      await prepareSourceRuntime(runtime, mode, awaitRefresh);
     } catch (error) {
       runtime.lastRefreshError = errorDetails(error);
     }
@@ -542,7 +424,7 @@ export async function createWorkspaceMcpServer(options: WorkspaceServeOptions): 
 
   async function sourceSummary(runtime: WorkspaceSourceRuntime): Promise<Record<string, unknown>> {
     try {
-      await getRuntimeFreshness(runtime);
+      await getSourceFreshness(runtime);
     } catch (error) {
       runtime.lastRefreshError = errorDetails(error);
     }

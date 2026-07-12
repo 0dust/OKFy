@@ -2,10 +2,16 @@ import fs from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Dirent } from "node:fs";
+import { resolveOkfyHome as resolveConfiguredOkfyHome, type OkfyHomeOptions } from "./okfy-home.js";
 import {
-  resolveOkfyHome as resolveConfiguredOkfyHome,
-  type OkfyHomeOptions
-} from "./okfy-home.js";
+  parseRefreshState,
+  parseSourceManifest,
+  persistedFieldOrder,
+  sourceManifestFallbacks,
+  type RefreshErrorStateSchema,
+  type RefreshStateSchema,
+  type SourceManifestSchema
+} from "./source-store-schema.js";
 
 export type SourceKind = "website";
 export type RefreshMode = "off" | "stale-while-refresh" | "blocking";
@@ -13,62 +19,14 @@ export type RefreshStatus = "missing" | "fresh" | "stale" | "refreshing" | "fail
 
 export type SourceStoreOptions = OkfyHomeOptions;
 
-export interface SourceManifest {
-  schemaVersion: 1;
-  okfyVersion: string;
-  name: string;
-  kind: SourceKind;
-  createdAt: string;
-  updatedAt: string;
-  source: {
-    seedUrl: string;
-  };
-  crawl: {
-    maxPages: number;
-    maxDepth: number;
-    include: string[];
-    exclude: string[];
-    sameOrigin: boolean;
-    respectRobots: boolean;
-    concurrency: number;
-    allowPrivateNetwork: boolean;
-  };
-  refresh: {
-    mode: RefreshMode;
-    maxAgeSeconds: number;
-    minIntervalSeconds: number;
-  };
-  bundle: {
-    dir: string;
-  };
-}
-
-export interface RefreshErrorState {
-  [key: string]: unknown;
-  message: string;
-  code?: string;
-  sourceName?: string;
-  seedUrl?: string;
-  occurredAt?: string;
-}
-
-export interface RefreshState {
-  schemaVersion: 1;
-  status: RefreshStatus;
-  lastCheckedAt: string | null;
-  lastRefreshStartedAt: string | null;
-  lastRefreshCompletedAt: string | null;
-  lastSuccessfulRefreshAt: string | null;
-  nextRefreshAllowedAt: string | null;
-  refreshInProgress: boolean;
-  lastError: RefreshErrorState | null;
-  bundle: {
-    conceptCount: number;
-    warningCount: number;
-    valid: boolean;
-    contentHash: string;
-  } | null;
-}
+// Keep interfaces at the public boundary so existing consumers retain declaration-merging
+// compatibility while the schema-derived shapes remain authoritative internally.
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface SourceManifest extends SourceManifestSchema {}
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface RefreshErrorState extends RefreshErrorStateSchema {}
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface RefreshState extends RefreshStateSchema {}
 
 export interface SourceRecord {
   name: string;
@@ -86,43 +44,6 @@ export interface SourceLoadError {
 }
 
 const SOURCE_NAME_PATTERN = /^[a-z0-9._-]+$/;
-
-const MANIFEST_KEYS = [
-  "schemaVersion",
-  "okfyVersion",
-  "name",
-  "kind",
-  "createdAt",
-  "updatedAt",
-  "source",
-  "crawl",
-  "refresh",
-  "bundle"
-];
-const CRAWL_KEYS = [
-  "maxPages",
-  "maxDepth",
-  "include",
-  "exclude",
-  "sameOrigin",
-  "respectRobots",
-  "concurrency",
-  "allowPrivateNetwork"
-];
-const REFRESH_KEYS = ["mode", "maxAgeSeconds", "minIntervalSeconds"];
-const STATE_KEYS = [
-  "schemaVersion",
-  "status",
-  "lastCheckedAt",
-  "lastRefreshStartedAt",
-  "lastRefreshCompletedAt",
-  "lastSuccessfulRefreshAt",
-  "nextRefreshAllowedAt",
-  "refreshInProgress",
-  "lastError",
-  "bundle"
-];
-const STATE_BUNDLE_KEYS = ["conceptCount", "warningCount", "valid", "contentHash"];
 
 export function resolveOkfyHome(options: SourceStoreOptions = {}): string {
   return resolveConfiguredOkfyHome(options);
@@ -204,7 +125,7 @@ export async function readRefreshState(
   options: SourceStoreOptions = {}
 ): Promise<RefreshState> {
   const sourceDir = resolveSourceDir(name, options);
-  return validateRefreshState(await readJson<unknown>(path.join(sourceDir, "state.json")), name);
+  return parseRefreshState(await readJson<unknown>(path.join(sourceDir, "state.json")), name);
 }
 
 export async function readSourceRecord(
@@ -295,35 +216,9 @@ function invalidSourceRecord(sourcesRoot: string, name: string, error: unknown):
 }
 
 function fallbackSourceManifest(name: string): SourceManifest {
-  const timestamp = "1970-01-01T00:00:00.000Z";
   return {
-    schemaVersion: 1,
-    okfyVersion: "unknown",
-    name,
-    kind: "website",
-    createdAt: timestamp,
-    updatedAt: timestamp,
-    source: {
-      seedUrl: ""
-    },
-    crawl: {
-      maxPages: 0,
-      maxDepth: 0,
-      include: [],
-      exclude: [],
-      sameOrigin: true,
-      respectRobots: true,
-      concurrency: 1,
-      allowPrivateNetwork: false
-    },
-    refresh: {
-      mode: "off",
-      maxAgeSeconds: 0,
-      minIntervalSeconds: 0
-    },
-    bundle: {
-      dir: "bundle"
-    }
+    ...sourceManifestFallbacks,
+    name
   };
 }
 
@@ -365,242 +260,9 @@ function errorDetails(error: unknown, sourceDirName?: string): SourceLoadError {
 }
 
 function validateSourceManifest(value: unknown, expectedName: string): SourceManifest {
-  if (!isPlainObject(value))
-    throw new Error(`Invalid source manifest for "${expectedName}": expected object.`);
-
-  const name = requiredString(value, "name", expectedName);
-  validateSourceName(name);
-  if (value.schemaVersion !== 1) {
-    throw new Error(`Invalid source manifest for "${expectedName}": schemaVersion must be 1.`);
-  }
-  if (value.kind !== "website") {
-    throw new Error(`Invalid source manifest for "${expectedName}": kind must be "website".`);
-  }
-
-  const source = requiredObject(value, "source", expectedName);
-  const crawl = requiredObject(value, "crawl", expectedName);
-  const refresh = requiredObject(value, "refresh", expectedName);
-  const bundle = requiredObject(value, "bundle", expectedName);
-  const mode = requiredString(refresh, "mode", expectedName, "refresh");
-  if (!["off", "stale-while-refresh", "blocking"].includes(mode)) {
-    throw new Error(`Invalid source manifest for "${expectedName}": refresh.mode is invalid.`);
-  }
-
-  return {
-    schemaVersion: 1,
-    okfyVersion: requiredString(value, "okfyVersion", expectedName),
-    name,
-    kind: "website",
-    createdAt: requiredString(value, "createdAt", expectedName),
-    updatedAt: requiredString(value, "updatedAt", expectedName),
-    source: {
-      seedUrl: requiredString(source, "seedUrl", expectedName, "source")
-    },
-    crawl: {
-      maxPages: requiredNumber(crawl, "maxPages", expectedName, "crawl"),
-      maxDepth: requiredNumber(crawl, "maxDepth", expectedName, "crawl"),
-      include: requiredStringArray(crawl, "include", expectedName, "crawl"),
-      exclude: requiredStringArray(crawl, "exclude", expectedName, "crawl"),
-      sameOrigin: requiredBoolean(crawl, "sameOrigin", expectedName, "crawl"),
-      respectRobots: requiredBoolean(crawl, "respectRobots", expectedName, "crawl"),
-      concurrency: requiredNumber(crawl, "concurrency", expectedName, "crawl"),
-      allowPrivateNetwork: requiredBoolean(crawl, "allowPrivateNetwork", expectedName, "crawl")
-    },
-    refresh: {
-      mode: mode as RefreshMode,
-      maxAgeSeconds: requiredNumber(refresh, "maxAgeSeconds", expectedName, "refresh"),
-      minIntervalSeconds: requiredNumber(refresh, "minIntervalSeconds", expectedName, "refresh")
-    },
-    bundle: {
-      dir: requiredString(bundle, "dir", expectedName, "bundle")
-    }
-  };
-}
-
-function validateRefreshState(value: unknown, sourceName: string): RefreshState {
-  if (!isPlainObject(value))
-    throw new Error(`Invalid refresh state for "${sourceName}": expected object.`);
-  if (value.schemaVersion !== 1) {
-    throw new Error(`Invalid refresh state for "${sourceName}": schemaVersion must be 1.`);
-  }
-  const status = stateString(value, "status", sourceName);
-  if (!["missing", "fresh", "stale", "refreshing", "failed"].includes(status)) {
-    throw new Error(`Invalid refresh state for "${sourceName}": status is invalid.`);
-  }
-  return {
-    schemaVersion: 1,
-    status: status as RefreshStatus,
-    lastCheckedAt: stateNullableString(value, "lastCheckedAt", sourceName),
-    lastRefreshStartedAt: stateNullableString(value, "lastRefreshStartedAt", sourceName),
-    lastRefreshCompletedAt: stateNullableString(value, "lastRefreshCompletedAt", sourceName),
-    lastSuccessfulRefreshAt: stateNullableString(value, "lastSuccessfulRefreshAt", sourceName),
-    nextRefreshAllowedAt: stateNullableString(value, "nextRefreshAllowedAt", sourceName),
-    refreshInProgress: stateBoolean(value, "refreshInProgress", sourceName),
-    lastError: validateRefreshError(value.lastError, sourceName),
-    bundle: validateRefreshBundle(value.bundle, sourceName)
-  };
-}
-
-function validateRefreshError(value: unknown, sourceName: string): RefreshErrorState | null {
-  if (value === null) return null;
-  if (!isPlainObject(value))
-    throw new Error(`Invalid refresh state for "${sourceName}": lastError must be object or null.`);
-  const details: RefreshErrorState = {
-    ...value,
-    message: stateString(value, "message", sourceName, "lastError")
-  };
-  for (const key of ["code", "sourceName", "seedUrl", "occurredAt"]) {
-    const found = value[key];
-    if (found !== undefined && typeof found !== "string") {
-      throw invalidStateField(sourceName, key, "string", "lastError");
-    }
-  }
-  return details;
-}
-
-function validateRefreshBundle(value: unknown, sourceName: string): RefreshState["bundle"] {
-  if (value === null) return null;
-  if (!isPlainObject(value))
-    throw new Error(`Invalid refresh state for "${sourceName}": bundle must be object or null.`);
-  return {
-    conceptCount: stateNumber(value, "conceptCount", sourceName, "bundle"),
-    warningCount: stateNumber(value, "warningCount", sourceName, "bundle"),
-    valid: stateBoolean(value, "valid", sourceName, "bundle"),
-    contentHash: stateString(value, "contentHash", sourceName, "bundle")
-  };
-}
-
-function requiredObject(
-  value: Record<string, unknown>,
-  key: string,
-  sourceName: string,
-  prefix?: string
-): Record<string, unknown> {
-  const found = value[key];
-  if (!isPlainObject(found)) throw invalidManifestField(sourceName, key, "object", prefix);
-  return found;
-}
-
-function requiredString(
-  value: Record<string, unknown>,
-  key: string,
-  sourceName: string,
-  prefix?: string
-): string {
-  const found = value[key];
-  if (typeof found !== "string" || found.trim() === "") {
-    throw invalidManifestField(sourceName, key, "non-empty string", prefix);
-  }
-  return found;
-}
-
-function requiredNumber(
-  value: Record<string, unknown>,
-  key: string,
-  sourceName: string,
-  prefix?: string
-): number {
-  const found = value[key];
-  if (typeof found !== "number" || !Number.isFinite(found)) {
-    throw invalidManifestField(sourceName, key, "number", prefix);
-  }
-  return found;
-}
-
-function requiredBoolean(
-  value: Record<string, unknown>,
-  key: string,
-  sourceName: string,
-  prefix?: string
-): boolean {
-  const found = value[key];
-  if (typeof found !== "boolean") throw invalidManifestField(sourceName, key, "boolean", prefix);
-  return found;
-}
-
-function requiredStringArray(
-  value: Record<string, unknown>,
-  key: string,
-  sourceName: string,
-  prefix?: string
-): string[] {
-  const found = value[key];
-  if (!Array.isArray(found) || !found.every((item) => typeof item === "string")) {
-    throw invalidManifestField(sourceName, key, "string array", prefix);
-  }
-  return found;
-}
-
-function invalidManifestField(
-  sourceName: string,
-  key: string,
-  expected: string,
-  prefix?: string
-): Error {
-  return new Error(
-    `Invalid source manifest for "${sourceName}": ${prefix ? `${prefix}.` : ""}${key} must be ${expected}.`
-  );
-}
-
-function stateString(
-  value: Record<string, unknown>,
-  key: string,
-  sourceName: string,
-  prefix?: string
-): string {
-  const found = value[key];
-  if (typeof found !== "string" || found.trim() === "") {
-    throw invalidStateField(sourceName, key, "non-empty string", prefix);
-  }
-  return found;
-}
-
-function stateNullableString(
-  value: Record<string, unknown>,
-  key: string,
-  sourceName: string
-): string | null {
-  const found = value[key];
-  if (found === null) return null;
-  if (typeof found !== "string" || found.trim() === "") {
-    throw invalidStateField(sourceName, key, "string or null");
-  }
-  return found;
-}
-
-function stateNumber(
-  value: Record<string, unknown>,
-  key: string,
-  sourceName: string,
-  prefix?: string
-): number {
-  const found = value[key];
-  if (typeof found !== "number" || !Number.isFinite(found)) {
-    throw invalidStateField(sourceName, key, "number", prefix);
-  }
-  return found;
-}
-
-function stateBoolean(
-  value: Record<string, unknown>,
-  key: string,
-  sourceName: string,
-  prefix?: string
-): boolean {
-  const found = value[key];
-  if (typeof found !== "boolean") throw invalidStateField(sourceName, key, "boolean", prefix);
-  return found;
-}
-
-function invalidStateField(
-  sourceName: string,
-  key: string,
-  expected: string,
-  prefix?: string
-): Error {
-  return new Error(
-    `Invalid refresh state for "${sourceName}": ${prefix ? `${prefix}.` : ""}${key} must be ${expected}.`
-  );
+  const manifest = parseSourceManifest(value, expectedName);
+  validateSourceName(manifest.name);
+  return manifest;
 }
 
 async function readRefreshStateIfExists(
@@ -648,21 +310,12 @@ function orderJson(value: unknown): unknown {
 
 function orderKeys(value: Record<string, unknown>): string[] {
   const keys = Object.keys(value);
-  if ("status" in value) return sortByPreferredOrder(keys, STATE_KEYS);
-  if ("okfyVersion" in value) return sortByPreferredOrder(keys, MANIFEST_KEYS);
-  if (hasKeys(value, CRAWL_KEYS)) return sortByPreferredOrder(keys, CRAWL_KEYS);
-  if (hasKeys(value, REFRESH_KEYS)) return sortByPreferredOrder(keys, REFRESH_KEYS);
-  if (hasKeys(value, STATE_BUNDLE_KEYS)) return sortByPreferredOrder(keys, STATE_BUNDLE_KEYS);
-  if ("seedUrl" in value) return sortByPreferredOrder(keys, ["seedUrl"]);
-  if ("dir" in value) return sortByPreferredOrder(keys, ["dir"]);
+  const preferredOrder = persistedFieldOrder(value);
+  if (preferredOrder) return sortByPreferredOrder(keys, preferredOrder);
   return keys.sort((first, second) => first.localeCompare(second));
 }
 
-function hasKeys(value: Record<string, unknown>, keys: string[]): boolean {
-  return keys.some((key) => key in value);
-}
-
-function sortByPreferredOrder(keys: string[], preferredOrder: string[]): string[] {
+function sortByPreferredOrder(keys: string[], preferredOrder: readonly string[]): string[] {
   const preferredIndexes = new Map(preferredOrder.map((key, index) => [key, index]));
   return keys.sort((first, second) => {
     const firstIndex = preferredIndexes.get(first);

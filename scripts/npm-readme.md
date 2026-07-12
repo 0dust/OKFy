@@ -208,7 +208,13 @@ okfy demo
 
 Requires Node.js 20+.
 
-Programmatic imports remain compatible with the existing `okfy-ai` root surface, including source-store and refresh helpers. New setup-only code can import the pure artifact helpers from `okfy-ai/setup`, such as `serveCommand`, `renderClientArtifacts`, and `expectedMcpTools`.
+Programmatic imports remain compatible with the existing `okfy-ai` root surface, including source-store and refresh helpers. For new MCP integrations, prefer the narrower `okfy-ai/mcp` entry point:
+
+```ts
+import { createMcpServer, type ServeOptions } from "okfy-ai/mcp";
+```
+
+New setup-only code can import the pure artifact helpers from `okfy-ai/setup`, such as `serveCommand`, `renderClientArtifacts`, and `expectedMcpTools`.
 
 After installing, this MCP config is equivalent:
 

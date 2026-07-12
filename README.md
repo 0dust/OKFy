@@ -14,7 +14,7 @@
   </p>
 
   <p>
-    <a href="https://www.npmjs.com/package/okfy-ai"><img alt="npm package okfy-ai 0.3.2" src="https://img.shields.io/badge/npm-okfy--ai%400.3.2-2f7d5b?logo=npm"></a>
+    <a href="https://www.npmjs.com/package/okfy-ai"><img alt="npm package okfy-ai 0.3.3" src="https://img.shields.io/badge/npm-okfy--ai%400.3.3-2f7d5b?logo=npm"></a>
     <a href="https://github.com/0dust/OKFy/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/0dust/OKFy/actions/workflows/ci.yml/badge.svg"></a>
     <a href="https://github.com/0dust/OKFy/blob/main/LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-3f3a36"></a>
     <img alt="Node 20 plus" src="https://img.shields.io/badge/node-20%2B-4b5563">
@@ -321,7 +321,13 @@ Package: [okfy-ai on npm](https://www.npmjs.com/package/okfy-ai)
 
 Requires Node.js 20+.
 
-Programmatic imports remain compatible with the existing `okfy-ai` root surface, including source-store and refresh helpers. New setup-only code can import the pure artifact helpers from `okfy-ai/setup`, such as `serveCommand`, `renderClientArtifacts`, and `expectedMcpTools`.
+Programmatic imports remain compatible with the existing `okfy-ai` root surface, including source-store and refresh helpers. For new MCP integrations, prefer the narrower `okfy-ai/mcp` entry point:
+
+```ts
+import { createMcpServer, type ServeOptions } from "okfy-ai/mcp";
+```
+
+New setup-only code can import the pure artifact helpers from `okfy-ai/setup`, such as `serveCommand`, `renderClientArtifacts`, and `expectedMcpTools`.
 
 After installing, this MCP config is equivalent:
 
