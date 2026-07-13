@@ -115,16 +115,14 @@ describe("public surface", () => {
     expect(readme).toContain("node-20%2B");
     expect(readme).not.toContain("Node.js >=20");
     expect(readme).toContain("[docs/mcp-clients.md](docs/mcp-clients.md)");
-    expect(readme.indexOf("## Use With Agents")).toBeGreaterThan(-1);
-    expect(readme.indexOf("## Use With Agents")).toBeLessThan(
-      readme.indexOf("## Activation Packet")
-    );
-    expect(readme.indexOf("## Activation Packet")).toBeLessThan(
-      readme.indexOf("## Preview The Inspector")
-    );
-    expect(readme.indexOf("## Preview The Inspector")).toBeLessThan(
-      readme.indexOf("## Project Stack Workspaces")
-    );
+    expect(readme).toContain("Give coding agents searchable, source-linked documentation—locally.");
+    expect(readme).toContain("## Quickstart");
+    expect(readme).toContain("## Why OKFy");
+    expect(readme).toContain("## Connect Your Agent");
+    expect(readme).toContain("## Project Stack Workspaces");
+    expect(readme).toContain("## Inspect And Share A Bundle");
+    expect(readme).toContain("answer with original source references");
+    expect(readme).toContain("No embedding service or LLM API key is required.");
     expect(readme).toContain(
       "npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client codex"
     );
@@ -141,20 +139,19 @@ describe("public surface", () => {
     expect(readme).toContain("npx -y okfy-ai doctor stripe clerk --client codex");
     expect(readme).toContain("npx -y okfy-ai serve stripe clerk --mcp --auto-refresh");
     expect(readme).toContain(
-      'npx -y okfy-ai import ./docs/api --out ./okf/api-docs --source-name "API docs" --force'
+      'npx -y okfy-ai import ./docs/api --out ./okf/api-docs --source-name "API docs"'
     );
     expect(readme).toContain(
-      'npx -y okfy-ai import ./docs/product --out ./okf/product-docs --source-name "Product docs" --force'
+      'npx -y okfy-ai import ./docs/product --out ./okf/product-docs --source-name "Product docs"'
     );
+    expect(readme).not.toContain('--source-name "API docs" --force');
+    expect(readme).not.toContain('--source-name "Product docs" --force');
     expect(readme).toContain("npx -y okfy-ai serve ./okf/api-docs ./okf/product-docs --mcp");
-    expect(readme).toContain("[mcp_servers.stripe_clerk_okf]");
     expect(readme).toContain('"source": "stripe"');
-    expect(readme).toContain("Start workspace sessions with `bundle_summary`");
+    expect(readme).toContain("Use `bundle_summary` at the start of a workspace session");
     expect(readme).toContain("claude mcp add --transport stdio stripe-okf");
-    expect(readme).toContain(".cursor/mcp.json");
     expect(readme).toContain("[mcp_servers.stripe_okf]");
     expect(readme).toContain("[skills/okfy/SKILL.md](skills/okfy/SKILL.md)");
-    expect(readme).toContain("official OKFy agent skill");
   });
 
   it("ships public README assets", async () => {
@@ -481,8 +478,9 @@ describe("public surface", () => {
     );
     expect(npmReadme).not.toContain("including DNS-resolved hosts and redirects");
     expect(npmReadme).toContain(
-      "Turn docs into agent-readable Open Knowledge Format v0.1-conformant bundles, then serve them to Claude, Codex, Cursor"
+      "Give coding agents searchable, source-linked documentation—locally."
     );
+    expect(npmReadme).toContain("no hosted index, embedding service, or LLM API key");
     expect(npmReadme).toContain("Preview what your agent will know");
     expect(npmReadme).toContain(
       "npx -y okfy-ai activate stripe --client codex --out okfy-activation"
@@ -490,18 +488,11 @@ describe("public surface", () => {
     expect(npmReadme).toContain("okfy-proof.json");
     expect(npmReadme).toContain("npx -y okfy-ai map stripe --out okfy-inspector.html");
     expect(npmReadme).toContain("local static HTML Inspector");
-    expect(npmReadme.indexOf("## Use With Agents")).toBeLessThan(
-      npmReadme.indexOf("## Optional CLI Install")
-    );
-    expect(npmReadme.indexOf("## Use With Agents")).toBeLessThan(
-      npmReadme.indexOf("## Activation Packet")
-    );
-    expect(npmReadme.indexOf("## Activation Packet")).toBeLessThan(
-      npmReadme.indexOf("## Preview The Inspector")
-    );
-    expect(npmReadme.indexOf("## Preview The Inspector")).toBeLessThan(
-      npmReadme.indexOf("## Multi-Source Workspaces")
-    );
+    expect(npmReadme).toContain("## Quickstart");
+    expect(npmReadme).toContain("## Why OKFy");
+    expect(npmReadme).toContain("## Connect An MCP Client");
+    expect(npmReadme).toContain("## Multi-Source Workspaces");
+    expect(npmReadme).toContain("## Inspect And Share");
     expect(npmReadme).toContain(
       "npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client generic"
     );
@@ -509,20 +500,17 @@ describe("public surface", () => {
     expect(npmReadme).toContain("npx -y okfy-ai doctor stripe clerk --client codex");
     expect(npmReadme).toContain("npx -y okfy-ai serve stripe clerk --mcp --auto-refresh");
     expect(npmReadme).toContain(
-      'npx -y okfy-ai import ./docs/api --out ./okf/api-docs --source-name "API docs" --force'
+      'npx -y okfy-ai import ./docs/api --out ./okf/api-docs --source-name "API docs"'
     );
     expect(npmReadme).toContain(
-      'npx -y okfy-ai import ./docs/product --out ./okf/product-docs --source-name "Product docs" --force'
+      'npx -y okfy-ai import ./docs/product --out ./okf/product-docs --source-name "Product docs"'
     );
+    expect(npmReadme).not.toContain('--source-name "API docs" --force');
+    expect(npmReadme).not.toContain('--source-name "Product docs" --force');
     expect(npmReadme).toContain("npx -y okfy-ai serve ./okf/api-docs ./okf/product-docs --mcp");
-    expect(npmReadme).toContain("[mcp_servers.stripe_clerk_okf]");
-    expect(npmReadme).toContain("Search and list tools accept a `source` filter");
-    expect(npmReadme).toContain("okfy init <name> <url>");
-    expect(npmReadme).toContain("okfy doctor <name> [more-names...]");
+    expect(npmReadme).toContain("Search and read tools accept a `source` filter");
     expect(npmReadme).toContain("claude mcp add --transport stdio stripe-okf");
     expect(npmReadme).toContain("[mcp_servers.stripe_okf]");
-    expect(npmReadme).toContain("skills/okfy/SKILL.md");
-    expect(npmReadme).toContain("official OKFy agent skill");
     expect(npmReadme).not.toContain("assets/logo.svg");
     expect(mcpDocs).toContain("The default setup uses `npx -y okfy-ai`");
     expect(mcpDocs).toContain(

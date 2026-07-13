@@ -1,44 +1,49 @@
 # okfy-ai
 
-Turn docs into agent-readable Open Knowledge Format v0.1-conformant bundles, then serve them to Claude, Codex, Cursor, or any MCP client.
+Give coding agents searchable, source-linked documentation—locally.
 
-## Use With Agents
+OKFy converts documentation websites and Markdown folders into typed, linked Markdown bundles, then serves them to Claude, Codex, Cursor, and other MCP clients. Knowledge and source references stay inspectable and Git-diffable; no hosted index, embedding service, or LLM API key is required.
 
-Create a registered source and print a client-ready setup preview:
+## Quickstart
+
+Register documentation and generate client setup:
 
 ```bash
-npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client generic --max-pages 100 --max-depth 4
+npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client generic
 ```
 
-`init` prints the MCP launch command, client config, and a first prompt. It does not write client config files by default. The generated launch command will look like `npx -y okfy-ai serve stripe --mcp --auto-refresh`.
-
-The MCP server uses the cached local bundle immediately. When the source is stale, `--auto-refresh` refreshes it according to the source policy while exposing freshness metadata through `bundle_summary`.
-
-Add the source-backed server to an MCP client:
-
-```json
-{
-  "mcpServers": {
-    "stripe-okf": {
-      "command": "npx",
-      "args": ["-y", "okfy-ai", "serve", "stripe", "--mcp", "--auto-refresh"]
-    }
-  }
-}
-```
+`init` crawls the source into a local bundle, prints the MCP launch configuration, and gives you a first prompt. It does not edit client configuration.
 
 Ask your agent:
 
 ```text
-Use the stripe-okf MCP server. Search for Checkout Sessions, read the most relevant concepts, inspect neighbors if needed, and explain the minimum backend flow with source URLs.
+Using the Stripe documentation, explain the minimum Checkout Sessions
+backend flow. Read the relevant concepts, follow related documentation
+when needed, and include every source reference used.
 ```
 
-## Client Setup
+The agent searches first, reads only the relevant concepts, follows linked documentation when necessary, and returns the original sources.
+
+## Why OKFy
+
+- Plain Markdown concepts that humans can inspect and Git can diff.
+- Source URLs and provenance retained in retrieval results.
+- Local, deterministic lexical search with no embedding API.
+- Read-only MCP tools for progressive search, reading, and traversal.
+- Registered website sources that can refresh when stale.
+- Multi-source workspaces for a complete project stack.
+
+## Connect An MCP Client
+
+The registered source is served with:
+
+```bash
+npx -y okfy-ai serve stripe --mcp --auto-refresh
+```
 
 Claude Code:
 
 ```bash
-npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client claude-code
 claude mcp add --transport stdio stripe-okf -- npx -y okfy-ai serve stripe --mcp --auto-refresh
 ```
 
@@ -53,189 +58,7 @@ tool_timeout_sec = 60
 enabled = true
 ```
 
-Claude Desktop, Cursor, and other `mcpServers` clients can use the JSON config above. More setup: https://github.com/0dust/OKFy/blob/main/docs/mcp-clients.md
-
-The official OKFy agent skill at `skills/okfy/SKILL.md` ships with the package and gives skill-aware agents the OKFy setup workflow, MCP tool order, workspace source filters, and safety rules.
-
-If setup is not working, run:
-
-```bash
-npx -y okfy-ai doctor stripe --client codex
-```
-
-`doctor` checks the registered source, bundle validity, freshness, `npx` availability, generated command shape, MCP tool visibility, and JSON-RPC-clean stdout, then tells you the next repair command or config edit.
-
-## Activation Packet
-
-Create a local proof packet before or alongside MCP setup. Preview what your agent will know and get setup/proof files in one folder:
-
-```bash
-npx -y okfy-ai activate stripe --client codex --out okfy-activation
-```
-
-The packet contains `okfy-inspector.html`, `okfy-setup.md`, and `okfy-proof.json`. It shows the exact MCP command/config, first prompt, readiness, and a deterministic proof path through `bundle_summary`, `search_concepts`, `read_concept`, and `get_neighbors`.
-
-Add `--task "checkout sessions"` when you want the proof search/read path to match the task you plan to ask the agent:
-
-```bash
-npx -y okfy-ai activate stripe --client codex --task "checkout sessions" --out okfy-activation
-```
-
-Use a local OKF bundle path when you already manage the bundle yourself:
-
-```bash
-npx -y okfy-ai activate ./docs-okf --client codex --out okfy-activation
-```
-
-Activation does not write client config files by default.
-
-## Preview The Inspector
-
-Preview just the Inspector when you do not need the setup/proof packet:
-
-```bash
-npx -y okfy-ai map stripe --out okfy-inspector.html
-```
-
-`okfy map` writes a local static HTML Inspector you can open from disk. It summarizes readiness, validation warnings, source freshness, concept relationships, citation URLs, and the recommended MCP sequence: `bundle_summary`, `search_concepts`, `read_concept`, and `get_neighbors`.
-
-Use `npx -y okfy-ai map ./docs-okf --out okfy-inspector.html` for a local OKF bundle path, or `npx -y okfy-ai map stripe clerk --out stack-inspector.html` for a source-aware workspace.
-
-Use `--json` when CI or tests need the same Inspector report model without writing HTML.
-
-## Multi-Source Workspaces
-
-Register several docs sources and expose them through one source-aware MCP server:
-
-```bash
-npx -y okfy-ai add stripe https://docs.stripe.com/checkout --max-pages 100 --max-depth 4
-npx -y okfy-ai add clerk https://clerk.com/docs --max-pages 100 --max-depth 4
-npx -y okfy-ai doctor stripe clerk --client codex
-npx -y okfy-ai serve stripe clerk --mcp --auto-refresh
-```
-
-For project-local docs, import each Markdown folder into its own OKF bundle and serve the bundle paths together:
-
-```bash
-npx -y okfy-ai import ./docs/api --out ./okf/api-docs --source-name "API docs" --force
-npx -y okfy-ai import ./docs/product --out ./okf/product-docs --source-name "Product docs" --force
-npx -y okfy-ai serve ./okf/api-docs ./okf/product-docs --mcp
-```
-
-In local bundle workspaces, source filters use the bundle directory names, such as `api-docs` and `product-docs`.
-
-Codex config for the registered-source workspace:
-
-```toml
-[mcp_servers.stripe_clerk_okf]
-command = "npx"
-args = ["-y", "okfy-ai", "serve", "stripe", "clerk", "--mcp", "--auto-refresh"]
-startup_timeout_sec = 20
-tool_timeout_sec = 60
-enabled = true
-```
-
-Workspace `bundle_summary` reports totals plus per-source validation, freshness, refresh progress, and refresh errors. Search and list tools accept a `source` filter, and duplicate concept ids can be read with `{ "source": "stripe", "id": "guides/quickstart" }`.
-
-## Keep Sources Fresh
-
-Registered sources are the local-first workflow for third-party docs sites that change over time:
-
-```bash
-npx -y okfy-ai add stripe https://docs.stripe.com/checkout --max-pages 100 --max-depth 4
-npx -y okfy-ai sources
-npx -y okfy-ai check stripe
-npx -y okfy-ai doctor stripe
-npx -y okfy-ai update stripe
-npx -y okfy-ai remove stripe --yes
-npx -y okfy-ai serve stripe --mcp --auto-refresh
-npx -y okfy-ai serve stripe clerk --mcp --auto-refresh
-```
-
-If you want registration plus client-specific setup artifacts, use `npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client generic --max-pages 100 --max-depth 4`.
-
-By default, okfy stores registered sources under `~/.okfy`. Set `OKFY_HOME` to use a different local cache for CI, tests, or per-project isolation.
-
-Freshness is age-based. A registered bundle is fresh when it exists, validates, and was successfully refreshed within its configured max age. The default mode is `stale-while-refresh`: if the bundle is stale, MCP search and read tools keep serving the current cached bundle while a background refresh runs.
-
-Use blocking mode when you want the server to refresh before answering tool calls:
-
-```bash
-npx -y okfy-ai serve stripe --mcp --auto-refresh --refresh-mode blocking
-```
-
-Use `--refresh-mode off` when MCP serving should never trigger network fetches; you can still run `npx -y okfy-ai update stripe` manually.
-
-## Create Bundles
-
-The original crawl/import path still works for one-off snapshots and project-local bundles.
-
-Docs website snapshot:
-
-```bash
-npx -y okfy-ai crawl https://docs.stripe.com/checkout --out ./stripe-checkout-okf --max-pages 25
-npx -y okfy-ai validate ./stripe-checkout-okf
-npx -y okfy-ai inspect ./stripe-checkout-okf
-```
-
-Local Markdown:
-
-```bash
-npx -y okfy-ai import ./docs --out ./docs-okf --source-name "Project docs" --force
-npx -y okfy-ai validate ./docs-okf
-```
-
-Serve an existing bundle path when you already manage the bundle yourself:
-
-```bash
-npx -y okfy-ai serve ./docs-okf --mcp
-```
-
-Direct bundle paths, including local bundle workspaces, do not use source auto-refresh.
-
-## Optional CLI Install
-
-You do not need global install for MCP configs. `npx -y okfy-ai ...` is usually better because the MCP client can launch okfy directly.
-
-Install only if you want shorter local commands:
-
-```bash
-npm install -g okfy-ai
-okfy demo
-```
-
-`okfy-ai` is the npm package name. `okfy` is the installed CLI command.
-
-Requires Node.js 20+.
-
-Programmatic imports remain compatible with the existing `okfy-ai` root surface, including source-store and refresh helpers. For new MCP integrations, prefer the narrower `okfy-ai/mcp` entry point:
-
-```ts
-import { createMcpServer, type ServeOptions } from "okfy-ai/mcp";
-```
-
-New setup-only code can import the pure artifact helpers from `okfy-ai/setup`, such as `serveCommand`, `renderClientArtifacts`, and `expectedMcpTools`.
-
-After installing, this MCP config is equivalent:
-
-```json
-{
-  "mcpServers": {
-    "stripe-okf": {
-      "command": "okfy",
-      "args": ["serve", "stripe", "--mcp", "--auto-refresh"]
-    }
-  }
-}
-```
-
-## Demo
-
-```bash
-npx -y okfy-ai demo
-```
-
-## No-Install MCP Config
+Claude Desktop, Cursor, and other `mcpServers` clients:
 
 ```json
 {
@@ -248,67 +71,127 @@ npx -y okfy-ai demo
 }
 ```
 
-## CLI Commands
+Full setup guidance: https://github.com/0dust/OKFy/blob/main/docs/mcp-clients.md
+
+If setup fails:
 
 ```bash
-okfy init <name> <url>
-okfy doctor <name> [more-names...]
-okfy add <name> <url>
-okfy sources
-okfy check <name-or-bundle>
-okfy update <name>
-okfy remove <name> --yes
-okfy crawl <url> --out <dir>
-okfy import <path> --out <dir>
-okfy validate <bundle>
-okfy inspect <bundle>
-okfy activate <name-or-bundle> [more-source-names...] --client codex --out okfy-activation
-okfy map <name-or-bundle> [more-source-names...] --out okfy-inspector.html
-okfy serve <name-or-bundle> [more-source-names...] --mcp
-okfy demo
+npx -y okfy-ai doctor stripe --client codex
 ```
+
+## Multi-Source Workspaces
+
+Serve the documentation behind a project through one source-aware MCP server:
+
+```bash
+npx -y okfy-ai add stripe https://docs.stripe.com/checkout
+npx -y okfy-ai add clerk https://clerk.com/docs
+npx -y okfy-ai doctor stripe clerk --client codex
+npx -y okfy-ai serve stripe clerk --mcp --auto-refresh
+```
+
+Project-local Markdown can join the same workflow:
+
+```bash
+npx -y okfy-ai import ./docs/api --out ./okf/api-docs --source-name "API docs"
+npx -y okfy-ai import ./docs/product --out ./okf/product-docs --source-name "Product docs"
+npx -y okfy-ai serve ./okf/api-docs ./okf/product-docs --mcp
+```
+
+Search and read tools accept a `source` filter when concepts overlap. `bundle_summary` reports workspace totals plus per-source validity, freshness, refresh progress, and errors.
+
+## Keep Sources Fresh
+
+Registered sources live under `~/.okfy`. The default `stale-while-refresh` mode serves the current valid bundle while stale documentation refreshes in the background.
+
+```bash
+npx -y okfy-ai sources
+npx -y okfy-ai check stripe
+npx -y okfy-ai update stripe
+npx -y okfy-ai serve stripe --mcp --auto-refresh
+```
+
+Use `--refresh-mode blocking` to wait for refresh or `--refresh-mode off` to prevent network fetching while serving.
+
+## Create Explicit Bundles
+
+Website snapshot:
+
+```bash
+npx -y okfy-ai crawl https://docs.stripe.com/checkout --out ./stripe-checkout-okf --max-pages 25
+npx -y okfy-ai validate ./stripe-checkout-okf
+```
+
+Local Markdown:
+
+```bash
+npx -y okfy-ai import ./docs --out ./docs-okf --source-name "Project docs"
+npx -y okfy-ai validate ./docs-okf
+npx -y okfy-ai serve ./docs-okf --mcp
+```
+
+MCP clients start `serve --mcp` as a subprocess; do not run it as a normal interactive terminal command.
+
+Add `--force` only when you explicitly intend to replace an existing non-empty output bundle.
 
 ## MCP Tools
 
-| Tool              | Purpose                                                                                 |
-| ----------------- | --------------------------------------------------------------------------------------- |
-| `bundle_summary`  | Show bundle or workspace stats, validation status, and source freshness when available. |
-| `search_concepts` | Search concept previews by query, optional source, type, or tags.                       |
-| `read_concept`    | Read one concept body, frontmatter, links, backlinks, and source.                       |
-| `get_neighbors`   | Traverse outbound links and backlinks around a concept.                                 |
-| `list_types`      | List concept types and counts, optionally filtered by workspace source.                 |
-| `list_tags`       | List tags and counts, optionally filtered by workspace source.                          |
+- `bundle_summary`: validity, size, and source freshness.
+- `search_concepts`: concept previews by query, source, type, or tags.
+- `read_concept`: body, metadata, links, backlinks, and source.
+- `get_neighbors`: outbound links and backlinks around a concept.
+- `list_types`: concept types and counts.
+- `list_tags`: tags and counts.
 
-## What okfy Generates
+MCP tools are read-only; refresh is server-side maintenance, not an agent-callable write tool.
 
-```text
-registered docs source or Markdown folder
-  -> local OKF bundle: Markdown files + YAML frontmatter + links
-  -> MCP server: bundle_summary, search_concepts, read_concept, get_neighbors, list_types, list_tags
-  -> source-backed agent answers
+Programmatic MCP integrations can use the stable public surface:
+
+```ts
+import { createMcpServer, type ServeOptions } from "okfy-ai/mcp";
 ```
 
-Each non-reserved source page or Markdown file becomes one OKF concept in v0.1. `index.md` and `log.md` are reserved files, not concepts, and generated indexes are plain Markdown. Concept counts, search, graph links, types, tags, and `read_concept` exclude reserved files.
+Programmatic imports remain compatible with the `okfy-ai` root surface. New setup-only code can import pure artifact helpers from `okfy-ai/setup`.
 
-Validation errors are limited to OKF conformance: malformed or missing concept frontmatter, missing `type`, or invalid reserved-file structure. Broken internal links and missing indexes are warnings.
+## Inspect And Share
+
+Create a local static HTML Inspector for relationships, warnings, freshness, and source URLs:
+
+```bash
+npx -y okfy-ai map stripe --out okfy-inspector.html
+```
+
+Use `--json` when CI or tests need the same Inspector report model without writing HTML.
+
+Create a shareable setup snapshot when useful:
+
+```bash
+npx -y okfy-ai activate stripe --client codex --out okfy-activation
+```
+
+It contains `okfy-inspector.html`, `okfy-setup.md`, and `okfy-proof.json`. Activation does not write client config files by default. Preview what your agent will know before sharing or applying the generated setup.
+
+## Optional CLI Install
+
+You do not need global install for MCP configs. `npx -y okfy-ai ...` is normally enough.
+
+```bash
+npm install -g okfy-ai
+okfy demo
+```
+
+`okfy-ai` is the npm package name. `okfy` is the installed CLI command. Node.js 20+ is required.
 
 ## Security Defaults
 
-- Crawls respect `robots.txt` by default.
-- Crawls stay same-origin by default.
+- Crawls respect `robots.txt` and stay same-origin by default.
 - Page count, depth, response size, and concurrency are capped.
-- Private network URL literals and redirects to private targets are rejected by default for URL crawls.
+- Private network URL literals and redirects to private targets are rejected by default.
 - Preflight DNS-resolved private targets are rejected before fetch; fetch-time DNS is not IP-pinned.
-- `--force` refuses unsafe output directories such as `.`, `/`, the home dir, repo root, input path, input parent, and symlink output dirs unless an explicit dangerous override is provided.
-- HTML and Markdown are treated as text. Scripts are not executed.
-- MCP tools are read-only; refresh is server-side maintenance, not an agent-callable write tool.
+- Unsafe force-output directories are rejected unless explicitly overridden.
+- HTML and Markdown are treated as text; scripts are not executed.
+- MCP tools are read-only.
 
-## Links
+Project documentation, examples, commands, and limits: https://github.com/0dust/OKFy
 
-- GitHub: https://github.com/0dust/OKFy
-- MCP client setup: https://github.com/0dust/OKFy/blob/main/docs/mcp-clients.md
-- OKF: https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf
-
-## License
-
-MIT.
+License: MIT
