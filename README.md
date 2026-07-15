@@ -19,6 +19,7 @@
     <a href="https://github.com/0dust/OKFy/blob/main/LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-3f3a36"></a>
     <img alt="Node 20 plus" src="https://img.shields.io/badge/node-20%2B-4b5563">
     <img alt="MCP stdio" src="https://img.shields.io/badge/MCP-stdio-5f5a4f">
+    <a href="https://bundledex.net/bundles/okfy/"><img alt="BundleDex" src="https://bundledex.net/badge/okfy.svg"></a>
   </p>
 
   <p>
