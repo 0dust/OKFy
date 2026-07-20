@@ -26,9 +26,9 @@ function contentTypeFor(file: string): ContentType | undefined {
   return undefined;
 }
 
-async function listFiles(root: string): Promise<string[]> {
+async function listFiles(root: string): Promise<{ files: string[]; rootIsFile: boolean }> {
   const stat = await fs.stat(root);
-  if (stat.isFile()) return [root];
+  if (stat.isFile()) return { files: [root], rootIsFile: true };
   const files: string[] = [];
   async function walk(dir: string): Promise<void> {
     for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
@@ -41,7 +41,7 @@ async function listFiles(root: string): Promise<string[]> {
     }
   }
   await walk(root);
-  return files.sort();
+  return { files: files.sort(), rootIsFile: false };
 }
 
 export type ImportResult = {
@@ -52,13 +52,10 @@ export type ImportResult = {
 
 export async function importLocal(options: ImportOptions): Promise<ImportResult> {
   const root = path.resolve(options.inputPath);
-  const rootStat = await fs.stat(root);
-  const files = await listFiles(root);
+  const { files, rootIsFile } = await listFiles(root);
   const docs: NormalizedDocument[] = [];
   for (const file of files) {
-    const rel = normalizeVaultPath(
-      rootStat.isFile() ? path.basename(file) : path.relative(root, file)
-    );
+    const rel = normalizeVaultPath(rootIsFile ? path.basename(file) : path.relative(root, file));
     if (options.include?.length && !matchesAnyPattern(rel, options.include)) continue;
     if (matchesAnyPattern(rel, options.exclude)) continue;
     const contentType = contentTypeFor(file);

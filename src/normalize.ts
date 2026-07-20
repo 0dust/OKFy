@@ -76,6 +76,16 @@ function fallbackTitle(sourceId: string): string {
     .join(" ");
 }
 
+function deduplicateTags(tags: string[]): string[] {
+  const seen = new Set<string>();
+  return tags.filter((tag) => {
+    const key = tag.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 export function normalizeDocument(raw: RawDocument): NormalizedDocument {
   let markdown = raw.raw;
   let title = fallbackTitle(raw.url ?? raw.filePath ?? raw.sourceId);
@@ -101,14 +111,11 @@ export function normalizeDocument(raw: RawDocument): NormalizedDocument {
   const links = parsed.markdownLinks;
   const sourceId = raw.url ?? raw.filePath ?? raw.sourceId;
   const inferredTags = inferTags(title, sourceId, headings);
-  const tags = [
+  const tags = deduplicateTags([
     ...(parsed.properties?.tags ?? []),
     ...parsed.inlineTags.map((inlineTag) => inlineTag.tag),
     ...inferredTags
-  ].filter(
-    (tag, index, all) =>
-      all.findIndex((candidate) => candidate.toLowerCase() === tag.toLowerCase()) === index
-  );
+  ]);
 
   return {
     sourceId,

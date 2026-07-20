@@ -32,7 +32,6 @@ type AstNode = {
 
 type Definition = {
   url: string;
-  range: SourceRange;
   destinationRange?: SourceRange;
 };
 
@@ -79,6 +78,9 @@ function createParser(mdx: boolean) {
   if (mdx) parser.use(remarkMdx);
   return parser.use(wikiLinkPlugin, { format: "regular" });
 }
+
+const markdownParser = createParser(false);
+const mdxParser = createParser(true);
 
 function nodeRange(node: AstNode): SourceRange | undefined {
   const start = node.position?.start?.offset;
@@ -195,7 +197,7 @@ function adjustedRange(range: SourceRange, contentBase: number): SourceRange {
 
 export function parseMarkdown(markdown: string, options: { mdx?: boolean } = {}): ParsedMarkdown {
   const source = markdown.startsWith("\uFEFF") ? markdown.slice(1) : markdown;
-  const tree = createParser(Boolean(options.mdx)).parse(source) as AstNode;
+  const tree = (options.mdx ? mdxParser : markdownParser).parse(source) as AstNode;
   const definitions = new Map<string, Definition>();
   let properties: DocumentProperties | undefined;
 
@@ -205,7 +207,6 @@ export function parseMarkdown(markdown: string, options: { mdx?: boolean } = {})
     if (node.type !== "definition" || !node.identifier || !node.url || !range) return;
     definitions.set(node.identifier, {
       url: node.url,
-      range,
       destinationRange: destinationRange(source, range, node.url)
     });
   });
@@ -238,6 +239,7 @@ export function parseMarkdown(markdown: string, options: { mdx?: boolean } = {})
 
     if (node.type === "link" && node.url) {
       const text = toString(node as never);
+      const linkDestinationRange = destinationRange(source, originalRange, node.url);
       markdownLinks.push({ href: node.url, text });
       semanticLinks.push({
         kind: "markdown",
@@ -245,8 +247,8 @@ export function parseMarkdown(markdown: string, options: { mdx?: boolean } = {})
         target: node.url,
         text,
         range,
-        destinationRange: destinationRange(source, originalRange, node.url)
-          ? adjustedRange(destinationRange(source, originalRange, node.url)!, contentBase)
+        destinationRange: linkDestinationRange
+          ? adjustedRange(linkDestinationRange, contentBase)
           : undefined
       });
       return;
