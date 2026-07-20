@@ -46,6 +46,7 @@ type Definition = {
 export type ParsedMarkdown = {
   content: string;
   headings: DocumentHeading[];
+  rootHeadingTitle?: string;
   markdownLinks: Array<{ href: string; text: string }>;
   semanticLinks: SemanticLink[];
   blockIds: DocumentBlockId[];
@@ -502,6 +503,7 @@ export function parseMarkdown(markdown: string, options: { mdx?: boolean } = {})
   const { content, contentBase } = bodyBoundary(source, frontmatterEnd);
   const slugger = new GithubSlugger();
   const headings: DocumentHeading[] = [];
+  let rootHeadingTitle: string | undefined;
   const markdownLinks: Array<{ href: string; text: string }> = [];
   const semanticLinks: SemanticLink[] = [];
   const blockIds: DocumentBlockId[] = [];
@@ -556,6 +558,14 @@ export function parseMarkdown(markdown: string, options: { mdx?: boolean } = {})
     if (node.type === "heading" && typeof node.depth === "number") {
       const text = toString(node as never).trim();
       headings.push({ depth: node.depth, text, slug: slugger.slug(text), range });
+      if (
+        node.depth === 1 &&
+        rootHeadingTitle === undefined &&
+        ancestors.length === 1 &&
+        ancestors[0]?.type === "root"
+      ) {
+        rootHeadingTitle = text;
+      }
       return;
     }
 
@@ -685,6 +695,7 @@ export function parseMarkdown(markdown: string, options: { mdx?: boolean } = {})
   return {
     content,
     headings,
+    rootHeadingTitle,
     markdownLinks,
     semanticLinks,
     blockIds,

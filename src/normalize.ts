@@ -49,12 +49,8 @@ export function inferTags(
   return [...new Set(words)].slice(0, 6);
 }
 
-function titleFromMarkdown(
-  headings: Array<{ depth: number; text: string }>,
-  fallback: string
-): string {
-  const heading = headings.find((candidate) => candidate.depth === 1)?.text;
-  if (heading) return plainTitle(heading);
+function titleFromMarkdown(rootHeadingTitle: string | undefined, fallback: string): string {
+  if (rootHeadingTitle) return plainTitle(rootHeadingTitle);
   return fallback;
 }
 
@@ -122,7 +118,7 @@ export function normalizeDocument(raw: RawDocument): NormalizedDocument {
   const sourceId = raw.url ?? raw.filePath ?? raw.sourceId;
   const parsed = parseMarkdown(markdown, { mdx: raw.contentType === "mdx" });
   markdown = parsed.content;
-  title = (parsed.properties?.title ?? titleFromMarkdown(parsed.headings, plainTitle(title)))
+  title = (parsed.properties?.title ?? titleFromMarkdown(parsed.rootHeadingTitle, plainTitle(title)))
     .replace(/\s+/g, " ")
     .trim();
   const headings = parsed.headings.map(({ depth, text, slug }) => ({ depth, text, slug }));

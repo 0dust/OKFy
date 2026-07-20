@@ -80,6 +80,41 @@ describe("normalization", () => {
     expect(textDoc.markdown).toBe("# Notes\n\n```text\nplain notes\n```");
   });
 
+  it("uses only a root-level H1 as the Markdown title fallback", () => {
+    const quoted = normalizeDocument({
+      sourceId: "plain-quote.md",
+      filePath: "plain-quote.md",
+      contentType: "markdown",
+      discoveredAt,
+      raw: "> # Quoted Title\n\n## Root Section"
+    });
+    expect(quoted.title).toBe("Plain Quote");
+    expect(quoted.headings.map((heading) => heading.text)).toEqual([
+      "Quoted Title",
+      "Root Section"
+    ]);
+
+    const listed = normalizeDocument({
+      sourceId: "plain-list.md",
+      filePath: "plain-list.md",
+      contentType: "markdown",
+      discoveredAt,
+      raw: "- # Listed Title\n\n  Listed body"
+    });
+    expect(listed.title).toBe("Plain List");
+    expect(listed.headings.map((heading) => heading.text)).toEqual(["Listed Title"]);
+
+    const rooted = normalizeDocument({
+      sourceId: "filename-title.md",
+      filePath: "filename-title.md",
+      contentType: "markdown",
+      discoveredAt,
+      raw: "> # Quoted Title\n\n# Root Title"
+    });
+    expect(rooted.title).toBe("Root Title");
+    expect(rooted.headings.map((heading) => heading.text)).toEqual(["Quoted Title", "Root Title"]);
+  });
+
   it("rejects malformed YAML frontmatter as a document-level error", () => {
     const raw = [
       "---",

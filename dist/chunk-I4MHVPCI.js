@@ -21,7 +21,7 @@ import {
   toPosixPath,
   urlToOutputPath,
   validateBundle
-} from "./chunk-GLEYSDOS.js";
+} from "./chunk-EPW7RHMA.js";
 
 // src/normalize.ts
 import * as cheerio from "cheerio";
@@ -52,9 +52,8 @@ function inferTags(title, sourceId, headings) {
   const words = raw.toLowerCase().replace(/https?:\/\/[^/]+/g, "").split(/[^a-z0-9]+/).filter((word) => word.length >= 3 && word.length <= 24).filter((word) => !["html", "markdown", "index", "docs", "page", "guide"].includes(word));
   return [...new Set(words)].slice(0, 6);
 }
-function titleFromMarkdown(headings, fallback) {
-  const heading = headings.find((candidate) => candidate.depth === 1)?.text;
-  if (heading) return plainTitle(heading);
+function titleFromMarkdown(rootHeadingTitle, fallback) {
+  if (rootHeadingTitle) return plainTitle(rootHeadingTitle);
   return fallback;
 }
 function plainTitle(title) {
@@ -105,7 +104,7 @@ ${raw.raw.trim()}
   const sourceId = raw.url ?? raw.filePath ?? raw.sourceId;
   const parsed = parseMarkdown(markdown, { mdx: raw.contentType === "mdx" });
   markdown = parsed.content;
-  title = (parsed.properties?.title ?? titleFromMarkdown(parsed.headings, plainTitle(title))).replace(/\s+/g, " ").trim();
+  title = (parsed.properties?.title ?? titleFromMarkdown(parsed.rootHeadingTitle, plainTitle(title))).replace(/\s+/g, " ").trim();
   const headings = parsed.headings.map(({ depth, text, slug }) => ({ depth, text, slug }));
   const links = parsed.markdownLinks;
   const inferredTags = inferTags(title, sourceId, headings);
@@ -318,10 +317,13 @@ function frontmatter(doc, timestamp) {
   lines.push("---", "");
   return lines.join("\n");
 }
+function markdownPlainText(value) {
+  return value.replace(/[\x21-\x2C\x2E-\x2F\x3A-\x40\x5B-\x60\x7B-\x7E]/g, "\\$&");
+}
 function withTitle(title, markdown) {
-  const trimmed = markdown.trim();
+  const trimmed = markdown.trimEnd();
   if (trimmed.match(/^#\s+/)) return trimmed;
-  return `# ${title}
+  return `# ${markdownPlainText(title)}
 
 ${trimmed}`;
 }
@@ -423,9 +425,6 @@ function headingFragment(link, target) {
   );
   return heading?.slug ?? new GithubSlugger().slug(requested);
 }
-function markdownLinkText(value) {
-  return value.replace(/\\/g, "\\\\").replace(/\[/g, "\\[").replace(/\]/g, "\\]");
-}
 function rewriteLinks(doc, sourceToOutput, sourceToDocument) {
   const edits = /* @__PURE__ */ new Map();
   for (const block of doc.blockIds ?? []) {
@@ -451,7 +450,7 @@ function rewriteLinks(doc, sourceToOutput, sourceToDocument) {
     const destination = `${relativeMarkdownLink(doc.outputPath, targetOutput)}${fragment ? `#${fragment}` : ""}`;
     addEdit(edits, {
       ...link.range,
-      replacement: `[${markdownLinkText(link.text)}](${destination})`
+      replacement: `[${markdownPlainText(link.text)}](${destination})`
     });
   }
   return applyEdits(doc.markdown, edits);

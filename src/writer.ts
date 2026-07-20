@@ -133,10 +133,14 @@ function frontmatter(doc: NormalizedDocument, timestamp: string): string {
   return lines.join("\n");
 }
 
+function markdownPlainText(value: string): string {
+  return value.replace(/[\x21-\x2C\x2E-\x2F\x3A-\x40\x5B-\x60\x7B-\x7E]/g, "\\$&");
+}
+
 function withTitle(title: string, markdown: string): string {
-  const trimmed = markdown.trim();
+  const trimmed = markdown.trimEnd();
   if (trimmed.match(/^#\s+/)) return trimmed;
-  return `# ${title}\n\n${trimmed}`;
+  return `# ${markdownPlainText(title)}\n\n${trimmed}`;
 }
 
 function sourceKey(doc: NormalizedDocument): string {
@@ -257,10 +261,6 @@ function headingFragment(link: SemanticLink, target: NormalizedDocument | undefi
   return heading?.slug ?? new GithubSlugger().slug(requested);
 }
 
-function markdownLinkText(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/\[/g, "\\[").replace(/\]/g, "\\]");
-}
-
 function rewriteLinks(
   doc: NormalizedDocument,
   sourceToOutput: Map<string, string>,
@@ -301,7 +301,7 @@ function rewriteLinks(
     }`;
     addEdit(edits, {
       ...link.range,
-      replacement: `[${markdownLinkText(link.text)}](${destination})`
+      replacement: `[${markdownPlainText(link.text)}](${destination})`
     });
   }
 

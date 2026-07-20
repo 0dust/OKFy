@@ -36,11 +36,13 @@ describe("writer and validator", () => {
     const outDir = await tempOut();
     const documents = [
       normalizeDocument(
-        raw({ sourceId: "source.md", filePath: "source.md", raw: "# Source\n\n[[Target|A [ bracket]]" })
+        raw({
+          sourceId: "source.md",
+          filePath: "source.md",
+          raw: "# Source\n\n[[Target|A [ bracket]]"
+        })
       ),
-      normalizeDocument(
-        raw({ sourceId: "Target.md", filePath: "Target.md", raw: "# Target" })
-      )
+      normalizeDocument(raw({ sourceId: "Target.md", filePath: "Target.md", raw: "# Target" }))
     ];
 
     expect(resolveVaultDocuments(documents)).toEqual([]);
@@ -50,6 +52,114 @@ describe("writer and validator", () => {
     const parsed = parseMarkdown(source);
     expect(source).toContain("[A \\[ bracket](./target.md)");
     expect(parsed.markdownLinks).toEqual([{ href: "./target.md", text: "A [ bracket" }]);
+  });
+
+  it.each([
+    { label: "Markdown", contentType: "markdown" as const, extension: "md" },
+    { label: "MDX", contentType: "mdx" as const, extension: "mdx" }
+  ])("renders punctuation-heavy Obsidian aliases as literal $label link text", async (variant) => {
+    const outDir = await tempOut();
+    const aliases = ["*stars*", "_under_", "`tick`", "~~strike~~", "&copy;", "<x>"];
+    const embedAlias = "*embedded*";
+    const sourcePath = `source.${variant.extension}`;
+    const source = normalizeDocument({
+      ...raw({
+        sourceId: sourcePath,
+        filePath: sourcePath,
+        raw: `# Source\n\n${aliases
+          .map((alias) => `[[Target|${alias}]]`)
+          .join(" ")} ![[Target|${embedAlias}]]`
+      }),
+      contentType: variant.contentType
+    });
+    const target = normalizeDocument(
+      raw({ sourceId: "Target.md", filePath: "Target.md", raw: "# Target" })
+    );
+
+    expect(source.semanticLinks?.map((link) => [link.kind, link.text])).toEqual([
+      ...aliases.map((alias) => ["wikilink", alias]),
+      ["note_embed", embedAlias]
+    ]);
+    expect(resolveVaultDocuments([source, target])).toEqual([]);
+    await writeOkfBundle([source, target], {
+      outDir,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+
+    const concepts = await readBundle(outDir);
+    const renderedSource = concepts.get("source")!;
+    const parsed = parseMarkdown(renderedSource.body, { mdx: variant.contentType === "mdx" });
+    expect(parsed.markdownLinks.map((link) => link.text)).toEqual([...aliases, embedAlias]);
+    expect(parsed.semanticLinks).toHaveLength(aliases.length + 1);
+    expect(buildGraph(concepts).outbound.get("source")).toEqual(["target"]);
+    await expect(validateBundle(outDir)).resolves.toMatchObject({ valid: true, warningCount: 0 });
+  });
+
+  it.each([
+    { label: "Markdown", contentType: "markdown" as const, extension: "md" },
+    { label: "MDX", contentType: "mdx" as const, extension: "mdx" }
+  ])("escapes a generated $label title as literal heading text", async (variant) => {
+    const outDir = await tempOut();
+    const sourcePath = `source.${variant.extension}`;
+    const title = "<x> { [[Missing]] *stars* _under_ `tick` ~~strike~~ &copy;";
+    const document = normalizeDocument({
+      ...raw({
+        sourceId: sourcePath,
+        filePath: sourcePath,
+        raw: [
+          "---",
+          `title: ${JSON.stringify(title)}`,
+          "---",
+          "",
+          "Body without a leading H1."
+        ].join("\n")
+      }),
+      contentType: variant.contentType
+    });
+    expect(document.title).toBe(title);
+
+    await writeOkfBundle([document], {
+      outDir,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+
+    const concepts = await readBundle(outDir);
+    const renderedSource = concepts.get("source")!;
+    const parsed = parseMarkdown(renderedSource.body, { mdx: variant.contentType === "mdx" });
+    expect(renderedSource.title).toBe(title);
+    expect(parsed.headings[0]?.text).toBe(title);
+    expect(parsed.semanticLinks).toEqual([]);
+    expect(buildGraph(concepts).outbound.get("source")).toEqual([]);
+    await expect(validateBundle(outDir)).resolves.toMatchObject({ valid: true, warningCount: 0 });
+  });
+
+  it("keeps leading indented Markdown code inert when adding a title", async () => {
+    const outDir = await tempOut();
+    const sourcePath = "source.md";
+    const code = "    [[Missing]] #hidden ^block";
+    const document = normalizeDocument(
+      raw({ sourceId: sourcePath, filePath: sourcePath, raw: code })
+    );
+    document.title = "Source";
+
+    expect(document.markdown).toBe(code);
+    expect(document.semanticLinks).toBeUndefined();
+    expect(document.inlineTags).toBeUndefined();
+    expect(document.blockIds).toBeUndefined();
+    await writeOkfBundle([document], {
+      outDir,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+
+    const concepts = await readBundle(outDir);
+    const renderedSource = concepts.get("source")!;
+    expect(renderedSource.body).toBe(`# Source\n\n${code}`);
+    const parsed = parseMarkdown(renderedSource.body);
+    expect(parsed.semanticLinks).toEqual([]);
+    expect(parsed.inlineTags).toEqual([]);
+    expect(parsed.blockIds).toEqual([]);
+    expect(buildGraph(concepts).outbound.get("source")).toEqual([]);
+    await expect(validateBundle(outDir)).resolves.toMatchObject({ valid: true, warningCount: 0 });
   });
 
   it("resolves writer-generated title headings without hiding genuinely missing fragments", async () => {

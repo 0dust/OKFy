@@ -528,6 +528,7 @@ function parseMarkdown(markdown, options = {}) {
   const { content, contentBase } = bodyBoundary(source, frontmatterEnd);
   const slugger = new GithubSlugger();
   const headings = [];
+  let rootHeadingTitle;
   const markdownLinks = [];
   const semanticLinks = [];
   const blockIds = [];
@@ -572,6 +573,9 @@ function parseMarkdown(markdown, options = {}) {
     if (node.type === "heading" && typeof node.depth === "number") {
       const text = toString(node).trim();
       headings.push({ depth: node.depth, text, slug: slugger.slug(text), range });
+      if (node.depth === 1 && rootHeadingTitle === void 0 && ancestors.length === 1 && ancestors[0]?.type === "root") {
+        rootHeadingTitle = text;
+      }
       return;
     }
     if (node.type === "link" && node.url) {
@@ -683,6 +687,7 @@ function parseMarkdown(markdown, options = {}) {
   return {
     content,
     headings,
+    rootHeadingTitle,
     markdownLinks,
     semanticLinks,
     blockIds,
