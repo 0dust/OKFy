@@ -305,7 +305,7 @@ describe("MCP server", () => {
     await writeSingleConceptBundle(warningBundle, {
       title: "Semantic Source",
       type: "Note",
-      body: "[[Missing MCP Target]]"
+      body: "[[Semantic Source#Absent]]"
     });
     const server = await createMcpServer({ bundleDir: warningBundle, maxResultChars: 4000 });
     const callTool = handler(server, "tools/call");
@@ -326,9 +326,9 @@ describe("MCP server", () => {
     expect(summary.validationIssues).toEqual([
       expect.objectContaining({
         severity: "warning",
-        code: "unresolved_wikilink",
+        code: "missing_wikilink_fragment",
         path: "concept.md",
-        rawTarget: "Missing MCP Target"
+        rawTarget: "Semantic Source#Absent"
       })
     ]);
   });

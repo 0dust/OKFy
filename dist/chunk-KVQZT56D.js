@@ -189,6 +189,25 @@ var BINARY_ATTACHMENT_EXTENSIONS = /* @__PURE__ */ new Set([
   "webm",
   "webp"
 ]);
+var VOID_HTML_ELEMENTS = /* @__PURE__ */ new Set([
+  "area",
+  "base",
+  "basefont",
+  "bgsound",
+  "br",
+  "col",
+  "embed",
+  "hr",
+  "img",
+  "input",
+  "keygen",
+  "link",
+  "meta",
+  "param",
+  "source",
+  "track",
+  "wbr"
+]);
 function createParser(mdx) {
   const parser = unified().use(remarkParse).use(remarkGfm).use(remarkFrontmatter, ["yaml"]);
   if (mdx) parser.use(remarkMdx);
@@ -317,6 +336,16 @@ function defaultLinkText(parts) {
   if (parts.blockId) return parts.blockId;
   return parts.target.split("/").pop() ?? parts.target;
 }
+function normalizedWikiData(raw, openingLength, target, alias) {
+  const inner = raw.slice(openingLength, -2);
+  const divider = inner.indexOf("|");
+  const escapedDivider = divider > 0 && inner[divider - 1] === "\\";
+  const parsedAlias = alias ?? (divider >= 0 ? inner.slice(divider + 1) : void 0);
+  return {
+    target: escapedDivider && target.endsWith("\\") ? target.slice(0, -1) : target,
+    ...parsedAlias === void 0 ? {} : { alias: parsedAlias.replace(/\\\|/g, "|") }
+  };
+}
 function attachmentExtension(target) {
   const clean = target.split(/[?#]/, 1)[0] ?? target;
   return clean.includes(".") ? (clean.split(".").pop() ?? "").toLowerCase() : "";
@@ -329,9 +358,79 @@ function isEligibleText(ancestors) {
 function adjustedRange(range, contentBase) {
   return { start: range.start - contentBase, end: range.end - contentBase };
 }
+function bodyBoundary(source, bodyStart) {
+  let contentBase = bodyStart;
+  while (contentBase < source.length) {
+    const lineEnd = source.indexOf("\n", contentBase);
+    const end = lineEnd < 0 ? source.length : lineEnd;
+    if (source.slice(contentBase, end).trim()) break;
+    contentBase = lineEnd < 0 ? source.length : lineEnd + 1;
+  }
+  return { content: source.slice(contentBase).trimEnd(), contentBase };
+}
+function htmlTag(node) {
+  if (node.type !== "html" || !node.value) return void 0;
+  const value = node.value.trim();
+  const closing = value.match(/^<\s*\/\s*([A-Za-z][A-Za-z0-9-]*)\s*>$/);
+  if (closing) return { kind: "close", name: closing[1].toLowerCase() };
+  const opening = value.match(/^<\s*([A-Za-z][A-Za-z0-9-]*)(?:\s[\s\S]*?)?\s*>$/);
+  if (!opening || /\/\s*>$/.test(value)) return void 0;
+  const name = opening[1].toLowerCase();
+  return VOID_HTML_ELEMENTS.has(name) ? void 0 : { kind: "open", name };
+}
+function htmlContentRanges(tree, sourceEnd) {
+  const tags = [];
+  visit(tree, [], (node) => {
+    const tag = htmlTag(node);
+    const range = nodeRange(node);
+    if (tag && range) tags.push({ tag, range });
+  });
+  const open = [];
+  const ranges = [];
+  for (const { tag, range } of tags) {
+    if (tag.kind === "open") {
+      open.push({ name: tag.name, start: range.end });
+      continue;
+    }
+    let matchingIndex = open.length - 1;
+    while (matchingIndex >= 0 && open[matchingIndex]?.name !== tag.name) matchingIndex -= 1;
+    if (matchingIndex < 0) continue;
+    const [matching] = open.splice(matchingIndex);
+    if (matching && matching.start < range.start) {
+      ranges.push({ start: matching.start, end: range.start });
+    }
+  }
+  for (const unclosed of open) {
+    if (unclosed.start < sourceEnd) ranges.push({ start: unclosed.start, end: sourceEnd });
+  }
+  ranges.sort((first, second) => first.start - second.start || first.end - second.end);
+  const merged = [];
+  for (const range of ranges) {
+    const previous = merged[merged.length - 1];
+    if (previous && range.start <= previous.end) {
+      previous.end = Math.max(previous.end, range.end);
+    } else {
+      merged.push({ ...range });
+    }
+  }
+  return merged;
+}
+function isInsideRange(node, ranges) {
+  let low = 0;
+  let high = ranges.length - 1;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const range = ranges[middle];
+    if (node.start < range.start) high = middle - 1;
+    else if (node.start > range.end) low = middle + 1;
+    else return node.end <= range.end;
+  }
+  return false;
+}
 function parseMarkdown(markdown, options = {}) {
   const source = markdown.startsWith("\uFEFF") ? markdown.slice(1) : markdown;
   const tree = (options.mdx ? mdxParser : markdownParser).parse(source);
+  const htmlRanges = htmlContentRanges(tree, source.length);
   const definitions = /* @__PURE__ */ new Map();
   let properties;
   let invalidFrontmatterProperties = [];
@@ -353,10 +452,7 @@ function parseMarkdown(markdown, options = {}) {
     throw new Error("Malformed YAML frontmatter.");
   }
   const frontmatterEnd = properties?.range.end ?? 0;
-  const afterFrontmatter = source.slice(frontmatterEnd);
-  const leadingBodyWhitespace = afterFrontmatter.length - afterFrontmatter.trimStart().length;
-  const contentBase = frontmatterEnd + leadingBodyWhitespace;
-  const content = afterFrontmatter.trim();
+  const { content, contentBase } = bodyBoundary(source, frontmatterEnd);
   const slugger = new GithubSlugger();
   const headings = [];
   const markdownLinks = [];
@@ -396,6 +492,7 @@ function parseMarkdown(markdown, options = {}) {
       }
       return;
     }
+    if (isInsideRange(originalRange, htmlRanges)) return;
     if (ancestors.some((ancestor) => ancestor.type === "html" || ancestor.type.startsWith("mdx"))) {
       return;
     }
@@ -433,28 +530,29 @@ function parseMarkdown(markdown, options = {}) {
       });
       return;
     }
-    if (node.type === "wikiLink" && node.value) {
+    if (node.type === "wikiLink" && node.value && isEligibleText(ancestors)) {
       const fullRange = { start: originalRange.start - 2, end: originalRange.end };
-      const parts = splitTarget(node.value);
+      const raw = source.slice(fullRange.start, fullRange.end);
+      const wikiData = normalizedWikiData(raw, 2, node.value, node.data?.alias);
+      const parts = splitTarget(wikiData.target);
       semanticLinks.push({
         kind: "wikilink",
-        raw: source.slice(fullRange.start, fullRange.end),
+        raw,
         ...parts,
-        text: node.data?.alias ?? defaultLinkText(parts),
+        text: wikiData.alias ?? defaultLinkText(parts),
         range: adjustedRange(fullRange, contentBase)
       });
       return;
     }
-    if (node.type === "embed" && node.value) {
-      const parts = splitTarget(node.value);
+    if (node.type === "embed" && node.value && isEligibleText(ancestors)) {
       const raw = source.slice(originalRange.start, originalRange.end);
-      const divider = raw.slice(3, -2).indexOf("|");
-      const alias = divider >= 0 ? raw.slice(3 + divider + 1, -2) : void 0;
+      const wikiData = normalizedWikiData(raw, 3, node.value, node.data?.alias);
+      const parts = splitTarget(wikiData.target);
       semanticLinks.push({
         kind: BINARY_ATTACHMENT_EXTENSIONS.has(attachmentExtension(parts.target)) ? "attachment_embed" : "note_embed",
         raw,
         ...parts,
-        text: alias ?? defaultLinkText(parts),
+        text: wikiData.alias ?? defaultLinkText(parts),
         range
       });
       return;
@@ -806,6 +904,22 @@ function hasHeading(entry, heading) {
   const slug = new GithubSlugger2().slug(normalized);
   return entry.headings.has(normalized) || entry.headings.has(slug);
 }
+function indexedHeadings(document) {
+  const headings = new Set(
+    document.headings.flatMap((heading) => [
+      heading.text.normalize("NFC"),
+      heading.slug.normalize("NFC")
+    ])
+  );
+  if (!document.markdown.trim().match(/^#\s+/)) {
+    const generatedTitle = document.title.trim().normalize("NFC");
+    if (generatedTitle) {
+      headings.add(generatedTitle);
+      headings.add(new GithubSlugger2().slug(generatedTitle));
+    }
+  }
+  return headings;
+}
 function resolveLink(entry, link, index, includeMarkdownFragments) {
   if (link.kind === "markdown") {
     if (!includeMarkdownFragments) return void 0;
@@ -871,12 +985,7 @@ function entryFor(document) {
       return { key, stem, basename: path7.posix.basename(stem), kind };
     }),
     names: [...new Set(names)].sort(compareText),
-    headings: new Set(
-      document.headings.flatMap((heading) => [
-        heading.text.normalize("NFC"),
-        heading.slug.normalize("NFC")
-      ])
-    ),
+    headings: indexedHeadings(document),
     blockIds: new Set((document.blockIds ?? []).map((block) => block.id.normalize("NFC")))
   };
 }

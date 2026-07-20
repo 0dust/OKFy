@@ -118,7 +118,7 @@ export function normalizeDocument(raw: RawDocument): NormalizedDocument {
     markdown = `# ${title}\n\n\`\`\`text\n${raw.raw.trim()}\n\`\`\``;
   }
 
-  markdown = markdown.replace(/\r\n/g, "\n").trim();
+  markdown = markdown.replace(/\r\n/g, "\n");
   const sourceId = raw.url ?? raw.filePath ?? raw.sourceId;
   const parsed = parseMarkdown(markdown, { mdx: raw.contentType === "mdx" });
   markdown = parsed.content;

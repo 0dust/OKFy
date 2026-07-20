@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildGraph, extractInternalLinks } from "../src/graph.js";
+import { importLocal } from "../src/importer.js";
 import { normalizeDocument } from "../src/normalize.js";
 import { readBundle } from "../src/reader.js";
 import { validateBundle } from "../src/validate.js";
@@ -30,6 +31,61 @@ function raw(
 }
 
 describe("writer and validator", () => {
+  it("resolves writer-generated title headings without hiding genuinely missing fragments", async () => {
+    const root = await tempOut();
+    const input = path.join(root, "vault");
+    const outDir = path.join(root, "bundle");
+    await fs.mkdir(input);
+    await fs.writeFile(
+      path.join(input, "Source.md"),
+      "# Source\n\n[[Target#Target]] [[Target#Absent]]\n",
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(input, "Target.md"),
+      "---\ntitle: Target\n---\n\nBody without a leading H1.\n",
+      "utf8"
+    );
+
+    const imported = await importLocal({
+      inputPath: input,
+      outDir,
+      force: true,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+    const importedFragments = imported.diagnostics.filter(
+      (diagnostic) => diagnostic.code === "missing_wikilink_fragment"
+    );
+
+    expect(importedFragments).toEqual([
+      {
+        severity: "warning",
+        code: "missing_wikilink_fragment",
+        message:
+          'Missing fragment in Obsidian reference "Target#Absent" from Source.md to Target.md.',
+        sourcePath: "Source.md",
+        rawTarget: "Target#Absent",
+        candidates: ["Target.md"]
+      }
+    ]);
+    await expect(fs.readFile(path.join(outDir, "target.md"), "utf8")).resolves.toContain(
+      "# Target\n\nBody without a leading H1."
+    );
+
+    const report = await validateBundle(outDir);
+    expect(report.issues.filter((item) => item.code === "missing_wikilink_fragment")).toEqual([
+      {
+        severity: "warning",
+        code: "missing_wikilink_fragment",
+        message:
+          'Missing fragment in Obsidian reference "./target.md#absent" from Source.md to Target.md.',
+        path: "Source.md",
+        rawTarget: "./target.md#absent",
+        candidates: ["Target.md"]
+      }
+    ]);
+  });
+
   it("writes valid OKF bundles with index and rewritten internal source links", async () => {
     const outDir = await tempOut();
     const docs: NormalizedDocument[] = [

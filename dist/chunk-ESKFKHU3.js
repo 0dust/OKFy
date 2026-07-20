@@ -21,7 +21,7 @@ import {
   toPosixPath,
   urlToOutputPath,
   validateBundle
-} from "./chunk-5MJ3RX6G.js";
+} from "./chunk-KVQZT56D.js";
 
 // src/normalize.ts
 import * as cheerio from "cheerio";
@@ -101,7 +101,7 @@ function normalizeDocument(raw) {
 ${raw.raw.trim()}
 \`\`\``;
   }
-  markdown = markdown.replace(/\r\n/g, "\n").trim();
+  markdown = markdown.replace(/\r\n/g, "\n");
   const sourceId = raw.url ?? raw.filePath ?? raw.sourceId;
   const parsed = parseMarkdown(markdown, { mdx: raw.contentType === "mdx" });
   markdown = parsed.content;

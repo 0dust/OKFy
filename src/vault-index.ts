@@ -268,6 +268,24 @@ function hasHeading(entry: VaultEntry, heading: string): boolean {
   return entry.headings.has(normalized) || entry.headings.has(slug);
 }
 
+function indexedHeadings(document: NormalizedDocument): Set<string> {
+  const headings = new Set(
+    document.headings.flatMap((heading) => [
+      heading.text.normalize("NFC"),
+      heading.slug.normalize("NFC")
+    ])
+  );
+  // Keep fragment resolution aligned with the H1 that writer.withTitle will prepend.
+  if (!document.markdown.trim().match(/^#\s+/)) {
+    const generatedTitle = document.title.trim().normalize("NFC");
+    if (generatedTitle) {
+      headings.add(generatedTitle);
+      headings.add(new GithubSlugger().slug(generatedTitle));
+    }
+  }
+  return headings;
+}
+
 function resolveLink(
   entry: VaultEntry,
   link: SemanticLink,
@@ -346,12 +364,7 @@ function entryFor(document: NormalizedDocument): VaultEntry | undefined {
       return { key, stem, basename: path.posix.basename(stem), kind };
     }),
     names: [...new Set(names)].sort(compareText),
-    headings: new Set(
-      document.headings.flatMap((heading) => [
-        heading.text.normalize("NFC"),
-        heading.slug.normalize("NFC")
-      ])
-    ),
+    headings: indexedHeadings(document),
     blockIds: new Set((document.blockIds ?? []).map((block) => block.id.normalize("NFC")))
   };
 }

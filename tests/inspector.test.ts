@@ -179,22 +179,22 @@ describe("InspectorReport bundle assembly", () => {
 
   it("exposes semantic validation issues for bundle and workspace readiness sources", async () => {
     const bundleDir = await tempHome();
-    await writeWarningBundle(bundleDir);
+    await writeWarningBundle(bundleDir, "Source#Absent");
 
     const bundleReport = await buildBundleInspectorReport(bundleDir);
     expect(bundleReport.readiness.validationStatus).toBe("valid");
     expect(bundleReport.sources[0]?.validationIssues).toEqual([
       expect.objectContaining({
         severity: "warning",
-        code: "unresolved_wikilink",
+        code: "missing_wikilink_fragment",
         path: "vault/source.md",
-        rawTarget: "Missing Note"
+        rawTarget: "Source#Absent"
       })
     ]);
 
     const okfyHome = await tempHome();
     await registerFixtureSource(okfyHome, "warning");
-    await writeWarningBundle(path.join(okfyHome, "sources", "warning", "bundle"));
+    await writeWarningBundle(path.join(okfyHome, "sources", "warning", "bundle"), "Source#Absent");
     await registerFixtureSource(okfyHome, "clean");
     const sourceSet = await resolveWorkspaceSources({ names: ["warning", "clean"] }, { okfyHome });
     const workspaceReport = await buildWorkspaceInspectorReport(sourceSet.records);
@@ -203,7 +203,7 @@ describe("InspectorReport bundle assembly", () => {
 
     expect(workspaceReport.readiness.validationStatus).toBe("valid");
     expect(warningSource?.validationIssues).toEqual([
-      expect.objectContaining({ code: "unresolved_wikilink", rawTarget: "Missing Note" })
+      expect.objectContaining({ code: "missing_wikilink_fragment", rawTarget: "Source#Absent" })
     ]);
     expect(cleanSource?.validationIssues).toEqual([]);
     expect(workspaceReport.readiness.sources).toEqual(workspaceReport.sources);
