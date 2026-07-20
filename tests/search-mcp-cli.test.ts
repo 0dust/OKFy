@@ -299,6 +299,40 @@ describe("MCP server", () => {
     }
   });
 
+  it("includes semantic warning payloads in bundle_summary without invalidating the bundle", async () => {
+    const root = await tempRoot();
+    const warningBundle = path.join(root, "warning-bundle");
+    await writeSingleConceptBundle(warningBundle, {
+      title: "Semantic Source",
+      type: "Note",
+      body: "[[Missing MCP Target]]"
+    });
+    const server = await createMcpServer({ bundleDir: warningBundle, maxResultChars: 4000 });
+    const callTool = handler(server, "tools/call");
+
+    const summary = parseText(
+      await callTool({
+        method: "tools/call",
+        params: { name: "bundle_summary", arguments: {} }
+      })
+    ) as {
+      validationStatus: string;
+      warningCount: number;
+      validationIssues: Array<Record<string, unknown>>;
+    };
+
+    expect(summary.validationStatus).toBe("valid");
+    expect(summary.warningCount).toBe(1);
+    expect(summary.validationIssues).toEqual([
+      expect.objectContaining({
+        severity: "warning",
+        code: "unresolved_wikilink",
+        path: "concept.md",
+        rawTarget: "Missing MCP Target"
+      })
+    ]);
+  });
+
   it("omits structuredContent when the text payload is truncated", async () => {
     const server = await createMcpServer({ bundleDir, maxResultChars: 25 });
     const callTool = handler(server, "tools/call");

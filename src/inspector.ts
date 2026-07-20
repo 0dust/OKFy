@@ -33,6 +33,7 @@ export interface InspectorReadinessSource {
   conceptCount: number;
   warningCount: number;
   brokenLinkCount: number;
+  validationIssues: ValidationIssue[];
   orphanConcepts: string[];
   freshnessStatus?: string;
   refreshInProgress: boolean;
@@ -253,6 +254,7 @@ async function sourceReport(
       conceptCount: stats.conceptCount,
       warningCount: validation.warningCount,
       brokenLinkCount: brokenLinkCount(validation.issues),
+      validationIssues: validation.issues,
       orphanConcepts: stats.orphanConcepts.map(refFor),
       freshnessStatus: record.state?.status ?? "fresh",
       refreshInProgress: Boolean(record.state?.refreshInProgress),
@@ -347,6 +349,7 @@ function sourceBase(
   | "conceptCount"
   | "warningCount"
   | "brokenLinkCount"
+  | "validationIssues"
   | "orphanConcepts"
   | "freshnessStatus"
   | "refreshInProgress"
@@ -376,6 +379,7 @@ function unavailableSource(
     conceptCount: state?.bundle?.conceptCount ?? 0,
     warningCount: state?.bundle?.warningCount ?? 0,
     brokenLinkCount: 0,
+    validationIssues: [],
     orphanConcepts: [],
     freshnessStatus: state?.status ?? "failed",
     refreshInProgress: Boolean(state?.refreshInProgress),

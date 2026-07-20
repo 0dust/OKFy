@@ -22,6 +22,12 @@ type AstNode = {
   url?: string;
   identifier?: string;
   depth?: number;
+  name?: string;
+  attributes?: Array<{
+    type: string;
+    name?: string;
+    value?: unknown;
+  }>;
   data?: { alias?: string };
   children?: AstNode[];
   position?: {
@@ -41,6 +47,7 @@ export type ParsedMarkdown = {
   markdownLinks: Array<{ href: string; text: string }>;
   semanticLinks: SemanticLink[];
   blockIds: DocumentBlockId[];
+  htmlAnchors: DocumentBlockId[];
   inlineTags: InlineTag[];
   properties?: DocumentProperties;
 };
@@ -246,12 +253,48 @@ export function parseMarkdown(markdown: string, options: { mdx?: boolean } = {})
   const markdownLinks: Array<{ href: string; text: string }> = [];
   const semanticLinks: SemanticLink[] = [];
   const blockIds: DocumentBlockId[] = [];
+  const htmlAnchors: DocumentBlockId[] = [];
   const inlineTags: InlineTag[] = [];
 
   visit(tree, [], (node, ancestors) => {
     const originalRange = nodeRange(node);
     if (!originalRange || originalRange.start < contentBase) return;
     const range = adjustedRange(originalRange, contentBase);
+
+    if (node.type === "html") {
+      const raw = source.slice(originalRange.start, originalRange.end);
+      for (const match of raw.matchAll(/^<a\s+id=(["'])([A-Za-z0-9-]+)\1\s*>$/gi)) {
+        const index = match.index ?? 0;
+        htmlAnchors.push({
+          id: match[2]!,
+          raw: match[0],
+          range: {
+            start: range.start + index,
+            end: range.start + index + match[0].length
+          }
+        });
+      }
+      return;
+    }
+
+    if (node.type.startsWith("mdxJsx")) {
+      const id = node.attributes?.find(
+        (attribute) =>
+          attribute.type === "mdxJsxAttribute" &&
+          attribute.name === "id" &&
+          typeof attribute.value === "string" &&
+          /^[A-Za-z0-9-]+$/.test(attribute.value)
+      )?.value;
+      if (typeof id === "string" && node.name === "a") {
+        htmlAnchors.push({
+          id,
+          raw: source.slice(originalRange.start, originalRange.end),
+          range
+        });
+      }
+      return;
+    }
+
     if (ancestors.some((ancestor) => ancestor.type === "html" || ancestor.type.startsWith("mdx"))) {
       return;
     }
@@ -379,7 +422,17 @@ export function parseMarkdown(markdown: string, options: { mdx?: boolean } = {})
 
   semanticLinks.sort((a, b) => a.range.start - b.range.start || a.range.end - b.range.end);
   blockIds.sort((a, b) => a.range.start - b.range.start);
+  htmlAnchors.sort((a, b) => a.range.start - b.range.start);
   inlineTags.sort((a, b) => a.range.start - b.range.start);
 
-  return { content, headings, markdownLinks, semanticLinks, blockIds, inlineTags, properties };
+  return {
+    content,
+    headings,
+    markdownLinks,
+    semanticLinks,
+    blockIds,
+    htmlAnchors,
+    inlineTags,
+    properties
+  };
 }

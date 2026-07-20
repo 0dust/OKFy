@@ -110,6 +110,8 @@ export type ValidationIssue = {
   code: string;
   message: string;
   path?: string;
+  rawTarget?: string;
+  candidates?: string[];
 };
 
 export type ValidationReport = {

@@ -447,6 +447,117 @@ describe("writer and validator", () => {
     );
   });
 
+  it("reproduces deterministic Obsidian semantic warnings from a generated bundle", async () => {
+    const outDir = await tempOut();
+    const documents = [
+      normalizeDocument({
+        ...raw({
+          sourceId: "notes/source.mdx",
+          filePath: "notes/source.mdx",
+          raw: [
+            "# Source",
+            "",
+            "[[Missing <script>]] [[Setup]] [[index#Home]] [[index#^step]] [[index#Absent Heading]]",
+            "",
+            "`[[Code Only]]`",
+            "",
+            "<span>[[HTML Only]]</span>",
+            "",
+            "![[diagram.png|600]]"
+          ].join("\n")
+        }),
+        contentType: "mdx"
+      }),
+      normalizeDocument(
+        raw({ sourceId: "one/Setup.md", filePath: "one/Setup.md", raw: "# Setup One" })
+      ),
+      normalizeDocument(
+        raw({ sourceId: "two/Setup.md", filePath: "two/Setup.md", raw: "# Setup Two" })
+      ),
+      normalizeDocument(
+        raw({
+          sourceId: "index.md",
+          filePath: "index.md",
+          raw: "# Home\n\nStable block. ^step"
+        })
+      )
+    ];
+    resolveVaultDocuments(documents);
+    await writeOkfBundle(documents, {
+      outDir,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+
+    const report = await validateBundle(outDir);
+    const semanticIssues = report.issues.filter((item) => item.code.includes("wikilink"));
+
+    expect(report.valid).toBe(true);
+    expect(semanticIssues).toEqual([
+      {
+        severity: "warning",
+        code: "missing_wikilink_fragment",
+        message:
+          'Missing fragment in Obsidian reference "../home.md#absent-heading" from notes/source.mdx to index.md.',
+        path: "notes/source.mdx",
+        rawTarget: "../home.md#absent-heading",
+        candidates: ["index.md"]
+      },
+      {
+        severity: "warning",
+        code: "unresolved_wikilink",
+        message: 'Unresolved Obsidian reference "Missing <script>" in notes/source.mdx.',
+        path: "notes/source.mdx",
+        rawTarget: "Missing <script>"
+      },
+      {
+        severity: "warning",
+        code: "ambiguous_wikilink",
+        message:
+          'Ambiguous Obsidian reference "Setup" in notes/source.mdx: one/Setup.md, two/Setup.md.',
+        path: "notes/source.mdx",
+        rawTarget: "Setup",
+        candidates: ["one/Setup.md", "two/Setup.md"]
+      }
+    ]);
+    expect(report.warningCount).toBe(3);
+    expect(report.issues.filter((item) => item.code === "broken_internal_link")).toEqual([]);
+  });
+
+  it("does not accept block anchors written inside code literals", async () => {
+    const outDir = await tempOut();
+    const documents = [
+      normalizeDocument(
+        raw({
+          sourceId: "source.md",
+          filePath: "source.md",
+          raw: "# Source\n\n[[target#^code-only]]"
+        })
+      ),
+      normalizeDocument(
+        raw({
+          sourceId: "target.md",
+          filePath: "target.md",
+          raw: '# Target\n\n`<a id="code-only"></a>`'
+        })
+      )
+    ];
+    resolveVaultDocuments(documents);
+    await writeOkfBundle(documents, {
+      outDir,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+
+    const report = await validateBundle(outDir);
+    expect(report.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "missing_wikilink_fragment",
+          rawTarget: "./target.md#code-only"
+        })
+      ])
+    );
+  });
+
   it("resolves absolute bundle-relative links from bundle root", async () => {
     const bundle = await readBundle(path.join(fixtureRoot, "okf-absolute-link-valid"));
     const graph = buildGraph(bundle);

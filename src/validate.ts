@@ -2,11 +2,19 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { hasFrontmatter, parseFrontmatter, type ParsedFrontmatter } from "./frontmatter.js";
 import { buildGraph, extractInternalLinks } from "./graph.js";
+import { parseMarkdown } from "./markdown-ast.js";
 import { isConceptMarkdownPath, isReservedOkfPath } from "./okf.js";
 import { readBundle } from "./reader.js";
+import { resolveVaultDocuments } from "./vault-index.js";
 import { listMarkdownFiles } from "./util/markdown-files.js";
 import { toPosixPath } from "./util/path.js";
-import type { BundleStats, ValidationIssue, ValidationReport } from "./types.js";
+import type {
+  BundleStats,
+  Concept,
+  NormalizedDocument,
+  ValidationIssue,
+  ValidationReport
+} from "./types.js";
 
 function issue(
   severity: "error" | "warning",
@@ -118,6 +126,46 @@ function validateReservedFile(raw: string, rel: string, issues: ValidationIssue[
   if (name === "log.md") validateLogFile(raw, rel, issues);
 }
 
+function conceptSourcePath(concept: Concept): string {
+  const resourcePath = concept.resource?.split(/[?#]/, 1)[0] ?? "";
+  if (resourcePath && !/^[a-z][a-z0-9+.-]*:/i.test(resourcePath)) return resourcePath;
+  return concept.path;
+}
+
+function semanticDocument(concept: Concept): NormalizedDocument {
+  const sourcePath = conceptSourcePath(concept);
+  const parsed = parseMarkdown(concept.body, { mdx: /\.mdx$/i.test(sourcePath) });
+  return {
+    sourceId: sourcePath,
+    sourcePath,
+    outputPath: concept.path,
+    title: concept.title ?? path.posix.basename(concept.path, path.posix.extname(concept.path)),
+    markdown: parsed.content,
+    resource: concept.resource,
+    headings: parsed.headings.map(({ depth, text, slug }) => ({ depth, text, slug })),
+    links: parsed.markdownLinks,
+    tags: concept.tags,
+    type: concept.type,
+    aliases: concept.aliases,
+    semanticLinks: parsed.semanticLinks,
+    blockIds: [...parsed.blockIds, ...parsed.htmlAnchors]
+  };
+}
+
+function semanticValidationIssues(concepts: Concept[]): ValidationIssue[] {
+  const diagnostics = resolveVaultDocuments(concepts.map(semanticDocument), {
+    includeMarkdownFragments: true
+  });
+  return diagnostics.map((diagnostic) => ({
+    severity: diagnostic.severity,
+    code: diagnostic.code,
+    message: diagnostic.message,
+    path: diagnostic.sourcePath,
+    rawTarget: diagnostic.rawTarget,
+    ...(diagnostic.candidates ? { candidates: diagnostic.candidates } : {})
+  }));
+}
+
 export async function validateBundle(bundleDir: string): Promise<ValidationReport> {
   const issues: ValidationIssue[] = [];
   let files: string[] = [];
@@ -197,10 +245,12 @@ export async function validateBundle(bundleDir: string): Promise<ValidationRepor
   }
 
   const concepts = await readBundle(bundleDir).catch(() => new Map());
-  const canonicalIds = new Set([...concepts.values()].map((concept) => concept.id));
-  for (const concept of new Map(
-    [...concepts.values()].map((concept) => [concept.id, concept])
-  ).values()) {
+  const canonicalConcepts = [
+    ...new Map([...concepts.values()].map((concept) => [concept.id, concept])).values()
+  ].sort((first, second) => first.id.localeCompare(second.id));
+  issues.push(...semanticValidationIssues(canonicalConcepts));
+  const canonicalIds = new Set(canonicalConcepts.map((concept) => concept.id));
+  for (const concept of canonicalConcepts) {
     for (const target of extractInternalLinks(concept)) {
       if (!canonicalIds.has(target)) {
         issues.push(

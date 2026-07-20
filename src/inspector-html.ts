@@ -29,6 +29,7 @@ type RenderSource = {
   conceptCount?: number;
   warningCount?: number;
   brokenLinkCount?: number;
+  validationIssues?: RenderValidationIssue[];
   orphanConcepts?: string[];
   refreshInProgress?: boolean;
   nextRefreshAllowedAt?: string | null;
@@ -36,6 +37,15 @@ type RenderSource = {
   validationStatus?: string;
   availabilityStatus?: string;
   lastRefreshError?: unknown;
+};
+
+type RenderValidationIssue = {
+  severity?: string;
+  code?: string;
+  message?: string;
+  path?: string;
+  rawTarget?: string;
+  candidates?: string[];
 };
 
 type RenderConcept = {
@@ -137,6 +147,8 @@ section h2{margin:0 0 14px;font-size:18px;letter-spacing:0}
 .source{border:1px solid var(--line);border-radius:6px;padding:12px;background:#fbfcfb}
 .source b{display:block}
 .source small{display:block;margin-top:4px;color:var(--muted)}
+.warnings{margin:12px 0 0;padding-left:20px;color:var(--warn)}
+.warnings code{color:var(--ink)}
 .workspace{display:grid;grid-template-columns:minmax(0,0.95fr) minmax(0,1.05fr);gap:18px;align-items:start}
 .toolbar{display:grid;grid-template-columns:minmax(180px,1fr) minmax(130px,180px) minmax(130px,180px);gap:10px;align-items:center;margin-bottom:14px}
 .toolbar input,.toolbar select{width:100%;border:1px solid var(--line);border-radius:6px;padding:10px 12px;background:var(--paper);color:var(--ink)}
@@ -294,9 +306,24 @@ function renderSources(sources: NormalizedReport["sources"]): string {
   return `<div class="source-grid">${sources
     .map(
       (source) =>
-        `<div class="source"><b>${escapeHtml(source.label ?? source.name ?? source.sourceName ?? "source")}</b><small>${escapeHtml(source.kind ?? sourceKind(source) ?? "local")} / ${escapeHtml(source.validationStatus ?? "unknown")} / ${escapeHtml(source.freshnessStatus ?? "snapshot")}</small><small>Concepts: ${escapeHtml(String(source.conceptCount ?? 0))}</small>${source.lastRefreshError ? `<small class="error">${escapeHtml(errorMessage(source.lastRefreshError))}</small>` : ""}</div>`
+        `<div class="source"><b>${escapeHtml(source.label ?? source.name ?? source.sourceName ?? "source")}</b><small>${escapeHtml(source.kind ?? sourceKind(source) ?? "local")} / ${escapeHtml(source.validationStatus ?? "unknown")} / ${escapeHtml(source.freshnessStatus ?? "snapshot")}</small><small>Concepts: ${escapeHtml(String(source.conceptCount ?? 0))}</small>${renderSemanticWarnings(source.validationIssues ?? [])}${source.lastRefreshError ? `<small class="error">${escapeHtml(errorMessage(source.lastRefreshError))}</small>` : ""}</div>`
     )
     .join("")}</div>`;
+}
+
+function renderSemanticWarnings(issues: RenderValidationIssue[]): string {
+  const semanticIssues = issues.filter((issue) =>
+    ["unresolved_wikilink", "ambiguous_wikilink", "missing_wikilink_fragment"].includes(
+      issue.code ?? ""
+    )
+  );
+  if (!semanticIssues.length) return "";
+  return `<small>Semantic warnings</small><ul class="warnings">${semanticIssues
+    .map(
+      (issue) =>
+        `<li><code>${escapeHtml(issue.code ?? "warning")}</code>: ${escapeHtml(issue.rawTarget ?? issue.message ?? "")}</li>`
+    )
+    .join("")}</ul>`;
 }
 
 function renderMap(

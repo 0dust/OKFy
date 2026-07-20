@@ -58,6 +58,15 @@ function reportFixture(): InspectorReport {
         conceptCount: 2,
         warningCount: 1,
         brokenLinkCount: 0,
+        validationIssues: [
+          {
+            severity: "warning",
+            code: "unresolved_wikilink",
+            message: 'Unresolved Obsidian reference "Missing <script>" in vault/source.md.',
+            path: "vault/source.md",
+            rawTarget: "Missing <script>"
+          }
+        ],
         orphanConcepts: [],
         refreshInProgress: false,
         lastSuccessfulRefreshAt: "2026-06-23T00:00:00.000Z",
@@ -374,6 +383,10 @@ describe("renderInspectorHtml", () => {
     expect(html).toContain("Broken links");
     expect(html).toContain("Orphan concepts");
     expect(html).toContain("Source freshness");
+    expect(html).toContain("Semantic warnings");
+    expect(html).toContain("unresolved_wikilink");
+    expect(html).toContain("Missing &lt;script&gt;");
+    expect(html).not.toContain("Missing <script>");
     expect(html).toContain("Quickstart");
     expect(html).toContain("API Reference");
     expect(html).toContain("bundle_summary");

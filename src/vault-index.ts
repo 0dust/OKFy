@@ -5,8 +5,12 @@ import type { DocumentDiagnostic, NormalizedDocument, SemanticLink } from "./typ
 type VaultEntry = {
   document: NormalizedDocument;
   sourceKey: string;
-  stem: string;
-  basename: string;
+  identityPaths: Array<{
+    key: string;
+    stem: string;
+    basename: string;
+    kind: "source" | "output";
+  }>;
   names: string[];
   headings: Set<string>;
   blockIds: Set<string>;
@@ -32,8 +36,23 @@ function stripMarkdownExtension(value: string): string {
   return value.replace(/\.(?:md|mdx)$/i, "");
 }
 
-function pathMatches(entry: VaultEntry, target: string): boolean {
-  return entry.sourceKey === target || entry.stem === stripMarkdownExtension(target);
+function decodeFragment(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function identitiesFor(entry: VaultEntry, kind: "source" | "output") {
+  return entry.identityPaths.filter((identity) => identity.kind === kind);
+}
+
+function pathMatches(entry: VaultEntry, target: string, kind: "source" | "output"): boolean {
+  const stem = stripMarkdownExtension(target);
+  return identitiesFor(entry, kind).some(
+    (identity) => identity.key === target || identity.stem === stem
+  );
 }
 
 function uniqueEntries(entries: VaultEntry[]): VaultEntry[] {
@@ -47,15 +66,24 @@ function resultFor(entries: VaultEntry[]): Resolution | undefined {
   return { status: "ambiguous", entries: candidates };
 }
 
-function exactPath(entries: VaultEntry[], target: string): VaultEntry[] {
-  return entries.filter((entry) => pathMatches(entry, target));
+function exactPath(entries: VaultEntry[], target: string, kind: "source" | "output"): VaultEntry[] {
+  return entries.filter((entry) => pathMatches(entry, target, kind));
 }
 
-function suffixOrBasename(entries: VaultEntry[], target: string): VaultEntry[] {
+function suffixOrBasename(
+  entries: VaultEntry[],
+  target: string,
+  kind: "source" | "output"
+): VaultEntry[] {
   const stem = stripMarkdownExtension(target);
   const basename = path.posix.basename(stem);
-  return entries.filter(
-    (entry) => entry.stem === stem || entry.stem.endsWith(`/${stem}`) || entry.basename === basename
+  return entries.filter((entry) =>
+    identitiesFor(entry, kind).some(
+      (identity) =>
+        identity.stem === stem ||
+        identity.stem.endsWith(`/${stem}`) ||
+        identity.basename === basename
+    )
   );
 }
 
@@ -66,7 +94,9 @@ function titleOrAlias(entries: VaultEntry[], target: string): VaultEntry[] {
 function caseFoldedCandidates(
   entries: VaultEntry[],
   sourceRelative: string,
-  vaultRelative: string
+  vaultRelative: string,
+  kind: "source" | "output",
+  includeNames: boolean
 ): VaultEntry[] {
   const sourceFolded = sourceRelative.toLocaleLowerCase("en-US");
   const vaultFolded = vaultRelative.toLocaleLowerCase("en-US");
@@ -74,36 +104,56 @@ function caseFoldedCandidates(
   const basenameFolded = path.posix.basename(stemFolded);
 
   return entries.filter((entry) => {
-    const key = entry.sourceKey.toLocaleLowerCase("en-US");
-    const stem = entry.stem.toLocaleLowerCase("en-US");
     return (
-      key === sourceFolded ||
-      stem === stripMarkdownExtension(sourceFolded) ||
-      key === vaultFolded ||
-      stem === stemFolded ||
-      stem.endsWith(`/${stemFolded}`) ||
-      entry.basename.toLocaleLowerCase("en-US") === basenameFolded ||
-      entry.names.some((name) => name.toLocaleLowerCase("en-US") === vaultFolded)
+      identitiesFor(entry, kind).some((identity) => {
+        const key = identity.key.toLocaleLowerCase("en-US");
+        const stem = identity.stem.toLocaleLowerCase("en-US");
+        return (
+          key === sourceFolded ||
+          stem === stripMarkdownExtension(sourceFolded) ||
+          key === vaultFolded ||
+          stem === stemFolded ||
+          stem.endsWith(`/${stemFolded}`) ||
+          identity.basename.toLocaleLowerCase("en-US") === basenameFolded
+        );
+      }) ||
+      (includeNames && entry.names.some((name) => name.toLocaleLowerCase("en-US") === vaultFolded))
     );
   });
 }
 
-function resolveTarget(entries: VaultEntry[], sourceKey: string, rawTarget: string): Resolution {
+function resolveTarget(
+  entries: VaultEntry[],
+  sourceKey: string,
+  rawTarget: string,
+  options: { pathKind?: "source" | "output"; includeNames?: boolean } = {}
+): Resolution {
   const target = normalizeVaultPath(rawTarget);
   const sourceRelative = normalizeVaultPath(path.posix.join(path.posix.dirname(sourceKey), target));
+  const pathKind = options.pathKind ?? "source";
 
   for (const candidates of [
-    exactPath(entries, sourceRelative),
-    exactPath(entries, target),
-    suffixOrBasename(entries, target),
-    titleOrAlias(entries, target)
+    exactPath(entries, sourceRelative, pathKind),
+    exactPath(entries, target, pathKind),
+    suffixOrBasename(entries, target, pathKind),
+    ...(options.includeNames === false ? [] : [titleOrAlias(entries, target)])
   ]) {
     const result = resultFor(candidates);
     if (result) return result;
   }
 
   return (
-    resultFor(caseFoldedCandidates(entries, sourceRelative, target)) ?? { status: "unresolved" }
+    resultFor(
+      caseFoldedCandidates(
+        entries,
+        sourceRelative,
+        target,
+        pathKind,
+        options.includeNames !== false
+      )
+    ) ?? {
+      status: "unresolved"
+    }
   );
 }
 
@@ -166,8 +216,38 @@ function hasHeading(entry: VaultEntry, heading: string): boolean {
 function resolveLink(
   entry: VaultEntry,
   link: SemanticLink,
-  entries: VaultEntry[]
+  entries: VaultEntry[],
+  includeMarkdownFragments: boolean
 ): DocumentDiagnostic | undefined {
+  if (link.kind === "markdown") {
+    if (!includeMarkdownFragments) return undefined;
+    const hash = link.target.indexOf("#");
+    if (hash < 0) return undefined;
+    const target = link.target.slice(0, hash);
+    const fragment = link.target.slice(hash + 1);
+    if (!target || !fragment || /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(target)) return undefined;
+    const outputSourceKey = normalizeVaultPath(entry.document.outputPath ?? entry.sourceKey);
+    const resolution = resolveTarget(entries, outputSourceKey, target, {
+      pathKind: "output",
+      includeNames: false
+    });
+    if (resolution.status !== "resolved") return undefined;
+    const decodedFragment = decodeFragment(fragment).normalize("NFC");
+    if (
+      resolution.entry.headings.has(decodedFragment) ||
+      resolution.entry.blockIds.has(decodedFragment.replace(/^\^/, ""))
+    ) {
+      return undefined;
+    }
+    return {
+      severity: "warning",
+      code: "missing_wikilink_fragment",
+      message: `Missing fragment in Obsidian reference ${JSON.stringify(link.target)} from ${entry.sourceKey} to ${resolution.entry.sourceKey}.`,
+      sourcePath: entry.sourceKey,
+      rawTarget: link.target,
+      candidates: [resolution.entry.sourceKey]
+    };
+  }
   if (link.kind !== "wikilink" && link.kind !== "note_embed") return undefined;
 
   const resolution = resolveTarget(entries, entry.sourceKey, link.target || entry.sourceKey);
@@ -196,15 +276,20 @@ function resolveLink(
 function entryFor(document: NormalizedDocument): VaultEntry | undefined {
   const sourceKey = normalizeVaultPath(document.sourcePath ?? document.sourceId);
   if (!/\.(?:md|mdx)$/i.test(sourceKey)) return undefined;
-  const stem = stripMarkdownExtension(sourceKey);
+  const outputKey = normalizeVaultPath(document.outputPath ?? "");
   const names = [document.title, ...(document.aliases ?? [])]
     .map((name) => name.trim().normalize("NFC"))
     .filter(Boolean);
   return {
     document,
     sourceKey,
-    stem,
-    basename: path.posix.basename(stem),
+    identityPaths: [
+      { key: sourceKey, kind: "source" as const },
+      ...(outputKey ? [{ key: outputKey, kind: "output" as const }] : [])
+    ].map(({ key, kind }) => {
+      const stem = stripMarkdownExtension(key);
+      return { key, stem, basename: path.posix.basename(stem), kind };
+    }),
     names: [...new Set(names)].sort(compareText),
     headings: new Set(
       document.headings.flatMap((heading) => [
@@ -225,7 +310,10 @@ function compareDiagnostics(first: DocumentDiagnostic, second: DocumentDiagnosti
   );
 }
 
-export function resolveVaultDocuments(documents: NormalizedDocument[]): DocumentDiagnostic[] {
+export function resolveVaultDocuments(
+  documents: NormalizedDocument[],
+  options: { includeMarkdownFragments?: boolean } = {}
+): DocumentDiagnostic[] {
   const entries = documents
     .map(entryFor)
     .filter((entry): entry is VaultEntry => Boolean(entry))
@@ -235,7 +323,12 @@ export function resolveVaultDocuments(documents: NormalizedDocument[]): Document
   for (const entry of entries) {
     const documentDiagnostics: DocumentDiagnostic[] = [];
     for (const link of entry.document.semanticLinks ?? []) {
-      const diagnostic = resolveLink(entry, link, entries);
+      const diagnostic = resolveLink(
+        entry,
+        link,
+        entries,
+        Boolean(options.includeMarkdownFragments)
+      );
       if (diagnostic) documentDiagnostics.push(diagnostic);
     }
     documentDiagnostics.sort(compareDiagnostics);
