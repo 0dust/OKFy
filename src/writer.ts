@@ -13,6 +13,7 @@ import {
 } from "./util/path.js";
 import { descriptionFromMarkdown } from "./normalize.js";
 import { resolveOkfyHome } from "./okfy-home.js";
+import { isRecord } from "./util/object.js";
 import type { NormalizedDocument, SemanticLink, SourceRange } from "./types.js";
 
 export type WriteBundleOptions = {
@@ -46,10 +47,6 @@ const OWNED_FRONTMATTER_KEYS = new Set([
 ]);
 
 const UNSAFE_PROPERTY_KEYS = new Set(["__proto__", "constructor", "prototype"]);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
 
 function stableYamlValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stableYamlValue);
@@ -169,11 +166,14 @@ function applyEdits(markdown: string, editMap: Map<string, TextEdit>): string {
     }
   }
 
-  let rendered = markdown;
-  for (const edit of edits.reverse()) {
-    rendered = `${rendered.slice(0, edit.start)}${edit.replacement}${rendered.slice(edit.end)}`;
+  const rendered: string[] = [];
+  let cursor = 0;
+  for (const edit of edits) {
+    rendered.push(markdown.slice(cursor, edit.start), edit.replacement);
+    cursor = edit.end;
   }
-  return rendered;
+  rendered.push(markdown.slice(cursor));
+  return rendered.join("");
 }
 
 function rewriteMarkdownDestination(

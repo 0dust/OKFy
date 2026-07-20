@@ -7,6 +7,7 @@ import remarkGfm from "remark-gfm";
 import remarkMdx from "remark-mdx";
 import remarkParse from "remark-parse";
 import { unified } from "unified";
+import { isRecord } from "./util/object.js";
 import type {
   DocumentBlockId,
   DocumentHeading,
@@ -102,10 +103,6 @@ function visit(
 ): void {
   callback(node, ancestors);
   for (const child of node.children ?? []) visit(child, [...ancestors, node], callback);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function normalizedStrings(value: unknown): string[] {

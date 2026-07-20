@@ -1,4 +1,5 @@
 import { load } from "js-yaml";
+import { isRecord } from "./util/object.js";
 
 export type ParsedFrontmatter = {
   data: Record<string, unknown>;
@@ -44,8 +45,4 @@ export function parseFrontmatter(raw: string): ParsedFrontmatter {
     data: isRecord(loaded) ? loaded : {},
     content: normalized.slice(closingEnd)
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

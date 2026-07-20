@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { hasFrontmatter, parseFrontmatter, type ParsedFrontmatter } from "./frontmatter.js";
-import { buildGraph, extractInternalLinks } from "./graph.js";
+import { buildGraph, extractInternalLinksFromSemantics } from "./graph.js";
 import { parseMarkdown } from "./markdown-ast.js";
 import { isConceptMarkdownPath, isReservedOkfPath } from "./okf.js";
 import { readBundle } from "./reader.js";
@@ -152,18 +152,25 @@ function semanticDocument(concept: Concept): NormalizedDocument {
   };
 }
 
-function semanticValidationIssues(concepts: Concept[]): ValidationIssue[] {
-  const diagnostics = resolveVaultDocuments(concepts.map(semanticDocument), {
+function semanticValidation(concepts: Concept[]): {
+  documents: NormalizedDocument[];
+  issues: ValidationIssue[];
+} {
+  const documents = concepts.map(semanticDocument);
+  const diagnostics = resolveVaultDocuments(documents, {
     includeMarkdownFragments: true
   });
-  return diagnostics.map((diagnostic) => ({
-    severity: diagnostic.severity,
-    code: diagnostic.code,
-    message: diagnostic.message,
-    path: diagnostic.sourcePath,
-    rawTarget: diagnostic.rawTarget,
-    ...(diagnostic.candidates ? { candidates: diagnostic.candidates } : {})
-  }));
+  return {
+    documents,
+    issues: diagnostics.map((diagnostic) => ({
+      severity: diagnostic.severity,
+      code: diagnostic.code,
+      message: diagnostic.message,
+      path: diagnostic.sourcePath,
+      rawTarget: diagnostic.rawTarget,
+      ...(diagnostic.candidates ? { candidates: diagnostic.candidates } : {})
+    }))
+  };
 }
 
 export async function validateBundle(bundleDir: string): Promise<ValidationReport> {
@@ -248,10 +255,14 @@ export async function validateBundle(bundleDir: string): Promise<ValidationRepor
   const canonicalConcepts = [
     ...new Map([...concepts.values()].map((concept) => [concept.id, concept])).values()
   ].sort((first, second) => first.id.localeCompare(second.id));
-  issues.push(...semanticValidationIssues(canonicalConcepts));
+  const semantic = semanticValidation(canonicalConcepts);
+  issues.push(...semantic.issues);
   const canonicalIds = new Set(canonicalConcepts.map((concept) => concept.id));
-  for (const concept of canonicalConcepts) {
-    for (const target of extractInternalLinks(concept)) {
+  for (const [index, concept] of canonicalConcepts.entries()) {
+    for (const target of extractInternalLinksFromSemantics(
+      concept.path,
+      semantic.documents[index]?.semanticLinks ?? []
+    )) {
       if (!canonicalIds.has(target)) {
         issues.push(
           issue(
