@@ -137,7 +137,9 @@ function candidatesFrom(...candidateSets: Array<VaultEntry[] | undefined>): Vaul
 
 function exactPath(index: VaultIndex, target: string, kind: "source" | "output"): VaultEntry[] {
   const paths = index.paths[kind];
-  return candidatesFrom(paths.keys.get(target), paths.stems.get(stripMarkdownExtension(target)));
+  const exactKeyCandidates = paths.keys.get(target);
+  if (exactKeyCandidates?.length) return exactKeyCandidates;
+  return paths.stems.get(stripMarkdownExtension(target)) ?? [];
 }
 
 function suffixOrBasename(

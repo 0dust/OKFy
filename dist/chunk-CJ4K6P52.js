@@ -107,7 +107,7 @@ function internalLinksFromSemantics(conceptPath, semanticLinks) {
 // src/markdown-ast.ts
 import wikiLinkPlugin from "@flowershow/remark-wiki-link";
 import GithubSlugger from "github-slugger";
-import { load } from "js-yaml";
+import { load as load2 } from "js-yaml";
 import { toString } from "mdast-util-to-string";
 import remarkFrontmatter from "remark-frontmatter";
 import remarkGfm from "remark-gfm";
@@ -115,9 +115,49 @@ import remarkMdx from "remark-mdx";
 import remarkParse from "remark-parse";
 import { unified } from "unified";
 
+// src/frontmatter.ts
+import { load } from "js-yaml";
+
 // src/util/object.ts
 function isRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+// src/frontmatter.ts
+var UTF8_BOM = "\uFEFF";
+function stripLeadingBom(raw) {
+  return raw.startsWith(UTF8_BOM) ? raw.slice(1) : raw;
+}
+function hasFrontmatter(raw) {
+  return /^---[ \t]*(?:\r?\n|$)/.test(stripLeadingBom(raw));
+}
+function parseFrontmatter(raw) {
+  const normalized = stripLeadingBom(raw);
+  if (!hasFrontmatter(normalized)) return { data: {}, content: normalized };
+  const openingEnd = normalized.indexOf("\n");
+  if (openingEnd < 0) throw new Error("Malformed YAML frontmatter.");
+  let lineStart = openingEnd + 1;
+  let closingEnd = -1;
+  let yamlEnd = -1;
+  while (lineStart <= normalized.length) {
+    const nextNewline = normalized.indexOf("\n", lineStart);
+    const lineEnd = nextNewline < 0 ? normalized.length : nextNewline;
+    const line = normalized.slice(lineStart, lineEnd).replace(/\r$/, "");
+    if (/^---[ \t]*$/.test(line)) {
+      yamlEnd = lineStart;
+      closingEnd = nextNewline < 0 ? lineEnd : nextNewline + 1;
+      break;
+    }
+    if (nextNewline < 0) break;
+    lineStart = nextNewline + 1;
+  }
+  if (closingEnd < 0 || yamlEnd < 0) throw new Error("Malformed YAML frontmatter.");
+  const yaml = normalized.slice(openingEnd + 1, yamlEnd).replace(/\r?\n$/, "");
+  const loaded = load(yaml);
+  return {
+    data: isRecord(loaded) ? loaded : {},
+    content: normalized.slice(closingEnd)
+  };
 }
 
 // src/markdown-ast.ts
@@ -211,7 +251,7 @@ function hasOwn(data, property) {
 function sourceProperties(node) {
   const range = nodeRange(node);
   if (!range) return void 0;
-  const loaded = load(node.value ?? "");
+  const loaded = load2(node.value ?? "");
   const data = isRecord(loaded) ? loaded : {};
   const invalidProperties = [];
   const title = optionalString(data.title);
@@ -308,6 +348,9 @@ function parseMarkdown(markdown, options = {}) {
       destinationRange: definitionDestinationRange(source, range, node.url)
     });
   });
+  if (hasFrontmatter(source) && !properties) {
+    throw new Error("Malformed YAML frontmatter.");
+  }
   const frontmatterEnd = properties?.range.end ?? 0;
   const afterFrontmatter = source.slice(frontmatterEnd);
   const leadingBodyWhitespace = afterFrontmatter.length - afterFrontmatter.trimStart().length;
@@ -507,44 +550,6 @@ function buildGraph(conceptsByAnyKey) {
 import fs3 from "fs/promises";
 import path6 from "path";
 
-// src/frontmatter.ts
-import { load as load2 } from "js-yaml";
-var UTF8_BOM = "\uFEFF";
-function stripLeadingBom(raw) {
-  return raw.startsWith(UTF8_BOM) ? raw.slice(1) : raw;
-}
-function hasFrontmatter(raw) {
-  return /^---[ \t]*(?:\r?\n|$)/.test(stripLeadingBom(raw));
-}
-function parseFrontmatter(raw) {
-  const normalized = stripLeadingBom(raw);
-  if (!hasFrontmatter(normalized)) return { data: {}, content: normalized };
-  const openingEnd = normalized.indexOf("\n");
-  if (openingEnd < 0) throw new Error("Malformed YAML frontmatter.");
-  let lineStart = openingEnd + 1;
-  let closingEnd = -1;
-  let yamlEnd = -1;
-  while (lineStart <= normalized.length) {
-    const nextNewline = normalized.indexOf("\n", lineStart);
-    const lineEnd = nextNewline < 0 ? normalized.length : nextNewline;
-    const line = normalized.slice(lineStart, lineEnd).replace(/\r$/, "");
-    if (/^---[ \t]*$/.test(line)) {
-      yamlEnd = lineStart;
-      closingEnd = nextNewline < 0 ? lineEnd : nextNewline + 1;
-      break;
-    }
-    if (nextNewline < 0) break;
-    lineStart = nextNewline + 1;
-  }
-  if (closingEnd < 0 || yamlEnd < 0) throw new Error("Malformed YAML frontmatter.");
-  const yaml = normalized.slice(openingEnd + 1, yamlEnd).replace(/\r?\n$/, "");
-  const loaded = load2(yaml);
-  return {
-    data: isRecord(loaded) ? loaded : {},
-    content: normalized.slice(closingEnd)
-  };
-}
-
 // src/okf.ts
 import path4 from "path";
 var RESERVED_FILENAMES = /* @__PURE__ */ new Set(["index.md", "log.md"]);
@@ -705,7 +710,9 @@ function candidatesFrom(...candidateSets) {
 }
 function exactPath(index, target, kind) {
   const paths = index.paths[kind];
-  return candidatesFrom(paths.keys.get(target), paths.stems.get(stripMarkdownExtension(target)));
+  const exactKeyCandidates = paths.keys.get(target);
+  if (exactKeyCandidates?.length) return exactKeyCandidates;
+  return paths.stems.get(stripMarkdownExtension(target)) ?? [];
 }
 function suffixOrBasename(index, target, kind) {
   const stem = stripMarkdownExtension(target);

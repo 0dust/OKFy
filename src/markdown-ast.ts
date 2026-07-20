@@ -7,6 +7,7 @@ import remarkGfm from "remark-gfm";
 import remarkMdx from "remark-mdx";
 import remarkParse from "remark-parse";
 import { unified } from "unified";
+import { hasFrontmatter } from "./frontmatter.js";
 import { isRecord } from "./util/object.js";
 import type {
   DocumentBlockId,
@@ -299,6 +300,10 @@ export function parseMarkdown(markdown: string, options: { mdx?: boolean } = {})
       destinationRange: definitionDestinationRange(source, range, node.url)
     });
   });
+
+  if (hasFrontmatter(source) && !properties) {
+    throw new Error("Malformed YAML frontmatter.");
+  }
 
   const frontmatterEnd = properties?.range.end ?? 0;
   const afterFrontmatter = source.slice(frontmatterEnd);

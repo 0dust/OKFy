@@ -100,6 +100,38 @@ describe("normalization", () => {
     ).toThrow();
   });
 
+  it("rejects an unterminated frontmatter opener without treating later rules as frontmatter", () => {
+    expect(() =>
+      normalizeDocument({
+        sourceId: "unterminated.md",
+        filePath: "unterminated.md",
+        contentType: "markdown",
+        discoveredAt,
+        raw: "---\ntitle: Unterminated\n# Body"
+      })
+    ).toThrow("Malformed YAML frontmatter.");
+
+    const empty = normalizeDocument({
+      sourceId: "empty.md",
+      filePath: "empty.md",
+      contentType: "markdown",
+      discoveredAt,
+      raw: "---\n---\n# Empty Frontmatter"
+    });
+    expect(empty.markdown).toBe("# Empty Frontmatter");
+    expect(empty.properties?.data).toEqual({});
+
+    const thematicBreak = normalizeDocument({
+      sourceId: "thematic-break.md",
+      filePath: "thematic-break.md",
+      contentType: "markdown",
+      discoveredAt,
+      raw: "# Before\n\n---\n\nAfter"
+    });
+    expect(thematicBreak.markdown).toBe("# Before\n\n---\n\nAfter");
+    expect(thematicBreak.properties).toBeUndefined();
+  });
+
   it("warns for incompatible recognized frontmatter properties and preserves fallbacks", () => {
     const doc = normalizeDocument({
       sourceId: "guides/quickstart.md",

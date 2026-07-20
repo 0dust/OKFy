@@ -110,6 +110,26 @@ describe("importLocal filters", () => {
       })
     ).rejects.toThrow();
   });
+
+  it("fails the import before writing when a frontmatter opener is unterminated", async () => {
+    const root = await tempOut();
+    const input = path.join(root, "vault");
+    const outDir = path.join(root, "bundle");
+    await writeVault(input, {
+      "good.md": "# Good",
+      "unterminated.md": "---\ntitle: Unterminated\n# Body"
+    });
+
+    await expect(
+      importLocal({
+        inputPath: input,
+        outDir,
+        force: true,
+        timestamp: "2026-06-14T00:00:00.000Z"
+      })
+    ).rejects.toThrow("Malformed YAML frontmatter.");
+    await expect(fs.stat(outDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
 });
 
 describe("importLocal Obsidian resolution", () => {
@@ -210,6 +230,57 @@ describe("importLocal Obsidian resolution", () => {
     expect(result.diagnostics.map(({ code, rawTarget }) => ({ code, rawTarget }))).toEqual([
       { code: "unresolved_wikilink", rawTarget: "missing/folder/Setup" },
       { code: "unresolved_wikilink", rawTarget: "missing/folder/setup" }
+    ]);
+  });
+
+  it("prefers explicit Markdown extensions before extensionless path matches", async () => {
+    const root = await tempOut();
+    const input = path.join(root, "vault");
+    const outDir = path.join(root, "bundle");
+    await writeVault(input, {
+      "notes/source.md": [
+        "# Source",
+        "",
+        "[[Local.md]] [[Local.mdx]] [[Local]]",
+        "[[root/Root.md]] [[root/Root.mdx]] [[root/Root]]"
+      ].join("\n"),
+      "notes/Local.md": "# Local Markdown",
+      "notes/Local.mdx": "# Local MDX",
+      "root/Root.md": "# Root Markdown",
+      "root/Root.mdx": "# Root MDX"
+    });
+
+    const result = await importLocal({
+      inputPath: input,
+      outDir,
+      force: true,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+    const source = result.documents.find((document) => document.sourcePath === "notes/source.md");
+
+    expect(
+      source?.semanticLinks?.map((link) => [link.target, link.resolution, link.resolvedSourceKey])
+    ).toEqual([
+      ["Local.md", "resolved", "notes/Local.md"],
+      ["Local.mdx", "resolved", "notes/Local.mdx"],
+      ["Local", "ambiguous", undefined],
+      ["root/Root.md", "resolved", "root/Root.md"],
+      ["root/Root.mdx", "resolved", "root/Root.mdx"],
+      ["root/Root", "ambiguous", undefined]
+    ]);
+    expect(
+      result.diagnostics.map(({ code, rawTarget, candidates }) => ({ code, rawTarget, candidates }))
+    ).toEqual([
+      {
+        code: "ambiguous_wikilink",
+        rawTarget: "Local",
+        candidates: ["notes/Local.md", "notes/Local.mdx"]
+      },
+      {
+        code: "ambiguous_wikilink",
+        rawTarget: "root/Root",
+        candidates: ["root/Root.md", "root/Root.mdx"]
+      }
     ]);
   });
 
