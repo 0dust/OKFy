@@ -329,23 +329,102 @@ function bodyBoundary(source: string, bodyStart: number): { content: string; con
 
 type HtmlTag = { kind: "open" | "close"; name: string };
 
-function htmlTag(node: AstNode): HtmlTag | undefined {
-  if (node.type !== "html" || !node.value) return undefined;
-  const value = node.value.trim();
-  const closing = value.match(/^<\s*\/\s*([A-Za-z][A-Za-z0-9-]*)\s*>$/);
-  if (closing) return { kind: "close", name: closing[1]!.toLowerCase() };
-  const opening = value.match(/^<\s*([A-Za-z][A-Za-z0-9-]*)(?:\s[\s\S]*?)?\s*>$/);
-  if (!opening || /\/\s*>$/.test(value)) return undefined;
-  const name = opening[1]!.toLowerCase();
-  return VOID_HTML_ELEMENTS.has(name) ? undefined : { kind: "open", name };
+function htmlTagEnd(raw: string, start: number, declaration: boolean): number {
+  let quote: '"' | "'" | undefined;
+  let subsetDepth = 0;
+  for (let index = start; index < raw.length; index += 1) {
+    const character = raw[index];
+    if (quote) {
+      if (character === quote) quote = undefined;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (declaration && character === "[") subsetDepth += 1;
+    else if (declaration && character === "]" && subsetDepth > 0) subsetDepth -= 1;
+    else if (character === ">" && subsetDepth === 0) return index;
+  }
+  return -1;
 }
 
-function htmlContentRanges(tree: AstNode, sourceEnd: number): SourceRange[] {
+function htmlTags(node: AstNode, source: string): Array<{ tag: HtmlTag; range: SourceRange }> {
+  const nodePosition = nodeRange(node);
+  if (node.type !== "html" || !nodePosition) return [];
+  const raw = source.slice(nodePosition.start, nodePosition.end);
+  const tags: Array<{ tag: HtmlTag; range: SourceRange }> = [];
+  let cursor = 0;
+
+  while (cursor < raw.length) {
+    const start = raw.indexOf("<", cursor);
+    if (start < 0) break;
+
+    if (raw.startsWith("<!--", start)) {
+      const end = raw.indexOf("-->", start + 4);
+      cursor = end < 0 ? raw.length : end + 3;
+      continue;
+    }
+    if (raw.startsWith("<![CDATA[", start)) {
+      const end = raw.indexOf("]]>", start + 9);
+      cursor = end < 0 ? raw.length : end + 3;
+      continue;
+    }
+    if (raw[start + 1] === "!" || raw[start + 1] === "?") {
+      const end = htmlTagEnd(raw, start + 2, raw[start + 1] === "!");
+      cursor = end < 0 ? raw.length : end + 1;
+      continue;
+    }
+
+    const kind = raw[start + 1] === "/" ? "close" : "open";
+    const nameStart = start + (kind === "close" ? 2 : 1);
+    if (!/[A-Za-z]/.test(raw[nameStart] ?? "")) {
+      cursor = start + 1;
+      continue;
+    }
+    let nameEnd = nameStart + 1;
+    while (/[A-Za-z0-9-]/.test(raw[nameEnd] ?? "")) nameEnd += 1;
+    const name = raw.slice(nameStart, nameEnd).toLowerCase();
+
+    if (kind === "close") {
+      let end = nameEnd;
+      while (/\s/.test(raw[end] ?? "")) end += 1;
+      if (raw[end] !== ">") {
+        cursor = start + 1;
+        continue;
+      }
+      tags.push({
+        tag: { kind, name },
+        range: { start: nodePosition.start + start, end: nodePosition.start + end + 1 }
+      });
+      cursor = end + 1;
+      continue;
+    }
+
+    const afterName = raw[nameEnd];
+    if (afterName !== ">" && afterName !== "/" && !/\s/.test(afterName ?? "")) {
+      cursor = start + 1;
+      continue;
+    }
+    const end = htmlTagEnd(raw, nameEnd, false);
+    if (end < 0) break;
+    let beforeEnd = end - 1;
+    while (/\s/.test(raw[beforeEnd] ?? "")) beforeEnd -= 1;
+    if (raw[beforeEnd] !== "/" && !VOID_HTML_ELEMENTS.has(name)) {
+      tags.push({
+        tag: { kind, name },
+        range: { start: nodePosition.start + start, end: nodePosition.start + end + 1 }
+      });
+    }
+    cursor = end + 1;
+  }
+  return tags;
+}
+
+function htmlContentRanges(tree: AstNode, source: string): SourceRange[] {
   const tags: Array<{ tag: HtmlTag; range: SourceRange }> = [];
   visit(tree, [], (node) => {
-    const tag = htmlTag(node);
-    const range = nodeRange(node);
-    if (tag && range) tags.push({ tag, range });
+    tags.push(...htmlTags(node, source));
   });
 
   const open: Array<{ name: string; start: number }> = [];
@@ -364,7 +443,7 @@ function htmlContentRanges(tree: AstNode, sourceEnd: number): SourceRange[] {
     }
   }
   for (const unclosed of open) {
-    if (unclosed.start < sourceEnd) ranges.push({ start: unclosed.start, end: sourceEnd });
+    if (unclosed.start < source.length) ranges.push({ start: unclosed.start, end: source.length });
   }
   ranges.sort((first, second) => first.start - second.start || first.end - second.end);
   const merged: SourceRange[] = [];
@@ -395,7 +474,7 @@ function isInsideRange(node: SourceRange, ranges: SourceRange[]): boolean {
 export function parseMarkdown(markdown: string, options: { mdx?: boolean } = {}): ParsedMarkdown {
   const source = markdown.startsWith("\uFEFF") ? markdown.slice(1) : markdown;
   const tree = (options.mdx ? mdxParser : markdownParser).parse(source) as AstNode;
-  const htmlRanges = htmlContentRanges(tree, source.length);
+  const htmlRanges = htmlContentRanges(tree, source);
   const definitions = new Map<string, Definition>();
   let properties: DocumentProperties | undefined;
   let invalidFrontmatterProperties: RecognizedFrontmatterProperty[] = [];

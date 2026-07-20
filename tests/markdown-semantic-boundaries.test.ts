@@ -23,6 +23,16 @@ function normalize(raw: string): ReturnType<typeof normalizeDocument> {
   return normalizeDocument(document);
 }
 
+function targetDocument(name: string): ReturnType<typeof normalizeDocument> {
+  return normalizeDocument({
+    sourceId: `${name}.md`,
+    filePath: `${name}.md`,
+    contentType: "markdown",
+    discoveredAt,
+    raw: `# ${name}`
+  });
+}
+
 describe("Markdown semantic boundaries", () => {
   it("preserves a leading indented code block and keeps its syntax semantically inert", () => {
     const document = normalize(
@@ -61,7 +71,7 @@ describe("Markdown semantic boundaries", () => {
       "[[Hidden]] ![[hidden.png]] #hidden [ordinary](./hidden.md)",
       "<em>[[Nested]] #nested</em><br/> after ^hidden-block",
       "</span>",
-      "<!-- [[Comment]] #comment --><img src='image.png' />",
+      "<!-- [[Comment]] #comment --><img src='image.png' /><!DOCTYPE html>",
       "[[Visible]] ![[visible.png]] #visible [ordinary](./visible.md) ^visible-block"
     ].join(" ");
     const parsed = parseMarkdown(markdown);
@@ -74,6 +84,82 @@ describe("Markdown semantic boundaries", () => {
     ]);
     expect(parsed.inlineTags.map((tag) => tag.tag)).toEqual(["visible"]);
     expect(parsed.blockIds.map((block) => block.id)).toEqual(["visible-block"]);
+  });
+
+  it("keeps Markdown between multiline block HTML tags inert and resumes after the close", async () => {
+    const hiddenLine = "[[Hidden]] [hidden](./Hidden.md) #hidden ^hidden-block";
+    const visibleLine = "[[Visible]] [visible](./Visible.md) #visible ^visible-block";
+    const source = normalize(
+      [
+        `<div data-label="> literal">`,
+        "plain text",
+        "",
+        hiddenLine,
+        "",
+        "</div>",
+        "",
+        `<aside data-label=">"><span>done</span></aside>`,
+        "",
+        visibleLine
+      ].join("\n")
+    );
+    const hidden = targetDocument("Hidden");
+    const visible = targetDocument("Visible");
+
+    expect(source.links).toEqual([{ href: "./Visible.md", text: "visible" }]);
+    expect(source.semanticLinks?.map((link) => [link.kind, link.target])).toEqual([
+      ["wikilink", "Visible"],
+      ["markdown", "./Visible.md"]
+    ]);
+    expect(source.inlineTags?.map((tag) => tag.tag)).toEqual(["visible"]);
+    expect(source.blockIds?.map((block) => block.id)).toEqual(["visible-block"]);
+    expect(resolveVaultDocuments([source, hidden, visible])).toEqual([]);
+
+    const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "okfy-block-html-boundary-"));
+    try {
+      await writeOkfBundle([source, hidden, visible], { outDir, timestamp: discoveredAt });
+      const rendered = await fs.readFile(path.join(outDir, "source.md"), "utf8");
+      expect(rendered).toContain(hiddenLine);
+      expect(rendered).toContain(
+        '[Visible](./visible.md) [visible](./visible.md) #visible <a id="visible-block"></a>'
+      );
+
+      const graph = buildGraph(await readBundle(outDir));
+      expect(graph.outbound.get("source")).toEqual(["visible"]);
+    } finally {
+      await fs.rm(outDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps Markdown after an unclosed multiline block HTML opener inert", async () => {
+    const hiddenLine = "[[Hidden]] [hidden](./Hidden.md) #hidden ^hidden-block";
+    const source = normalize(
+      [
+        `<section data-label='> literal'>`,
+        "plain text <em>and <strong>nested</strong></em>",
+        "",
+        hiddenLine
+      ].join("\n")
+    );
+    const hidden = targetDocument("Hidden");
+
+    expect(source.links).toEqual([]);
+    expect(source.semanticLinks).toBeUndefined();
+    expect(source.inlineTags).toBeUndefined();
+    expect(source.blockIds).toBeUndefined();
+    expect(resolveVaultDocuments([source, hidden])).toEqual([]);
+
+    const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "okfy-unclosed-block-html-"));
+    try {
+      await writeOkfBundle([source, hidden], { outDir, timestamp: discoveredAt });
+      const rendered = await fs.readFile(path.join(outDir, "source.md"), "utf8");
+      expect(rendered).toContain(hiddenLine);
+
+      const graph = buildGraph(await readBundle(outDir));
+      expect(graph.outbound.get("source")).toEqual([]);
+    } finally {
+      await fs.rm(outDir, { recursive: true, force: true });
+    }
   });
 
   it("treats a wikilink-shaped Markdown link label as part of one ordinary link", async () => {

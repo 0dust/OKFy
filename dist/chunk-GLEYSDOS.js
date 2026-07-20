@@ -368,22 +368,95 @@ function bodyBoundary(source, bodyStart) {
   }
   return { content: source.slice(contentBase).trimEnd(), contentBase };
 }
-function htmlTag(node) {
-  if (node.type !== "html" || !node.value) return void 0;
-  const value = node.value.trim();
-  const closing = value.match(/^<\s*\/\s*([A-Za-z][A-Za-z0-9-]*)\s*>$/);
-  if (closing) return { kind: "close", name: closing[1].toLowerCase() };
-  const opening = value.match(/^<\s*([A-Za-z][A-Za-z0-9-]*)(?:\s[\s\S]*?)?\s*>$/);
-  if (!opening || /\/\s*>$/.test(value)) return void 0;
-  const name = opening[1].toLowerCase();
-  return VOID_HTML_ELEMENTS.has(name) ? void 0 : { kind: "open", name };
+function htmlTagEnd(raw, start, declaration) {
+  let quote;
+  let subsetDepth = 0;
+  for (let index = start; index < raw.length; index += 1) {
+    const character = raw[index];
+    if (quote) {
+      if (character === quote) quote = void 0;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (declaration && character === "[") subsetDepth += 1;
+    else if (declaration && character === "]" && subsetDepth > 0) subsetDepth -= 1;
+    else if (character === ">" && subsetDepth === 0) return index;
+  }
+  return -1;
 }
-function htmlContentRanges(tree, sourceEnd) {
+function htmlTags(node, source) {
+  const nodePosition = nodeRange(node);
+  if (node.type !== "html" || !nodePosition) return [];
+  const raw = source.slice(nodePosition.start, nodePosition.end);
+  const tags = [];
+  let cursor = 0;
+  while (cursor < raw.length) {
+    const start = raw.indexOf("<", cursor);
+    if (start < 0) break;
+    if (raw.startsWith("<!--", start)) {
+      const end2 = raw.indexOf("-->", start + 4);
+      cursor = end2 < 0 ? raw.length : end2 + 3;
+      continue;
+    }
+    if (raw.startsWith("<![CDATA[", start)) {
+      const end2 = raw.indexOf("]]>", start + 9);
+      cursor = end2 < 0 ? raw.length : end2 + 3;
+      continue;
+    }
+    if (raw[start + 1] === "!" || raw[start + 1] === "?") {
+      const end2 = htmlTagEnd(raw, start + 2, raw[start + 1] === "!");
+      cursor = end2 < 0 ? raw.length : end2 + 1;
+      continue;
+    }
+    const kind = raw[start + 1] === "/" ? "close" : "open";
+    const nameStart = start + (kind === "close" ? 2 : 1);
+    if (!/[A-Za-z]/.test(raw[nameStart] ?? "")) {
+      cursor = start + 1;
+      continue;
+    }
+    let nameEnd = nameStart + 1;
+    while (/[A-Za-z0-9-]/.test(raw[nameEnd] ?? "")) nameEnd += 1;
+    const name = raw.slice(nameStart, nameEnd).toLowerCase();
+    if (kind === "close") {
+      let end2 = nameEnd;
+      while (/\s/.test(raw[end2] ?? "")) end2 += 1;
+      if (raw[end2] !== ">") {
+        cursor = start + 1;
+        continue;
+      }
+      tags.push({
+        tag: { kind, name },
+        range: { start: nodePosition.start + start, end: nodePosition.start + end2 + 1 }
+      });
+      cursor = end2 + 1;
+      continue;
+    }
+    const afterName = raw[nameEnd];
+    if (afterName !== ">" && afterName !== "/" && !/\s/.test(afterName ?? "")) {
+      cursor = start + 1;
+      continue;
+    }
+    const end = htmlTagEnd(raw, nameEnd, false);
+    if (end < 0) break;
+    let beforeEnd = end - 1;
+    while (/\s/.test(raw[beforeEnd] ?? "")) beforeEnd -= 1;
+    if (raw[beforeEnd] !== "/" && !VOID_HTML_ELEMENTS.has(name)) {
+      tags.push({
+        tag: { kind, name },
+        range: { start: nodePosition.start + start, end: nodePosition.start + end + 1 }
+      });
+    }
+    cursor = end + 1;
+  }
+  return tags;
+}
+function htmlContentRanges(tree, source) {
   const tags = [];
   visit(tree, [], (node) => {
-    const tag = htmlTag(node);
-    const range = nodeRange(node);
-    if (tag && range) tags.push({ tag, range });
+    tags.push(...htmlTags(node, source));
   });
   const open = [];
   const ranges = [];
@@ -401,7 +474,7 @@ function htmlContentRanges(tree, sourceEnd) {
     }
   }
   for (const unclosed of open) {
-    if (unclosed.start < sourceEnd) ranges.push({ start: unclosed.start, end: sourceEnd });
+    if (unclosed.start < source.length) ranges.push({ start: unclosed.start, end: source.length });
   }
   ranges.sort((first, second) => first.start - second.start || first.end - second.end);
   const merged = [];
@@ -430,7 +503,7 @@ function isInsideRange(node, ranges) {
 function parseMarkdown(markdown, options = {}) {
   const source = markdown.startsWith("\uFEFF") ? markdown.slice(1) : markdown;
   const tree = (options.mdx ? mdxParser : markdownParser).parse(source);
-  const htmlRanges = htmlContentRanges(tree, source.length);
+  const htmlRanges = htmlContentRanges(tree, source);
   const definitions = /* @__PURE__ */ new Map();
   let properties;
   let invalidFrontmatterProperties = [];
