@@ -1,7 +1,7 @@
 import * as cheerio from "cheerio";
 import TurndownService from "turndown";
 import { parseMarkdown } from "./markdown-ast.js";
-import type { NormalizedDocument, RawDocument } from "./types.js";
+import type { DocumentDiagnostic, NormalizedDocument, RawDocument } from "./types.js";
 
 const turndown = new TurndownService({
   codeBlockStyle: "fenced",
@@ -86,6 +86,23 @@ function deduplicateTags(tags: string[]): string[] {
   });
 }
 
+function invalidFrontmatterDiagnostic(
+  sourcePath: string,
+  property: "title" | "description" | "type" | "aliases" | "tags"
+): DocumentDiagnostic {
+  const expected = ["aliases", "tags"].includes(property)
+    ? "a non-empty string or an array of non-empty strings"
+    : "a non-empty string";
+  return {
+    severity: "warning",
+    code: "invalid_frontmatter_property",
+    message: `Invalid frontmatter property ${JSON.stringify(property)} in ${sourcePath}; expected ${expected}.`,
+    sourcePath,
+    rawTarget: property,
+    property
+  };
+}
+
 export function normalizeDocument(raw: RawDocument): NormalizedDocument {
   let markdown = raw.raw;
   let title = fallbackTitle(raw.url ?? raw.filePath ?? raw.sourceId);
@@ -102,6 +119,7 @@ export function normalizeDocument(raw: RawDocument): NormalizedDocument {
   }
 
   markdown = markdown.replace(/\r\n/g, "\n").trim();
+  const sourceId = raw.url ?? raw.filePath ?? raw.sourceId;
   const parsed = parseMarkdown(markdown, { mdx: raw.contentType === "mdx" });
   markdown = parsed.content;
   title = (parsed.properties?.title ?? titleFromMarkdown(parsed.headings, plainTitle(title)))
@@ -109,7 +127,6 @@ export function normalizeDocument(raw: RawDocument): NormalizedDocument {
     .trim();
   const headings = parsed.headings.map(({ depth, text, slug }) => ({ depth, text, slug }));
   const links = parsed.markdownLinks;
-  const sourceId = raw.url ?? raw.filePath ?? raw.sourceId;
   const inferredTags = inferTags(title, sourceId, headings);
   const tags = deduplicateTags([
     ...(parsed.properties?.tags ?? []),
@@ -129,6 +146,13 @@ export function normalizeDocument(raw: RawDocument): NormalizedDocument {
     type: parsed.properties?.type ?? inferType(title, sourceId, markdown),
     ...(parsed.properties ? { properties: parsed.properties } : {}),
     ...(parsed.properties?.aliases.length ? { aliases: parsed.properties.aliases } : {}),
+    ...(parsed.invalidFrontmatterProperties.length
+      ? {
+          diagnostics: [...parsed.invalidFrontmatterProperties]
+            .sort()
+            .map((property) => invalidFrontmatterDiagnostic(raw.filePath ?? sourceId, property))
+        }
+      : {}),
     ...(parsed.semanticLinks.length ? { semanticLinks: parsed.semanticLinks } : {}),
     ...(parsed.blockIds.length ? { blockIds: parsed.blockIds } : {}),
     ...(parsed.inlineTags.length ? { inlineTags: parsed.inlineTags } : {})

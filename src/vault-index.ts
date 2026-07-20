@@ -37,6 +37,12 @@ type VaultIndex = {
   foldedNames: CandidateMap;
 };
 
+const VAULT_DIAGNOSTIC_CODES = new Set([
+  "unresolved_wikilink",
+  "ambiguous_wikilink",
+  "missing_wikilink_fragment"
+]);
+
 function compareText(first: string, second: string): number {
   return first < second ? -1 : first > second ? 1 : 0;
 }
@@ -369,7 +375,9 @@ export function resolveVaultDocuments(
   const diagnostics: DocumentDiagnostic[] = [];
 
   for (const entry of entries) {
-    const documentDiagnostics: DocumentDiagnostic[] = [];
+    const documentDiagnostics = (entry.document.diagnostics ?? []).filter(
+      (diagnostic) => !VAULT_DIAGNOSTIC_CODES.has(diagnostic.code)
+    );
     for (const link of entry.document.semanticLinks ?? []) {
       const diagnostic = resolveLink(entry, link, index, Boolean(options.includeMarkdownFragments));
       if (diagnostic) documentDiagnostics.push(diagnostic);
@@ -377,6 +385,16 @@ export function resolveVaultDocuments(
     documentDiagnostics.sort(compareDiagnostics);
     entry.document.diagnostics = documentDiagnostics;
     diagnostics.push(...documentDiagnostics);
+  }
+
+  const indexedDocuments = new Set(entries.map((entry) => entry.document));
+  for (const document of documents) {
+    if (indexedDocuments.has(document)) continue;
+    diagnostics.push(
+      ...(document.diagnostics ?? []).filter(
+        (diagnostic) => !VAULT_DIAGNOSTIC_CODES.has(diagnostic.code)
+      )
+    );
   }
 
   return diagnostics.sort(compareDiagnostics);

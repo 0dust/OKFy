@@ -161,9 +161,7 @@ function nodeRange(node) {
   return typeof start === "number" && typeof end === "number" ? { start, end } : void 0;
 }
 function visit(node, ancestors, callback) {
-  const stack = [
-    { node, nextChildIndex: 0 }
-  ];
+  const stack = [{ node, nextChildIndex: 0 }];
   const path13 = [...ancestors];
   callback(node, [...path13]);
   while (stack.length > 0) {
@@ -181,15 +179,24 @@ function visit(node, ancestors, callback) {
   }
 }
 function normalizedStrings(value) {
-  const values = typeof value === "string" ? [value] : Array.isArray(value) ? value : [];
-  return values.filter((item) => typeof item === "string").map((item) => item.trim()).filter(Boolean);
+  const values = typeof value === "string" ? [value] : Array.isArray(value) ? value : void 0;
+  if (!values) return void 0;
+  const normalized = [];
+  for (const item of values) {
+    if (typeof item !== "string" || !item.trim()) return void 0;
+    normalized.push(item.trim());
+  }
+  return normalized;
 }
 function normalizedTags(value) {
+  const normalized = normalizedStrings(value);
+  if (!normalized) return void 0;
   const seen = /* @__PURE__ */ new Set();
   const tags = [];
-  for (const item of normalizedStrings(value)) {
+  for (const item of normalized) {
     const tag = item.replace(/^#/, "").toLowerCase();
-    if (!tag || seen.has(tag)) continue;
+    if (!tag) return void 0;
+    if (seen.has(tag)) continue;
     seen.add(tag);
     tags.push(tag);
   }
@@ -198,24 +205,40 @@ function normalizedTags(value) {
 function optionalString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : void 0;
 }
+function hasOwn(data, property) {
+  return Object.prototype.hasOwnProperty.call(data, property);
+}
 function sourceProperties(node) {
   const range = nodeRange(node);
   if (!range) return void 0;
-  let loaded;
-  try {
-    loaded = load(node.value ?? "");
-  } catch {
-    return void 0;
-  }
+  const loaded = load(node.value ?? "");
   const data = isRecord(loaded) ? loaded : {};
+  const invalidProperties = [];
+  const title = optionalString(data.title);
+  const description = optionalString(data.description);
+  const type = optionalString(data.type);
+  const aliases = normalizedStrings(data.aliases);
+  const tags = normalizedTags(data.tags);
+  for (const [property, value] of [
+    ["title", title],
+    ["description", description],
+    ["type", type],
+    ["aliases", aliases],
+    ["tags", tags]
+  ]) {
+    if (hasOwn(data, property) && value === void 0) invalidProperties.push(property);
+  }
   return {
-    data,
-    range,
-    title: optionalString(data.title),
-    description: optionalString(data.description),
-    type: optionalString(data.type),
-    aliases: normalizedStrings(data.aliases),
-    tags: normalizedTags(data.tags)
+    properties: {
+      data,
+      range,
+      title,
+      description,
+      type,
+      aliases: aliases ?? [],
+      tags: tags ?? []
+    },
+    invalidProperties
   };
 }
 function targetRangeAfterDelimiter(source, range, target, delimiter) {
@@ -270,9 +293,14 @@ function parseMarkdown(markdown, options = {}) {
   const tree = (options.mdx ? mdxParser : markdownParser).parse(source);
   const definitions = /* @__PURE__ */ new Map();
   let properties;
+  let invalidFrontmatterProperties = [];
   visit(tree, [], (node) => {
     const range = nodeRange(node);
-    if (node.type === "yaml" && !properties) properties = sourceProperties(node);
+    if (node.type === "yaml" && !properties) {
+      const source2 = sourceProperties(node);
+      properties = source2?.properties;
+      invalidFrontmatterProperties = source2?.invalidProperties ?? [];
+    }
     if (node.type !== "definition" || !node.identifier || !node.url || !range) return;
     if (definitions.has(node.identifier)) return;
     definitions.set(node.identifier, {
@@ -443,7 +471,8 @@ function parseMarkdown(markdown, options = {}) {
     blockIds,
     htmlAnchors,
     inlineTags,
-    properties
+    properties,
+    invalidFrontmatterProperties
   };
 }
 
@@ -591,6 +620,11 @@ import path8 from "path";
 // src/vault-index.ts
 import path7 from "path";
 import GithubSlugger2 from "github-slugger";
+var VAULT_DIAGNOSTIC_CODES = /* @__PURE__ */ new Set([
+  "unresolved_wikilink",
+  "ambiguous_wikilink",
+  "missing_wikilink_fragment"
+]);
 function compareText(first, second) {
   return first < second ? -1 : first > second ? 1 : 0;
 }
@@ -844,7 +878,9 @@ function resolveVaultDocuments(documents, options = {}) {
   const index = buildVaultIndex(entries);
   const diagnostics = [];
   for (const entry of entries) {
-    const documentDiagnostics = [];
+    const documentDiagnostics = (entry.document.diagnostics ?? []).filter(
+      (diagnostic) => !VAULT_DIAGNOSTIC_CODES.has(diagnostic.code)
+    );
     for (const link of entry.document.semanticLinks ?? []) {
       const diagnostic = resolveLink(entry, link, index, Boolean(options.includeMarkdownFragments));
       if (diagnostic) documentDiagnostics.push(diagnostic);
@@ -852,6 +888,15 @@ function resolveVaultDocuments(documents, options = {}) {
     documentDiagnostics.sort(compareDiagnostics);
     entry.document.diagnostics = documentDiagnostics;
     diagnostics.push(...documentDiagnostics);
+  }
+  const indexedDocuments = new Set(entries.map((entry) => entry.document));
+  for (const document of documents) {
+    if (indexedDocuments.has(document)) continue;
+    diagnostics.push(
+      ...(document.diagnostics ?? []).filter(
+        (diagnostic) => !VAULT_DIAGNOSTIC_CODES.has(diagnostic.code)
+      )
+    );
   }
   return diagnostics.sort(compareDiagnostics);
 }

@@ -21,7 +21,7 @@ import {
   toPosixPath,
   urlToOutputPath,
   validateBundle
-} from "./chunk-GI2Q677K.js";
+} from "./chunk-2L3CGMVS.js";
 
 // src/normalize.ts
 import * as cheerio from "cheerio";
@@ -73,6 +73,17 @@ function deduplicateTags(tags) {
     return true;
   });
 }
+function invalidFrontmatterDiagnostic(sourcePath, property) {
+  const expected = ["aliases", "tags"].includes(property) ? "a non-empty string or an array of non-empty strings" : "a non-empty string";
+  return {
+    severity: "warning",
+    code: "invalid_frontmatter_property",
+    message: `Invalid frontmatter property ${JSON.stringify(property)} in ${sourcePath}; expected ${expected}.`,
+    sourcePath,
+    rawTarget: property,
+    property
+  };
+}
 function normalizeDocument(raw) {
   let markdown = raw.raw;
   let title = fallbackTitle(raw.url ?? raw.filePath ?? raw.sourceId);
@@ -91,12 +102,12 @@ ${raw.raw.trim()}
 \`\`\``;
   }
   markdown = markdown.replace(/\r\n/g, "\n").trim();
+  const sourceId = raw.url ?? raw.filePath ?? raw.sourceId;
   const parsed = parseMarkdown(markdown, { mdx: raw.contentType === "mdx" });
   markdown = parsed.content;
   title = (parsed.properties?.title ?? titleFromMarkdown(parsed.headings, plainTitle(title))).replace(/\s+/g, " ").trim();
   const headings = parsed.headings.map(({ depth, text, slug }) => ({ depth, text, slug }));
   const links = parsed.markdownLinks;
-  const sourceId = raw.url ?? raw.filePath ?? raw.sourceId;
   const inferredTags = inferTags(title, sourceId, headings);
   const tags = deduplicateTags([
     ...parsed.properties?.tags ?? [],
@@ -115,6 +126,9 @@ ${raw.raw.trim()}
     type: parsed.properties?.type ?? inferType(title, sourceId, markdown),
     ...parsed.properties ? { properties: parsed.properties } : {},
     ...parsed.properties?.aliases.length ? { aliases: parsed.properties.aliases } : {},
+    ...parsed.invalidFrontmatterProperties.length ? {
+      diagnostics: [...parsed.invalidFrontmatterProperties].sort().map((property) => invalidFrontmatterDiagnostic(raw.filePath ?? sourceId, property))
+    } : {},
     ...parsed.semanticLinks.length ? { semanticLinks: parsed.semanticLinks } : {},
     ...parsed.blockIds.length ? { blockIds: parsed.blockIds } : {},
     ...parsed.inlineTags.length ? { inlineTags: parsed.inlineTags } : {}

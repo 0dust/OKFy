@@ -80,7 +80,7 @@ describe("normalization", () => {
     expect(textDoc.markdown).toBe("# Notes\n\n```text\nplain notes\n```");
   });
 
-  it("preserves malformed YAML frontmatter as ordinary Markdown content", () => {
+  it("rejects malformed YAML frontmatter as a document-level error", () => {
     const raw = [
       "---",
       "title: [unterminated",
@@ -89,17 +89,106 @@ describe("normalization", () => {
       "",
       "The document still imports."
     ].join("\n");
+    expect(() =>
+      normalizeDocument({
+        sourceId: "malformed.md",
+        filePath: "malformed.md",
+        contentType: "markdown",
+        discoveredAt,
+        raw
+      })
+    ).toThrow();
+  });
+
+  it("warns for incompatible recognized frontmatter properties and preserves fallbacks", () => {
     const doc = normalizeDocument({
-      sourceId: "malformed.md",
-      filePath: "malformed.md",
+      sourceId: "guides/quickstart.md",
+      filePath: "guides/quickstart.md",
       contentType: "markdown",
       discoveredAt,
-      raw
+      raw: [
+        "---",
+        "title: [Wrong shape]",
+        "description:",
+        "  nested: Wrong shape",
+        "type: 42",
+        "aliases: [Useful Alias, 7]",
+        "tags: ''",
+        "---",
+        "# Quickstart Guide",
+        "",
+        "Fallback description. #Inline"
+      ].join("\n")
     });
 
-    expect(doc.markdown).toBe(raw);
-    expect(doc.properties).toBeUndefined();
-    expect(doc.title).toBe("Recovered Title");
+    expect(doc.title).toBe("Quickstart Guide");
+    expect(doc.type).toBe("Guide");
+    expect(doc.properties).toMatchObject({
+      title: undefined,
+      description: undefined,
+      type: undefined,
+      aliases: [],
+      tags: []
+    });
+    expect(doc.aliases).toBeUndefined();
+    expect(doc.tags).toEqual(expect.arrayContaining(["inline", "quickstart"]));
+    expect(doc.diagnostics).toEqual([
+      expect.objectContaining({
+        code: "invalid_frontmatter_property",
+        sourcePath: "guides/quickstart.md",
+        rawTarget: "aliases",
+        property: "aliases"
+      }),
+      expect.objectContaining({
+        code: "invalid_frontmatter_property",
+        sourcePath: "guides/quickstart.md",
+        rawTarget: "description",
+        property: "description"
+      }),
+      expect.objectContaining({
+        code: "invalid_frontmatter_property",
+        sourcePath: "guides/quickstart.md",
+        rawTarget: "tags",
+        property: "tags"
+      }),
+      expect.objectContaining({
+        code: "invalid_frontmatter_property",
+        sourcePath: "guides/quickstart.md",
+        rawTarget: "title",
+        property: "title"
+      }),
+      expect.objectContaining({
+        code: "invalid_frontmatter_property",
+        sourcePath: "guides/quickstart.md",
+        rawTarget: "type",
+        property: "type"
+      })
+    ]);
+  });
+
+  it.each([
+    ["title", "title: ''"],
+    ["description", "description: null"],
+    ["type", "type: []"],
+    ["aliases", "aliases: [Valid, '']"],
+    ["tags", "tags: [valid, false]"]
+  ])("warns when recognized %s frontmatter contains an invalid value", (property, yaml) => {
+    const doc = normalizeDocument({
+      sourceId: `${property}.md`,
+      filePath: `${property}.md`,
+      contentType: "markdown",
+      discoveredAt,
+      raw: `---\n${yaml}\n---\n# Fallback Guide\n\nBody #fallback`
+    });
+
+    expect(doc.diagnostics).toEqual([
+      expect.objectContaining({
+        code: "invalid_frontmatter_property",
+        sourcePath: `${property}.md`,
+        rawTarget: property,
+        property
+      })
+    ]);
   });
 
   it("supports standalone extraction helpers", () => {

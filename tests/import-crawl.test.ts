@@ -92,9 +92,75 @@ describe("importLocal filters", () => {
     ).rejects.toThrow(/unsafe output directory/i);
     await expect(fs.readFile(path.join(input, "guide.md"), "utf8")).resolves.toContain("Hello.");
   });
+
+  it("fails the import when one document has malformed YAML frontmatter", async () => {
+    const root = await tempOut();
+    const input = path.join(root, "vault");
+    await writeVault(input, {
+      "good.md": "# Good",
+      "malformed.md": "---\ntitle: [unterminated\n---\n# Recovered"
+    });
+
+    await expect(
+      importLocal({
+        inputPath: input,
+        outDir: path.join(root, "bundle"),
+        force: true,
+        timestamp: "2026-06-14T00:00:00.000Z"
+      })
+    ).rejects.toThrow();
+  });
 });
 
 describe("importLocal Obsidian resolution", () => {
+  it("preserves frontmatter diagnostics when vault resolution adds semantic diagnostics", async () => {
+    const root = await tempOut();
+    const input = path.join(root, "vault");
+    const outDir = path.join(root, "bundle");
+    await writeVault(input, {
+      "source.md": [
+        "---",
+        "title: 17",
+        "tags: [valid, false]",
+        "---",
+        "# Source Guide",
+        "",
+        "[[z-missing]] #fallback"
+      ].join("\n")
+    });
+
+    const result = await importLocal({
+      inputPath: input,
+      outDir,
+      force: true,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+    const source = result.documents[0]!;
+
+    expect(source.title).toBe("Source Guide");
+    expect(source.tags).toEqual(expect.arrayContaining(["fallback", "source"]));
+    expect(
+      result.diagnostics.map(({ code, rawTarget, sourcePath }) => ({
+        code,
+        rawTarget,
+        sourcePath
+      }))
+    ).toEqual([
+      {
+        code: "invalid_frontmatter_property",
+        rawTarget: "tags",
+        sourcePath: "source.md"
+      },
+      {
+        code: "invalid_frontmatter_property",
+        rawTarget: "title",
+        sourcePath: "source.md"
+      },
+      { code: "unresolved_wikilink", rawTarget: "z-missing", sourcePath: "source.md" }
+    ]);
+    expect(source.diagnostics).toEqual(result.diagnostics);
+  });
+
   it("resolves a unique wikilink basename after reading the full vault", async () => {
     const root = await tempOut();
     const input = path.join(root, "vault");

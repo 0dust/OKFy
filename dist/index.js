@@ -20,7 +20,7 @@ import {
   withActivationMetadata,
   writeActivationPacketFiles,
   writeOkfBundle
-} from "./chunk-64SM4VG5.js";
+} from "./chunk-ROXJJ62Q.js";
 import {
   BundleSearch,
   MCP_TOOL_NAMES,
@@ -59,7 +59,7 @@ import {
   writeRefreshState,
   writeSourceManifest,
   writeWorkspaceProfile
-} from "./chunk-GI2Q677K.js";
+} from "./chunk-2L3CGMVS.js";
 export {
   BundleSearch,
   MCP_TOOL_NAMES,

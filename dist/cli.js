@@ -13,7 +13,7 @@ import {
   renderActivationSetupMarkdown,
   withActivationMetadata,
   writeActivationPacketFiles
-} from "./chunk-64SM4VG5.js";
+} from "./chunk-ROXJJ62Q.js";
 import {
   MCP_TOOL_NAMES,
   assertUniqueWorkspaceRecordNames,
@@ -45,7 +45,7 @@ import {
   validateSourceName,
   writeRefreshState,
   writeSourceManifest
-} from "./chunk-GI2Q677K.js";
+} from "./chunk-2L3CGMVS.js";
 
 // src/cli.ts
 import { fileURLToPath } from "url";

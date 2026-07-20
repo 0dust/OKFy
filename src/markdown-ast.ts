@@ -51,7 +51,10 @@ export type ParsedMarkdown = {
   htmlAnchors: DocumentBlockId[];
   inlineTags: InlineTag[];
   properties?: DocumentProperties;
+  invalidFrontmatterProperties: RecognizedFrontmatterProperty[];
 };
+
+type RecognizedFrontmatterProperty = "title" | "description" | "type" | "aliases" | "tags";
 
 const BINARY_ATTACHMENT_EXTENSIONS = new Set([
   "aac",
@@ -101,9 +104,7 @@ function visit(
   ancestors: AstNode[],
   callback: (node: AstNode, ancestors: AstNode[]) => void
 ): void {
-  const stack: Array<{ node: AstNode; nextChildIndex: number }> = [
-    { node, nextChildIndex: 0 }
-  ];
+  const stack: Array<{ node: AstNode; nextChildIndex: number }> = [{ node, nextChildIndex: 0 }];
   const path = [...ancestors];
   callback(node, [...path]);
 
@@ -123,20 +124,26 @@ function visit(
   }
 }
 
-function normalizedStrings(value: unknown): string[] {
-  const values = typeof value === "string" ? [value] : Array.isArray(value) ? value : [];
-  return values
-    .filter((item): item is string => typeof item === "string")
-    .map((item) => item.trim())
-    .filter(Boolean);
+function normalizedStrings(value: unknown): string[] | undefined {
+  const values = typeof value === "string" ? [value] : Array.isArray(value) ? value : undefined;
+  if (!values) return undefined;
+  const normalized: string[] = [];
+  for (const item of values) {
+    if (typeof item !== "string" || !item.trim()) return undefined;
+    normalized.push(item.trim());
+  }
+  return normalized;
 }
 
-function normalizedTags(value: unknown): string[] {
+function normalizedTags(value: unknown): string[] | undefined {
+  const normalized = normalizedStrings(value);
+  if (!normalized) return undefined;
   const seen = new Set<string>();
   const tags: string[] = [];
-  for (const item of normalizedStrings(value)) {
+  for (const item of normalized) {
     const tag = item.replace(/^#/, "").toLowerCase();
-    if (!tag || seen.has(tag)) continue;
+    if (!tag) return undefined;
+    if (seen.has(tag)) continue;
     seen.add(tag);
     tags.push(tag);
   }
@@ -147,24 +154,48 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function sourceProperties(node: AstNode): DocumentProperties | undefined {
+function hasOwn(data: Record<string, unknown>, property: RecognizedFrontmatterProperty): boolean {
+  return Object.prototype.hasOwnProperty.call(data, property);
+}
+
+function sourceProperties(node: AstNode):
+  | {
+      properties: DocumentProperties;
+      invalidProperties: RecognizedFrontmatterProperty[];
+    }
+  | undefined {
   const range = nodeRange(node);
   if (!range) return undefined;
-  let loaded: unknown;
-  try {
-    loaded = load(node.value ?? "");
-  } catch {
-    return undefined;
-  }
+  const loaded = load(node.value ?? "");
   const data = isRecord(loaded) ? loaded : {};
+  const invalidProperties: RecognizedFrontmatterProperty[] = [];
+  const title = optionalString(data.title);
+  const description = optionalString(data.description);
+  const type = optionalString(data.type);
+  const aliases = normalizedStrings(data.aliases);
+  const tags = normalizedTags(data.tags);
+
+  for (const [property, value] of [
+    ["title", title],
+    ["description", description],
+    ["type", type],
+    ["aliases", aliases],
+    ["tags", tags]
+  ] as const) {
+    if (hasOwn(data, property) && value === undefined) invalidProperties.push(property);
+  }
+
   return {
-    data,
-    range,
-    title: optionalString(data.title),
-    description: optionalString(data.description),
-    type: optionalString(data.type),
-    aliases: normalizedStrings(data.aliases),
-    tags: normalizedTags(data.tags)
+    properties: {
+      data,
+      range,
+      title,
+      description,
+      type,
+      aliases: aliases ?? [],
+      tags: tags ?? []
+    },
+    invalidProperties
   };
 }
 
@@ -252,10 +283,15 @@ export function parseMarkdown(markdown: string, options: { mdx?: boolean } = {})
   const tree = (options.mdx ? mdxParser : markdownParser).parse(source) as AstNode;
   const definitions = new Map<string, Definition>();
   let properties: DocumentProperties | undefined;
+  let invalidFrontmatterProperties: RecognizedFrontmatterProperty[] = [];
 
   visit(tree, [], (node) => {
     const range = nodeRange(node);
-    if (node.type === "yaml" && !properties) properties = sourceProperties(node);
+    if (node.type === "yaml" && !properties) {
+      const source = sourceProperties(node);
+      properties = source?.properties;
+      invalidFrontmatterProperties = source?.invalidProperties ?? [];
+    }
     if (node.type !== "definition" || !node.identifier || !node.url || !range) return;
     if (definitions.has(node.identifier)) return;
     definitions.set(node.identifier, {
@@ -454,6 +490,7 @@ export function parseMarkdown(markdown: string, options: { mdx?: boolean } = {})
     blockIds,
     htmlAnchors,
     inlineTags,
-    properties
+    properties,
+    invalidFrontmatterProperties
   };
 }

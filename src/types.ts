@@ -64,6 +64,7 @@ export type DocumentDiagnostic = {
   message: string;
   sourcePath: string;
   rawTarget: string;
+  property?: string;
   candidates?: string[];
 };
 
