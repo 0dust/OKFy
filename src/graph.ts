@@ -1,11 +1,15 @@
 import path from "node:path";
+import { parseMarkdown } from "./markdown-ast.js";
 import { stripMdExtension } from "./util/path.js";
 import type { Concept, KnowledgeGraph } from "./types.js";
 
 export function extractInternalLinks(concept: Concept): string[] {
   const links = new Set<string>();
-  for (const match of concept.body.matchAll(/\[[^\]]*]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)) {
-    const href = match[1] ?? "";
+  const sourcePath = concept.resource?.split(/[?#]/, 1)[0] ?? "";
+  for (const link of parseMarkdown(concept.body, { mdx: /\.mdx$/i.test(sourcePath) })
+    .semanticLinks) {
+    if (link.kind !== "markdown") continue;
+    const href = link.target;
     const noHash = href.split("#")[0] ?? href;
     if (!noHash) continue;
     if (/^(https?:)?\/\//i.test(noHash) || /^mailto:/i.test(noHash)) continue;

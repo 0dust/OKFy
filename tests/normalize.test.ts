@@ -121,6 +121,39 @@ describe("normalization", () => {
     ]);
   });
 
+  it("models repeated reference links as uses of one shared destination range", () => {
+    const markdown = [
+      "# References",
+      "",
+      "Use [the first guide][shared] and [the second guide][shared].",
+      "",
+      '[shared]: ./guides/start.md "Start here"'
+    ].join("\n");
+    const parsed = parseMarkdown(markdown);
+    const links = parsed.semanticLinks.filter((link) => link.kind === "markdown");
+
+    expect(links.map((link) => [link.text, link.target])).toEqual([
+      ["the first guide", "./guides/start.md"],
+      ["the second guide", "./guides/start.md"]
+    ]);
+    expect(links[0]?.destinationRange).toEqual(links[1]?.destinationRange);
+    expect(
+      parsed.content.slice(links[0]!.destinationRange!.start, links[0]!.destinationRange!.end)
+    ).toBe("./guides/start.md");
+
+    const repeatedLabel = parseMarkdown("[./guides/start.md](./guides/start.md)").semanticLinks[0]!;
+    expect(
+      repeatedLabel.destinationRange &&
+        "[./guides/start.md](./guides/start.md)".slice(
+          repeatedLabel.destinationRange.start,
+          repeatedLabel.destinationRange.end
+        )
+    ).toBe("./guides/start.md");
+    expect(repeatedLabel.destinationRange?.start).toBeGreaterThan(
+      "[./guides/start.md](./guides/start.md)".indexOf("](")
+    );
+  });
+
   it("extracts Obsidian properties and semantic tokens with byte-exact body ranges", () => {
     const raw = fixture("semantic-note.md");
     const parsed = parseMarkdown(raw);

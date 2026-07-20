@@ -1,6 +1,8 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import GithubSlugger from "github-slugger";
+import { dump } from "js-yaml";
 import { isReservedOkfPath } from "./okf.js";
 import { canonicalizeUrl } from "./util/url.js";
 import {
@@ -11,7 +13,7 @@ import {
 } from "./util/path.js";
 import { descriptionFromMarkdown } from "./normalize.js";
 import { resolveOkfyHome } from "./okfy-home.js";
-import type { NormalizedDocument } from "./types.js";
+import type { NormalizedDocument, SemanticLink, SourceRange } from "./types.js";
 
 export type WriteBundleOptions = {
   outDir: string;
@@ -33,19 +35,70 @@ function yamlScalar(value: string): string {
   return JSON.stringify(value);
 }
 
+const OWNED_FRONTMATTER_KEYS = new Set([
+  "type",
+  "title",
+  "description",
+  "resource",
+  "tags",
+  "aliases",
+  "timestamp"
+]);
+
+const UNSAFE_PROPERTY_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function stableYamlValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableYamlValue);
+  if (value instanceof Date) return new Date(value.getTime());
+  if (!isRecord(value)) return value;
+
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(value).sort()) {
+    if (UNSAFE_PROPERTY_KEYS.has(key)) continue;
+    sorted[key] = stableYamlValue(value[key]);
+  }
+  return sorted;
+}
+
+function yamlProperty(key: string, value: unknown): string {
+  return dump(
+    { [key]: stableYamlValue(value) },
+    {
+      forceQuotes: true,
+      lineWidth: -1,
+      noRefs: true,
+      quotingType: '"',
+      sortKeys: false
+    }
+  ).trimEnd();
+}
+
 function frontmatter(doc: NormalizedDocument, timestamp: string): string {
-  const lines = [
+  const description = doc.properties?.description ?? descriptionFromMarkdown(doc.markdown);
+  const lines: string[] = [
     "---",
     `type: ${yamlScalar(doc.type)}`,
     `title: ${yamlScalar(doc.title)}`,
-    `description: ${yamlScalar(descriptionFromMarkdown(doc.markdown))}`,
+    `description: ${yamlScalar(description)}`,
     `resource: ${yamlScalar(doc.resource ?? doc.sourcePath ?? doc.sourceId)}`,
     "tags:",
     ...(doc.tags.length ? doc.tags.map((tag) => `  - ${yamlScalar(tag)}`) : ["  []"]),
-    `timestamp: ${yamlScalar(timestamp)}`,
-    "---",
-    ""
+    ...(doc.aliases?.length
+      ? ["aliases:", ...doc.aliases.map((alias) => `  - ${yamlScalar(alias)}`)]
+      : []),
+    `timestamp: ${yamlScalar(timestamp)}`
   ];
+
+  for (const key of Object.keys(doc.properties?.data ?? {}).sort()) {
+    if (OWNED_FRONTMATTER_KEYS.has(key) || UNSAFE_PROPERTY_KEYS.has(key)) continue;
+    lines.push(yamlProperty(key, doc.properties!.data[key]));
+  }
+
+  lines.push("---", "");
   return lines.join("\n");
 }
 
@@ -91,43 +144,134 @@ function safeConceptOutputPath(candidate: string): string {
   return path.posix.join(parsed.dir, `${safeName}.md`);
 }
 
-function rewriteLinks(doc: NormalizedDocument, sourceToOutput: Map<string, string>): string {
-  return doc.markdown.replace(/\[([^\]]*)\]\(([^)\s]+)([^)]*)\)/g, (full, text, href, suffix) => {
-    if (/^(https?:)?\/\//.test(href)) {
-      try {
-        const key = canonicalizeUrl(href);
-        const target = sourceToOutput.get(key);
-        if (target && doc.outputPath) {
-          return `[${text}](${relativeMarkdownLink(doc.outputPath, target)}${suffix})`;
-        }
-      } catch {
-        return full;
-      }
-    }
+type TextEdit = SourceRange & { replacement: string };
 
-    if (!href.startsWith("#") && doc.resource) {
-      try {
-        const key = canonicalizeUrl(href, doc.resource);
-        const target = sourceToOutput.get(key);
-        if (target && doc.outputPath)
-          return `[${text}](${relativeMarkdownLink(doc.outputPath, target)}${suffix})`;
-        return `[${text}](${key}${suffix})`;
-      } catch {
-        return full;
-      }
-    }
+function addEdit(edits: Map<string, TextEdit>, edit: TextEdit): void {
+  const key = `${edit.start}:${edit.end}`;
+  const existing = edits.get(key);
+  if (existing && existing.replacement !== edit.replacement) {
+    throw new Error(`Conflicting Markdown edits at ${key}.`);
+  }
+  edits.set(key, edit);
+}
 
-    if (!href.startsWith("#") && doc.sourcePath) {
-      const abs = toPosixPath(
-        path.posix.normalize(path.posix.join(path.posix.dirname(doc.sourcePath), href))
+function applyEdits(markdown: string, editMap: Map<string, TextEdit>): string {
+  const edits = [...editMap.values()].sort(
+    (first, second) => first.start - second.start || first.end - second.end
+  );
+  for (let index = 1; index < edits.length; index += 1) {
+    const previous = edits[index - 1]!;
+    const current = edits[index]!;
+    if (current.start < previous.end) {
+      throw new Error(
+        `Overlapping Markdown edits at ${previous.start}:${previous.end} and ${current.start}:${current.end}.`
       );
-      const noHash = abs.split("#")[0] ?? abs;
-      const target = sourceToOutput.get(noHash);
-      if (target && doc.outputPath)
-        return `[${text}](${relativeMarkdownLink(doc.outputPath, target)}${suffix})`;
     }
-    return full;
-  });
+  }
+
+  let rendered = markdown;
+  for (const edit of edits.reverse()) {
+    rendered = `${rendered.slice(0, edit.start)}${edit.replacement}${rendered.slice(edit.end)}`;
+  }
+  return rendered;
+}
+
+function rewriteMarkdownDestination(
+  doc: NormalizedDocument,
+  href: string,
+  sourceToOutput: Map<string, string>
+): string | undefined {
+  if (/^(https?:)?\/\//.test(href)) {
+    try {
+      const target = sourceToOutput.get(canonicalizeUrl(href));
+      if (target && doc.outputPath) return relativeMarkdownLink(doc.outputPath, target);
+    } catch {
+      return undefined;
+    }
+    return undefined;
+  }
+
+  if (!href.startsWith("#") && doc.resource) {
+    try {
+      const key = canonicalizeUrl(href, doc.resource);
+      const target = sourceToOutput.get(key);
+      if (target && doc.outputPath) return relativeMarkdownLink(doc.outputPath, target);
+      return key;
+    } catch {
+      return undefined;
+    }
+  }
+
+  if (!href.startsWith("#") && doc.sourcePath) {
+    const absolute = toPosixPath(
+      path.posix.normalize(path.posix.join(path.posix.dirname(doc.sourcePath), href))
+    );
+    const target = sourceToOutput.get(absolute.split("#")[0] ?? absolute);
+    if (target && doc.outputPath) return relativeMarkdownLink(doc.outputPath, target);
+  }
+  return undefined;
+}
+
+function headingFragment(link: SemanticLink, target: NormalizedDocument | undefined): string {
+  if (link.blockId) return link.blockId.normalize("NFC");
+  const requested = link.heading?.trim().normalize("NFC");
+  if (!requested) return "";
+  const heading = target?.headings.find(
+    (candidate) =>
+      candidate.text.normalize("NFC") === requested || candidate.slug.normalize("NFC") === requested
+  );
+  return heading?.slug ?? new GithubSlugger().slug(requested);
+}
+
+function markdownLinkText(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/\]/g, "\\]");
+}
+
+function rewriteLinks(
+  doc: NormalizedDocument,
+  sourceToOutput: Map<string, string>,
+  sourceToDocument: Map<string, NormalizedDocument>
+): string {
+  const edits = new Map<string, TextEdit>();
+
+  for (const block of doc.blockIds ?? []) {
+    addEdit(edits, {
+      ...block.range,
+      replacement: `<a id="${block.id}"></a>`
+    });
+  }
+
+  for (const link of doc.semanticLinks ?? []) {
+    if (link.kind === "markdown") {
+      if (!link.destinationRange) continue;
+      const replacement = rewriteMarkdownDestination(doc, link.target, sourceToOutput);
+      if (replacement === undefined || replacement === link.target) continue;
+      addEdit(edits, { ...link.destinationRange, replacement });
+      continue;
+    }
+
+    if (
+      (link.kind !== "wikilink" && link.kind !== "note_embed") ||
+      link.resolution !== "resolved" ||
+      !link.resolvedSourceKey ||
+      !doc.outputPath
+    ) {
+      continue;
+    }
+
+    const targetOutput = sourceToOutput.get(link.resolvedSourceKey);
+    if (!targetOutput) continue;
+    const fragment = headingFragment(link, sourceToDocument.get(link.resolvedSourceKey));
+    const destination = `${relativeMarkdownLink(doc.outputPath, targetOutput)}${
+      fragment ? `#${fragment}` : ""
+    }`;
+    addEdit(edits, {
+      ...link.range,
+      replacement: `[${markdownLinkText(link.text)}](${destination})`
+    });
+  }
+
+  return applyEdits(doc.markdown, edits);
 }
 
 async function pathExists(target: string): Promise<boolean> {
@@ -311,6 +455,7 @@ export async function writeOkfBundle(
     .slice()
     .sort((first, second) => sourceKey(first).localeCompare(sourceKey(second)));
   const sourceToOutput = assignOutputPaths(orderedDocs);
+  const sourceToDocument = new Map(orderedDocs.map((doc) => [sourceKey(doc), doc]));
   const written: string[] = [];
   const concepts: WrittenConcept[] = [];
 
@@ -318,7 +463,7 @@ export async function writeOkfBundle(
     const relPath = doc.outputPath ?? "index.md";
     const absolute = path.join(options.outDir, relPath);
     await fs.mkdir(path.dirname(absolute), { recursive: true });
-    const body = withTitle(doc.title, rewriteLinks(doc, sourceToOutput));
+    const body = withTitle(doc.title, rewriteLinks(doc, sourceToOutput, sourceToDocument));
     await fs.writeFile(absolute, `${frontmatter(doc, timestamp)}${body}\n`, "utf8");
     written.push(relPath);
     concepts.push({

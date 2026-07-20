@@ -95,6 +95,7 @@ export type Concept = {
   description?: string;
   resource?: string;
   tags: string[];
+  aliases?: string[];
   body: string;
 };
 

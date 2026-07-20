@@ -141,18 +141,43 @@ function sourceProperties(node: AstNode): DocumentProperties | undefined {
   };
 }
 
-function destinationRange(
+function targetRangeAfterDelimiter(
+  source: string,
+  range: SourceRange,
+  target: string,
+  delimiter: string
+): SourceRange | undefined {
+  const raw = source.slice(range.start, range.end);
+  let targetOffset = raw.indexOf(target);
+  while (targetOffset >= 0) {
+    const delimiterOffset = raw.lastIndexOf(delimiter, targetOffset);
+    const between =
+      delimiterOffset < 0 ? undefined : raw.slice(delimiterOffset + delimiter.length, targetOffset);
+    if (between !== undefined && /^[\s<]*$/.test(between)) {
+      return {
+        start: range.start + targetOffset,
+        end: range.start + targetOffset + target.length
+      };
+    }
+    targetOffset = raw.indexOf(target, targetOffset + target.length);
+  }
+  return undefined;
+}
+
+function inlineDestinationRange(
   source: string,
   range: SourceRange,
   target: string
 ): SourceRange | undefined {
-  const raw = source.slice(range.start, range.end);
-  const targetOffset = raw.indexOf(target);
-  if (targetOffset < 0) return undefined;
-  return {
-    start: range.start + targetOffset,
-    end: range.start + targetOffset + target.length
-  };
+  return targetRangeAfterDelimiter(source, range, target, "](");
+}
+
+function definitionDestinationRange(
+  source: string,
+  range: SourceRange,
+  target: string
+): SourceRange | undefined {
+  return targetRangeAfterDelimiter(source, range, target, "]:");
 }
 
 function splitTarget(value: string): {
@@ -207,7 +232,7 @@ export function parseMarkdown(markdown: string, options: { mdx?: boolean } = {})
     if (node.type !== "definition" || !node.identifier || !node.url || !range) return;
     definitions.set(node.identifier, {
       url: node.url,
-      destinationRange: destinationRange(source, range, node.url)
+      destinationRange: definitionDestinationRange(source, range, node.url)
     });
   });
 
@@ -239,7 +264,7 @@ export function parseMarkdown(markdown: string, options: { mdx?: boolean } = {})
 
     if (node.type === "link" && node.url) {
       const text = toString(node as never);
-      const linkDestinationRange = destinationRange(source, originalRange, node.url);
+      const linkDestinationRange = inlineDestinationRange(source, originalRange, node.url);
       markdownLinks.push({ href: node.url, text });
       semanticLinks.push({
         kind: "markdown",

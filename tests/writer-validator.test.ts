@@ -2,12 +2,13 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildGraph } from "../src/graph.js";
+import { buildGraph, extractInternalLinks } from "../src/graph.js";
 import { normalizeDocument } from "../src/normalize.js";
 import { readBundle } from "../src/reader.js";
 import { validateBundle } from "../src/validate.js";
+import { resolveVaultDocuments } from "../src/vault-index.js";
 import { assertSafeForceOutDir, writeOkfBundle } from "../src/writer.js";
-import type { NormalizedDocument, RawDocument } from "../src/types.js";
+import type { Concept, NormalizedDocument, RawDocument } from "../src/types.js";
 
 const fixtureRoot = path.resolve("test-fixtures");
 const tempDirs: string[] = [];
@@ -152,6 +153,178 @@ describe("writer and validator", () => {
     await expect(fs.readFile(path.join(firstOutDir, "page-2.md"), "utf8")).resolves.toBe(
       await fs.readFile(path.join(secondOutDir, "page-2.md"), "utf8")
     );
+  });
+
+  it("merges source properties into one canonical deterministic frontmatter block", async () => {
+    const outDir = await tempOut();
+    const doc = normalizeDocument(
+      raw({
+        sourceId: "notes/canonical.md",
+        filePath: "notes/canonical.md",
+        raw: [
+          "---",
+          "timestamp: 1999-01-01",
+          "zeta: last",
+          "resource: https://malicious.example/override",
+          "description: Source-authored description",
+          "aliases: [Canonical, Stable Note]",
+          "tags: [Explicit, shared]",
+          "title: Canonical Title",
+          "type: Runbook",
+          "alpha:",
+          "  owner: docs",
+          "  flags: [stable, reviewed]",
+          "---",
+          "",
+          "# Inferred Title",
+          "",
+          "Untouched body with #Shared and #InlineTag."
+        ].join("\n")
+      })
+    );
+
+    await writeOkfBundle([doc], {
+      outDir,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+
+    const rendered = await fs.readFile(path.join(outDir, "notes/canonical.md"), "utf8");
+    const concept = (await readBundle(outDir)).get("notes/canonical");
+    const orderedKeys = [...rendered.matchAll(/^([a-z][a-z0-9_-]*):/gm)].map((match) => match[1]);
+
+    expect(orderedKeys).toEqual([
+      "type",
+      "title",
+      "description",
+      "resource",
+      "tags",
+      "aliases",
+      "timestamp",
+      "alpha",
+      "zeta"
+    ]);
+    expect(rendered.match(/^---$/gm)).toHaveLength(2);
+    expect(rendered).not.toContain("https://malicious.example/override");
+    expect(rendered).not.toContain("timestamp: 1999-01-01");
+    expect(concept).toMatchObject({
+      type: "Runbook",
+      title: "Canonical Title",
+      description: "Source-authored description",
+      resource: "notes/canonical.md",
+      aliases: ["Canonical", "Stable Note"],
+      frontmatter: {
+        alpha: { owner: "docs", flags: ["stable", "reviewed"] },
+        zeta: "last"
+      },
+      body: "# Inferred Title\n\nUntouched body with #Shared and #InlineTag."
+    });
+    expect(concept?.tags.slice(0, 3)).toEqual(["explicit", "shared", "inlinetag"]);
+  });
+
+  it("renders resolved semantic links after reserved-name and collision-safe path assignment", async () => {
+    const outDir = await tempOut();
+    const documents = [
+      normalizeDocument(
+        raw({
+          sourceId: "source.md",
+          filePath: "source.md",
+          raw: [
+            "# Source",
+            "",
+            "Keep  two spaces, *emphasis*, and punctuation exactly.",
+            "",
+            "Use [[index#Install Guide|installation steps]], [[index#Missing Heading]], and [[log#^step]].",
+            "Read [ordinary][shared] twice via [the same target][shared].",
+            "Keep an inline label that matches its destination: [./index.md](./index.md).",
+            "Embed ![[Context]] but keep ![[diagram.png|600]] readable.",
+            "",
+            '[shared]: ./index.md "Shared title"',
+            "",
+            "`[[index]]` and `[not an edge](./ghost.md)` stay literal."
+          ].join("\n")
+        })
+      ),
+      normalizeDocument(
+        raw({
+          sourceId: "home.md",
+          filePath: "home.md",
+          raw: "# Existing Home\n\nOccupies home.md."
+        })
+      ),
+      normalizeDocument(
+        raw({
+          sourceId: "index.md",
+          filePath: "index.md",
+          raw: "# Index Target\n\n## Install Guide\n\nInstall here."
+        })
+      ),
+      normalizeDocument(
+        raw({
+          sourceId: "change-log.md",
+          filePath: "change-log.md",
+          raw: "# Existing Change Log\n\nOccupies change-log.md."
+        })
+      ),
+      normalizeDocument(
+        raw({
+          sourceId: "log.md",
+          filePath: "log.md",
+          raw: "# Log Target\n\nStable block. ^step"
+        })
+      ),
+      normalizeDocument(
+        raw({
+          sourceId: "Context.md",
+          filePath: "Context.md",
+          raw: "# Context\n\nShared context only."
+        })
+      )
+    ];
+    resolveVaultDocuments(documents);
+
+    await writeOkfBundle(documents, {
+      outDir,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+
+    const source = await fs.readFile(path.join(outDir, "source.md"), "utf8");
+    expect(source).toContain("Keep  two spaces, *emphasis*, and punctuation exactly.");
+    expect(source).toContain(
+      "Use [installation steps](./home-2.md#install-guide), [Missing Heading](./home-2.md#missing-heading), and [step](./change-log-2.md#step)."
+    );
+    expect(source).toContain("Read [ordinary][shared] twice via [the same target][shared].");
+    expect(source).toContain('[shared]: ./home-2.md "Shared title"');
+    expect(source).toContain(
+      "Keep an inline label that matches its destination: [./index.md](./home-2.md)."
+    );
+    expect(source).toContain(
+      "Embed [Context](./context.md) but keep ![[diagram.png|600]] readable."
+    );
+    expect(source).toContain("`[[index]]` and `[not an edge](./ghost.md)` stay literal.");
+    await expect(fs.readFile(path.join(outDir, "change-log-2.md"), "utf8")).resolves.toContain(
+      'Stable block. <a id="step"></a>'
+    );
+
+    const concepts = await readBundle(outDir);
+    const graph = buildGraph(concepts);
+    expect(graph.outbound.get("source")).toEqual(["change-log-2", "context", "home-2"]);
+    expect(graph.backlinks.get("context")).toEqual(["source"]);
+    expect(graph.backlinks.get("home-2")).toEqual(["source"]);
+    expect(graph.outbound.get("source")).not.toContain("ghost");
+  });
+
+  it("keeps links inside MDX expressions out of graph edges", () => {
+    const concept: Concept = {
+      id: "source",
+      path: "source.md",
+      frontmatter: {},
+      type: "Concept",
+      resource: "notes/source.mdx",
+      tags: [],
+      body: '{"[expression](./ghost.md)"}\n\n[real](./target.md)'
+    };
+
+    expect(extractInternalLinks(concept)).toEqual(["target"]);
   });
 
   it.skipIf(process.platform === "win32")(

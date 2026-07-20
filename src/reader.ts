@@ -18,6 +18,7 @@ export async function readConceptFile(bundleDir: string, absolutePath: string): 
   if (isReservedOkfPath(relPath)) throw new Error(`Reserved OKF file is not a concept: ${relPath}`);
   const id = stripMdExtension(relPath);
   const frontmatter = parsed.data;
+  const aliases = stringArray(frontmatter.aliases);
   return {
     id,
     path: relPath,
@@ -27,6 +28,7 @@ export async function readConceptFile(bundleDir: string, absolutePath: string): 
     description: typeof frontmatter.description === "string" ? frontmatter.description : undefined,
     resource: typeof frontmatter.resource === "string" ? frontmatter.resource : undefined,
     tags: stringArray(frontmatter.tags),
+    ...(aliases.length ? { aliases } : {}),
     body: parsed.content.trim()
   };
 }
