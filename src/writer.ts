@@ -47,23 +47,57 @@ const OWNED_FRONTMATTER_KEYS = new Set([
 ]);
 
 const UNSAFE_PROPERTY_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const MAX_FRONTMATTER_VALUE_DEPTH = 100;
 
-function stableYamlValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stableYamlValue);
+function stableYamlValue(
+  value: unknown,
+  propertyKey: string,
+  path = propertyKey,
+  ancestors = new WeakSet<object>(),
+  depth = 0
+): unknown {
   if (value instanceof Date) return new Date(value.getTime());
-  if (!isRecord(value)) return value;
-
-  const sorted: Record<string, unknown> = {};
-  for (const key of Object.keys(value).sort()) {
-    if (UNSAFE_PROPERTY_KEYS.has(key)) continue;
-    sorted[key] = stableYamlValue(value[key]);
+  const isArray = Array.isArray(value);
+  if (!isArray && !isRecord(value)) return value;
+  if (depth >= MAX_FRONTMATTER_VALUE_DEPTH) {
+    throw new Error(
+      `Cannot serialize frontmatter property ${JSON.stringify(propertyKey)}: nesting exceeds ${MAX_FRONTMATTER_VALUE_DEPTH} levels.`
+    );
   }
-  return sorted;
+  if (ancestors.has(value)) {
+    throw new Error(
+      `Cannot serialize frontmatter property ${JSON.stringify(propertyKey)}: cyclic value at ${path}.`
+    );
+  }
+
+  ancestors.add(value);
+  try {
+    if (isArray) {
+      return value.map((item, index) =>
+        stableYamlValue(item, propertyKey, `${path}[${index}]`, ancestors, depth + 1)
+      );
+    }
+
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(value).sort()) {
+      if (UNSAFE_PROPERTY_KEYS.has(key)) continue;
+      sorted[key] = stableYamlValue(
+        value[key],
+        propertyKey,
+        `${path}.${key}`,
+        ancestors,
+        depth + 1
+      );
+    }
+    return sorted;
+  } finally {
+    ancestors.delete(value);
+  }
 }
 
 function yamlProperty(key: string, value: unknown): string {
   return dump(
-    { [key]: stableYamlValue(value) },
+    { [key]: stableYamlValue(value, key) },
     {
       forceQuotes: true,
       lineWidth: -1,

@@ -21,6 +21,22 @@ type Resolution =
   | { status: "ambiguous"; entries: VaultEntry[] }
   | { status: "unresolved" };
 
+type CandidateMap = Map<string, VaultEntry[]>;
+
+type PathIdentityIndex = {
+  keys: CandidateMap;
+  stems: CandidateMap;
+  suffixes: CandidateMap;
+  basenames: CandidateMap;
+};
+
+type VaultIndex = {
+  paths: Record<"source" | "output", PathIdentityIndex>;
+  foldedPaths: Record<"source" | "output", PathIdentityIndex>;
+  names: CandidateMap;
+  foldedNames: CandidateMap;
+};
+
 function compareText(first: string, second: string): number {
   return first < second ? -1 : first > second ? 1 : 0;
 }
@@ -44,15 +60,58 @@ function decodeFragment(value: string): string {
   }
 }
 
-function identitiesFor(entry: VaultEntry, kind: "source" | "output") {
-  return entry.identityPaths.filter((identity) => identity.kind === kind);
+function emptyPathIdentityIndex(): PathIdentityIndex {
+  return {
+    keys: new Map(),
+    stems: new Map(),
+    suffixes: new Map(),
+    basenames: new Map()
+  };
 }
 
-function pathMatches(entry: VaultEntry, target: string, kind: "source" | "output"): boolean {
-  const stem = stripMarkdownExtension(target);
-  return identitiesFor(entry, kind).some(
-    (identity) => identity.key === target || identity.stem === stem
-  );
+function addCandidate(candidates: CandidateMap, key: string, entry: VaultEntry): void {
+  const entries = candidates.get(key);
+  if (entries) entries.push(entry);
+  else candidates.set(key, [entry]);
+}
+
+function suffixesFor(stem: string): string[] {
+  const segments = stem.split("/");
+  return segments.map((_, index) => segments.slice(index).join("/"));
+}
+
+function addIdentity(index: PathIdentityIndex, key: string, stem: string, entry: VaultEntry): void {
+  addCandidate(index.keys, key, entry);
+  addCandidate(index.stems, stem, entry);
+  for (const suffix of suffixesFor(stem)) addCandidate(index.suffixes, suffix, entry);
+  addCandidate(index.basenames, path.posix.basename(stem), entry);
+}
+
+function buildVaultIndex(entries: VaultEntry[]): VaultIndex {
+  const index: VaultIndex = {
+    paths: { source: emptyPathIdentityIndex(), output: emptyPathIdentityIndex() },
+    foldedPaths: { source: emptyPathIdentityIndex(), output: emptyPathIdentityIndex() },
+    names: new Map(),
+    foldedNames: new Map()
+  };
+
+  for (const entry of entries) {
+    for (const identity of entry.identityPaths) {
+      addIdentity(index.paths[identity.kind], identity.key, identity.stem, entry);
+      addIdentity(
+        index.foldedPaths[identity.kind],
+        identity.key.toLocaleLowerCase("en-US"),
+        identity.stem.toLocaleLowerCase("en-US"),
+        entry
+      );
+    }
+    for (const name of entry.names) {
+      addCandidate(index.names, name, entry);
+      addCandidate(index.foldedNames, name.toLocaleLowerCase("en-US"), entry);
+    }
+  }
+
+  return index;
 }
 
 function uniqueEntries(entries: VaultEntry[]): VaultEntry[] {
@@ -66,33 +125,34 @@ function resultFor(entries: VaultEntry[]): Resolution | undefined {
   return { status: "ambiguous", entries: candidates };
 }
 
-function exactPath(entries: VaultEntry[], target: string, kind: "source" | "output"): VaultEntry[] {
-  return entries.filter((entry) => pathMatches(entry, target, kind));
+function candidatesFrom(...candidateSets: Array<VaultEntry[] | undefined>): VaultEntry[] {
+  return candidateSets.flatMap((candidates) => candidates ?? []);
+}
+
+function exactPath(index: VaultIndex, target: string, kind: "source" | "output"): VaultEntry[] {
+  const paths = index.paths[kind];
+  return candidatesFrom(paths.keys.get(target), paths.stems.get(stripMarkdownExtension(target)));
 }
 
 function suffixOrBasename(
-  entries: VaultEntry[],
+  index: VaultIndex,
   target: string,
   kind: "source" | "output"
 ): VaultEntry[] {
   const stem = stripMarkdownExtension(target);
-  const basename = path.posix.basename(stem);
-  return entries.filter((entry) =>
-    identitiesFor(entry, kind).some(
-      (identity) =>
-        identity.stem === stem ||
-        identity.stem.endsWith(`/${stem}`) ||
-        identity.basename === basename
-    )
+  const paths = index.paths[kind];
+  return candidatesFrom(
+    paths.suffixes.get(stem),
+    ...(stem.includes("/") ? [] : [paths.basenames.get(stem)])
   );
 }
 
-function titleOrAlias(entries: VaultEntry[], target: string): VaultEntry[] {
-  return entries.filter((entry) => entry.names.includes(target));
+function titleOrAlias(index: VaultIndex, target: string): VaultEntry[] {
+  return index.names.get(target) ?? [];
 }
 
 function caseFoldedCandidates(
-  entries: VaultEntry[],
+  index: VaultIndex,
   sourceRelative: string,
   vaultRelative: string,
   kind: "source" | "output",
@@ -102,28 +162,21 @@ function caseFoldedCandidates(
   const vaultFolded = vaultRelative.toLocaleLowerCase("en-US");
   const stemFolded = stripMarkdownExtension(vaultRelative).toLocaleLowerCase("en-US");
   const basenameFolded = path.posix.basename(stemFolded);
+  const paths = index.foldedPaths[kind];
 
-  return entries.filter((entry) => {
-    return (
-      identitiesFor(entry, kind).some((identity) => {
-        const key = identity.key.toLocaleLowerCase("en-US");
-        const stem = identity.stem.toLocaleLowerCase("en-US");
-        return (
-          key === sourceFolded ||
-          stem === stripMarkdownExtension(sourceFolded) ||
-          key === vaultFolded ||
-          stem === stemFolded ||
-          stem.endsWith(`/${stemFolded}`) ||
-          identity.basename.toLocaleLowerCase("en-US") === basenameFolded
-        );
-      }) ||
-      (includeNames && entry.names.some((name) => name.toLocaleLowerCase("en-US") === vaultFolded))
-    );
-  });
+  return candidatesFrom(
+    paths.keys.get(sourceFolded),
+    paths.stems.get(stripMarkdownExtension(sourceFolded)),
+    paths.keys.get(vaultFolded),
+    paths.stems.get(stemFolded),
+    paths.suffixes.get(stemFolded),
+    ...(stemFolded.includes("/") ? [] : [paths.basenames.get(basenameFolded)]),
+    ...(includeNames ? [index.foldedNames.get(vaultFolded)] : [])
+  );
 }
 
 function resolveTarget(
-  entries: VaultEntry[],
+  index: VaultIndex,
   sourceKey: string,
   rawTarget: string,
   options: { pathKind?: "source" | "output"; includeNames?: boolean } = {}
@@ -133,10 +186,10 @@ function resolveTarget(
   const pathKind = options.pathKind ?? "source";
 
   for (const candidates of [
-    exactPath(entries, sourceRelative, pathKind),
-    exactPath(entries, target, pathKind),
-    suffixOrBasename(entries, target, pathKind),
-    ...(options.includeNames === false ? [] : [titleOrAlias(entries, target)])
+    exactPath(index, sourceRelative, pathKind),
+    exactPath(index, target, pathKind),
+    suffixOrBasename(index, target, pathKind),
+    ...(options.includeNames === false ? [] : [titleOrAlias(index, target)])
   ]) {
     const result = resultFor(candidates);
     if (result) return result;
@@ -144,13 +197,7 @@ function resolveTarget(
 
   return (
     resultFor(
-      caseFoldedCandidates(
-        entries,
-        sourceRelative,
-        target,
-        pathKind,
-        options.includeNames !== false
-      )
+      caseFoldedCandidates(index, sourceRelative, target, pathKind, options.includeNames !== false)
     ) ?? {
       status: "unresolved"
     }
@@ -216,7 +263,7 @@ function hasHeading(entry: VaultEntry, heading: string): boolean {
 function resolveLink(
   entry: VaultEntry,
   link: SemanticLink,
-  entries: VaultEntry[],
+  index: VaultIndex,
   includeMarkdownFragments: boolean
 ): DocumentDiagnostic | undefined {
   if (link.kind === "markdown") {
@@ -227,7 +274,7 @@ function resolveLink(
     const fragment = link.target.slice(hash + 1);
     if (!target || !fragment || /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(target)) return undefined;
     const outputSourceKey = normalizeVaultPath(entry.document.outputPath ?? entry.sourceKey);
-    const resolution = resolveTarget(entries, outputSourceKey, target, {
+    const resolution = resolveTarget(index, outputSourceKey, target, {
       pathKind: "output",
       includeNames: false
     });
@@ -250,7 +297,7 @@ function resolveLink(
   }
   if (link.kind !== "wikilink" && link.kind !== "note_embed") return undefined;
 
-  const resolution = resolveTarget(entries, entry.sourceKey, link.target || entry.sourceKey);
+  const resolution = resolveTarget(index, entry.sourceKey, link.target || entry.sourceKey);
   if (resolution.status === "unresolved") {
     link.resolution = "unresolved";
     delete link.resolvedSourceKey;
@@ -318,17 +365,13 @@ export function resolveVaultDocuments(
     .map(entryFor)
     .filter((entry): entry is VaultEntry => Boolean(entry))
     .sort((a, b) => compareText(a.sourceKey, b.sourceKey));
+  const index = buildVaultIndex(entries);
   const diagnostics: DocumentDiagnostic[] = [];
 
   for (const entry of entries) {
     const documentDiagnostics: DocumentDiagnostic[] = [];
     for (const link of entry.document.semanticLinks ?? []) {
-      const diagnostic = resolveLink(
-        entry,
-        link,
-        entries,
-        Boolean(options.includeMarkdownFragments)
-      );
+      const diagnostic = resolveLink(entry, link, index, Boolean(options.includeMarkdownFragments));
       if (diagnostic) documentDiagnostics.push(diagnostic);
     }
     documentDiagnostics.sort(compareDiagnostics);

@@ -80,6 +80,28 @@ describe("normalization", () => {
     expect(textDoc.markdown).toBe("# Notes\n\n```text\nplain notes\n```");
   });
 
+  it("preserves malformed YAML frontmatter as ordinary Markdown content", () => {
+    const raw = [
+      "---",
+      "title: [unterminated",
+      "---",
+      "# Recovered Title",
+      "",
+      "The document still imports."
+    ].join("\n");
+    const doc = normalizeDocument({
+      sourceId: "malformed.md",
+      filePath: "malformed.md",
+      contentType: "markdown",
+      discoveredAt,
+      raw
+    });
+
+    expect(doc.markdown).toBe(raw);
+    expect(doc.properties).toBeUndefined();
+    expect(doc.title).toBe("Recovered Title");
+  });
+
   it("supports standalone extraction helpers", () => {
     expect(extractHeadings("# One\n\n### Two").map((heading) => heading.depth)).toEqual([1, 3]);
     expect(extractMarkdownLinks('[A](./a.md "title") [B](https://example.com)')).toEqual([
@@ -152,6 +174,24 @@ describe("normalization", () => {
     expect(repeatedLabel.destinationRange?.start).toBeGreaterThan(
       "[./guides/start.md](./guides/start.md)".indexOf("](")
     );
+  });
+
+  it("uses the first CommonMark definition when a reference label is duplicated", () => {
+    const markdown = [
+      "Read [the guide][shared].",
+      "",
+      "[shared]: ./first.md",
+      "[shared]: ./second.md"
+    ].join("\n");
+    const parsed = parseMarkdown(markdown);
+    const link = parsed.semanticLinks.find((candidate) => candidate.kind === "markdown");
+
+    expect(parsed.markdownLinks).toEqual([{ text: "the guide", href: "./first.md" }]);
+    expect(link?.target).toBe("./first.md");
+    expect(
+      link?.destinationRange &&
+        parsed.content.slice(link.destinationRange.start, link.destinationRange.end)
+    ).toBe("./first.md");
   });
 
   it("extracts Obsidian properties and semantic tokens with byte-exact body ranges", () => {
@@ -239,6 +279,17 @@ describe("normalization", () => {
       ["markdown", "./real.md"]
     ]);
     expect(doc.inlineTags?.map((tag) => tag.tag)).toEqual(["real-tag"]);
+  });
+
+  it("handles deeply nested Markdown while keeping literal content inert", () => {
+    const markdown = `${"> ".repeat(5_000)}\`[[Code Hidden]] #code-hidden\` [linked #link-hidden](./hidden.md) [[Visible]] #visible`;
+    const parsed = parseMarkdown(markdown);
+
+    expect(parsed.semanticLinks.map((link) => [link.kind, link.target])).toEqual([
+      ["markdown", "./hidden.md"],
+      ["wikilink", "Visible"]
+    ]);
+    expect(parsed.inlineTags.map((tag) => tag.tag)).toEqual(["visible"]);
   });
 
   it("normalizes BOM and CRLF before assigning stable semantic ranges", () => {

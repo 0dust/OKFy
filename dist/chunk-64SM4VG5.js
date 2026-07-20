@@ -21,7 +21,7 @@ import {
   toPosixPath,
   urlToOutputPath,
   validateBundle
-} from "./chunk-V2DWVP5O.js";
+} from "./chunk-GI2Q677K.js";
 
 // src/normalize.ts
 import * as cheerio from "cheerio";
@@ -234,20 +234,47 @@ var OWNED_FRONTMATTER_KEYS = /* @__PURE__ */ new Set([
   "timestamp"
 ]);
 var UNSAFE_PROPERTY_KEYS = /* @__PURE__ */ new Set(["__proto__", "constructor", "prototype"]);
-function stableYamlValue(value) {
-  if (Array.isArray(value)) return value.map(stableYamlValue);
+var MAX_FRONTMATTER_VALUE_DEPTH = 100;
+function stableYamlValue(value, propertyKey, path7 = propertyKey, ancestors = /* @__PURE__ */ new WeakSet(), depth = 0) {
   if (value instanceof Date) return new Date(value.getTime());
-  if (!isRecord(value)) return value;
-  const sorted = {};
-  for (const key of Object.keys(value).sort()) {
-    if (UNSAFE_PROPERTY_KEYS.has(key)) continue;
-    sorted[key] = stableYamlValue(value[key]);
+  const isArray = Array.isArray(value);
+  if (!isArray && !isRecord(value)) return value;
+  if (depth >= MAX_FRONTMATTER_VALUE_DEPTH) {
+    throw new Error(
+      `Cannot serialize frontmatter property ${JSON.stringify(propertyKey)}: nesting exceeds ${MAX_FRONTMATTER_VALUE_DEPTH} levels.`
+    );
   }
-  return sorted;
+  if (ancestors.has(value)) {
+    throw new Error(
+      `Cannot serialize frontmatter property ${JSON.stringify(propertyKey)}: cyclic value at ${path7}.`
+    );
+  }
+  ancestors.add(value);
+  try {
+    if (isArray) {
+      return value.map(
+        (item, index) => stableYamlValue(item, propertyKey, `${path7}[${index}]`, ancestors, depth + 1)
+      );
+    }
+    const sorted = {};
+    for (const key of Object.keys(value).sort()) {
+      if (UNSAFE_PROPERTY_KEYS.has(key)) continue;
+      sorted[key] = stableYamlValue(
+        value[key],
+        propertyKey,
+        `${path7}.${key}`,
+        ancestors,
+        depth + 1
+      );
+    }
+    return sorted;
+  } finally {
+    ancestors.delete(value);
+  }
 }
 function yamlProperty(key, value) {
   return dump(
-    { [key]: stableYamlValue(value) },
+    { [key]: stableYamlValue(value, key) },
     {
       forceQuotes: true,
       lineWidth: -1,

@@ -221,6 +221,82 @@ describe("writer and validator", () => {
     expect(concept?.tags.slice(0, 3)).toEqual(["explicit", "shared", "inlinetag"]);
   });
 
+  it("rejects cyclic and excessively deep frontmatter values with useful errors", async () => {
+    const importedOutDir = await tempOut();
+    const imported = normalizeDocument(
+      raw({
+        sourceId: "notes/cyclic.md",
+        filePath: "notes/cyclic.md",
+        raw: ["---", "payload: &payload [*payload]", "---", "", "# Cyclic"].join("\n")
+      })
+    );
+
+    await expect(
+      writeOkfBundle([imported], {
+        outDir: importedOutDir,
+        timestamp: "2026-06-14T00:00:00.000Z"
+      })
+    ).rejects.toThrow(
+      'Cannot serialize frontmatter property "payload": cyclic value at payload[0].'
+    );
+
+    const programmedCycleOutDir = await tempOut();
+    const programmedCycle = normalizeDocument(
+      raw({
+        sourceId: "notes/programmed-cycle.md",
+        filePath: "notes/programmed-cycle.md",
+        raw: "# Programmed cycle"
+      })
+    );
+    const cyclicValue: unknown[] = [];
+    cyclicValue.push(cyclicValue);
+    programmedCycle.properties = {
+      data: { payload: cyclicValue },
+      range: { start: 0, end: 0 },
+      aliases: [],
+      tags: []
+    };
+
+    await expect(
+      writeOkfBundle([programmedCycle], {
+        outDir: programmedCycleOutDir,
+        timestamp: "2026-06-14T00:00:00.000Z"
+      })
+    ).rejects.toThrow(
+      'Cannot serialize frontmatter property "payload": cyclic value at payload[0].'
+    );
+
+    const programmedOutDir = await tempOut();
+    const programmed = normalizeDocument(
+      raw({
+        sourceId: "notes/deep.md",
+        filePath: "notes/deep.md",
+        raw: "# Deep"
+      })
+    );
+    let deepValue: Record<string, unknown> = {};
+    programmed.properties = {
+      data: { payload: deepValue },
+      range: { start: 0, end: 0 },
+      aliases: [],
+      tags: []
+    };
+    for (let depth = 0; depth < 101; depth += 1) {
+      const child: Record<string, unknown> = {};
+      deepValue.child = child;
+      deepValue = child;
+    }
+
+    await expect(
+      writeOkfBundle([programmed], {
+        outDir: programmedOutDir,
+        timestamp: "2026-06-14T00:00:00.000Z"
+      })
+    ).rejects.toThrow(
+      'Cannot serialize frontmatter property "payload": nesting exceeds 100 levels.'
+    );
+  });
+
   it("renders resolved semantic links after reserved-name and collision-safe path assignment", async () => {
     const outDir = await tempOut();
     const documents = [
@@ -239,6 +315,7 @@ describe("writer and validator", () => {
             "Embed ![[Context]] but keep ![[diagram.png|600]] readable.",
             "",
             '[shared]: ./index.md "Shared title"',
+            '[shared]: ./log.md "Ignored duplicate"',
             "",
             "`[[index]]` and `[not an edge](./ghost.md)` stay literal."
           ].join("\n")
@@ -294,6 +371,7 @@ describe("writer and validator", () => {
     );
     expect(source).toContain("Read [ordinary][shared] twice via [the same target][shared].");
     expect(source).toContain('[shared]: ./home-2.md "Shared title"');
+    expect(source).toContain('[shared]: ./log.md "Ignored duplicate"');
     expect(source).toContain(
       "Keep an inline label that matches its destination: [./index.md](./home-2.md)."
     );

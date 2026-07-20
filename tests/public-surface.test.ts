@@ -4,10 +4,35 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
+import type { InspectorReadinessSource } from "../src/index.js";
 
 const execFileAsync = promisify(execFile);
 
 describe("public surface", () => {
+  it("keeps the pre-validationIssues Inspector source shape assignable", () => {
+    const legacySource: InspectorReadinessSource = {
+      sourceName: "legacy",
+      name: "legacy",
+      label: "Legacy",
+      kind: "website",
+      seedUrl: "https://docs.example.com",
+      bundleDir: "/tmp/legacy",
+      availabilityStatus: "available",
+      validationStatus: "valid",
+      conceptCount: 1,
+      warningCount: 0,
+      brokenLinkCount: 0,
+      orphanConcepts: [],
+      freshnessStatus: "fresh",
+      refreshInProgress: false,
+      lastSuccessfulRefreshAt: null,
+      nextRefreshAllowedAt: null,
+      lastRefreshError: null
+    };
+
+    expect(legacySource.sourceName).toBe("legacy");
+  });
+
   it("README points at public product assets and current demo output", async () => {
     const cli = path.resolve("dist/cli.js");
     await fs.access(cli);

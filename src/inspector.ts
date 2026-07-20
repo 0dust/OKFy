@@ -33,7 +33,7 @@ export interface InspectorReadinessSource {
   conceptCount: number;
   warningCount: number;
   brokenLinkCount: number;
-  validationIssues: ValidationIssue[];
+  validationIssues?: ValidationIssue[];
   orphanConcepts: string[];
   freshnessStatus?: string;
   refreshInProgress: boolean;

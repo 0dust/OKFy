@@ -8,6 +8,8 @@ import { runImportCommand } from "../src/cli-content-actions.js";
 import { importLocal } from "../src/importer.js";
 import { matchesPattern } from "../src/util/match.js";
 import { validateBundle } from "../src/validate.js";
+import { resolveVaultDocuments } from "../src/vault-index.js";
+import type { NormalizedDocument, SemanticLink } from "../src/types.js";
 
 const tempDirs: string[] = [];
 
@@ -114,6 +116,35 @@ describe("importLocal Obsidian resolution", () => {
       resolvedSourceKey: "guides/Setup.md"
     });
     expect(result.diagnostics).toEqual([]);
+  });
+
+  it("does not resolve a qualified wikilink through an unrelated basename", async () => {
+    const root = await tempOut();
+    const input = path.join(root, "vault");
+    const outDir = path.join(root, "bundle");
+    await writeVault(input, {
+      "home.md": "# Home\n\nSee [[missing/folder/Setup]] and [[missing/folder/setup]].",
+      "guides/Setup.md": "# Setup"
+    });
+
+    const result = await importLocal({
+      inputPath: input,
+      outDir,
+      force: true,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+    const home = result.documents.find((document) => document.sourcePath === "home.md");
+
+    expect(
+      home?.semanticLinks?.map((link) => [link.target, link.resolution, link.resolvedSourceKey])
+    ).toEqual([
+      ["missing/folder/Setup", "unresolved", undefined],
+      ["missing/folder/setup", "unresolved", undefined]
+    ]);
+    expect(result.diagnostics.map(({ code, rawTarget }) => ({ code, rawTarget }))).toEqual([
+      { code: "unresolved_wikilink", rawTarget: "missing/folder/Setup" },
+      { code: "unresolved_wikilink", rawTarget: "missing/folder/setup" }
+    ]);
   });
 
   it("uses path, title, alias, Unicode, and case-folded identity in conservative precedence order", async () => {
@@ -306,6 +337,38 @@ describe("importLocal Obsidian resolution", () => {
       await readTree(path.join(root, "first-bundle"))
     );
   });
+
+  it("resolves links in a large vault without per-link full-vault scans", () => {
+    const targetCount = 6_000;
+    const document = (sourcePath: string, semanticLinks?: SemanticLink[]): NormalizedDocument => ({
+      sourceId: sourcePath,
+      sourcePath,
+      title: path.posix.basename(sourcePath, path.posix.extname(sourcePath)),
+      markdown: "",
+      headings: [],
+      links: [],
+      tags: [],
+      type: "Concept",
+      ...(semanticLinks ? { semanticLinks } : {})
+    });
+    const links = Array.from({ length: targetCount }, (_, index): SemanticLink => {
+      const target = `notes/Target-${index}`;
+      return {
+        kind: "wikilink",
+        raw: `[[${target}]]`,
+        target,
+        text: target,
+        range: { start: index, end: index + 1 }
+      };
+    });
+    const documents = [
+      document("source.md", links),
+      ...Array.from({ length: targetCount }, (_, index) => document(`notes/Target-${index}.md`))
+    ];
+
+    expect(resolveVaultDocuments(documents)).toEqual([]);
+    expect(links.every((link) => link.resolution === "resolved")).toBe(true);
+  }, 2_000);
 
   it("prints one deterministic warning summary without failing the import command", async () => {
     const root = await tempOut();

@@ -101,8 +101,26 @@ function visit(
   ancestors: AstNode[],
   callback: (node: AstNode, ancestors: AstNode[]) => void
 ): void {
-  callback(node, ancestors);
-  for (const child of node.children ?? []) visit(child, [...ancestors, node], callback);
+  const stack: Array<{ node: AstNode; nextChildIndex: number }> = [
+    { node, nextChildIndex: 0 }
+  ];
+  const path = [...ancestors];
+  callback(node, [...path]);
+
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1]!;
+    const child = frame.node.children?.[frame.nextChildIndex];
+    if (child) {
+      frame.nextChildIndex += 1;
+      path.push(frame.node);
+      callback(child, [...path]);
+      stack.push({ node: child, nextChildIndex: 0 });
+      continue;
+    }
+
+    stack.pop();
+    if (stack.length > 0) path.pop();
+  }
 }
 
 function normalizedStrings(value: unknown): string[] {
@@ -132,7 +150,12 @@ function optionalString(value: unknown): string | undefined {
 function sourceProperties(node: AstNode): DocumentProperties | undefined {
   const range = nodeRange(node);
   if (!range) return undefined;
-  const loaded = load(node.value ?? "");
+  let loaded: unknown;
+  try {
+    loaded = load(node.value ?? "");
+  } catch {
+    return undefined;
+  }
   const data = isRecord(loaded) ? loaded : {};
   return {
     data,
@@ -234,6 +257,7 @@ export function parseMarkdown(markdown: string, options: { mdx?: boolean } = {})
     const range = nodeRange(node);
     if (node.type === "yaml" && !properties) properties = sourceProperties(node);
     if (node.type !== "definition" || !node.identifier || !node.url || !range) return;
+    if (definitions.has(node.identifier)) return;
     definitions.set(node.identifier, {
       url: node.url,
       destinationRange: definitionDestinationRange(source, range, node.url)

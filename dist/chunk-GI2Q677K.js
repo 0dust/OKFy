@@ -161,8 +161,24 @@ function nodeRange(node) {
   return typeof start === "number" && typeof end === "number" ? { start, end } : void 0;
 }
 function visit(node, ancestors, callback) {
-  callback(node, ancestors);
-  for (const child of node.children ?? []) visit(child, [...ancestors, node], callback);
+  const stack = [
+    { node, nextChildIndex: 0 }
+  ];
+  const path13 = [...ancestors];
+  callback(node, [...path13]);
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1];
+    const child = frame.node.children?.[frame.nextChildIndex];
+    if (child) {
+      frame.nextChildIndex += 1;
+      path13.push(frame.node);
+      callback(child, [...path13]);
+      stack.push({ node: child, nextChildIndex: 0 });
+      continue;
+    }
+    stack.pop();
+    if (stack.length > 0) path13.pop();
+  }
 }
 function normalizedStrings(value) {
   const values = typeof value === "string" ? [value] : Array.isArray(value) ? value : [];
@@ -185,7 +201,12 @@ function optionalString(value) {
 function sourceProperties(node) {
   const range = nodeRange(node);
   if (!range) return void 0;
-  const loaded = load(node.value ?? "");
+  let loaded;
+  try {
+    loaded = load(node.value ?? "");
+  } catch {
+    return void 0;
+  }
   const data = isRecord(loaded) ? loaded : {};
   return {
     data,
@@ -253,6 +274,7 @@ function parseMarkdown(markdown, options = {}) {
     const range = nodeRange(node);
     if (node.type === "yaml" && !properties) properties = sourceProperties(node);
     if (node.type !== "definition" || !node.identifier || !node.url || !range) return;
+    if (definitions.has(node.identifier)) return;
     definitions.set(node.identifier, {
       url: node.url,
       destinationRange: definitionDestinationRange(source, range, node.url)
@@ -588,14 +610,52 @@ function decodeFragment(value) {
     return value;
   }
 }
-function identitiesFor(entry, kind) {
-  return entry.identityPaths.filter((identity) => identity.kind === kind);
+function emptyPathIdentityIndex() {
+  return {
+    keys: /* @__PURE__ */ new Map(),
+    stems: /* @__PURE__ */ new Map(),
+    suffixes: /* @__PURE__ */ new Map(),
+    basenames: /* @__PURE__ */ new Map()
+  };
 }
-function pathMatches(entry, target, kind) {
-  const stem = stripMarkdownExtension(target);
-  return identitiesFor(entry, kind).some(
-    (identity) => identity.key === target || identity.stem === stem
-  );
+function addCandidate(candidates, key, entry) {
+  const entries = candidates.get(key);
+  if (entries) entries.push(entry);
+  else candidates.set(key, [entry]);
+}
+function suffixesFor(stem) {
+  const segments = stem.split("/");
+  return segments.map((_, index) => segments.slice(index).join("/"));
+}
+function addIdentity(index, key, stem, entry) {
+  addCandidate(index.keys, key, entry);
+  addCandidate(index.stems, stem, entry);
+  for (const suffix of suffixesFor(stem)) addCandidate(index.suffixes, suffix, entry);
+  addCandidate(index.basenames, path7.posix.basename(stem), entry);
+}
+function buildVaultIndex(entries) {
+  const index = {
+    paths: { source: emptyPathIdentityIndex(), output: emptyPathIdentityIndex() },
+    foldedPaths: { source: emptyPathIdentityIndex(), output: emptyPathIdentityIndex() },
+    names: /* @__PURE__ */ new Map(),
+    foldedNames: /* @__PURE__ */ new Map()
+  };
+  for (const entry of entries) {
+    for (const identity of entry.identityPaths) {
+      addIdentity(index.paths[identity.kind], identity.key, identity.stem, entry);
+      addIdentity(
+        index.foldedPaths[identity.kind],
+        identity.key.toLocaleLowerCase("en-US"),
+        identity.stem.toLocaleLowerCase("en-US"),
+        entry
+      );
+    }
+    for (const name of entry.names) {
+      addCandidate(index.names, name, entry);
+      addCandidate(index.foldedNames, name.toLocaleLowerCase("en-US"), entry);
+    }
+  }
+  return index;
 }
 function uniqueEntries(entries) {
   return [...new Set(entries)].sort((a, b) => compareText(a.sourceKey, b.sourceKey));
@@ -606,55 +666,55 @@ function resultFor(entries) {
   if (candidates.length === 1) return { status: "resolved", entry: candidates[0] };
   return { status: "ambiguous", entries: candidates };
 }
-function exactPath(entries, target, kind) {
-  return entries.filter((entry) => pathMatches(entry, target, kind));
+function candidatesFrom(...candidateSets) {
+  return candidateSets.flatMap((candidates) => candidates ?? []);
 }
-function suffixOrBasename(entries, target, kind) {
+function exactPath(index, target, kind) {
+  const paths = index.paths[kind];
+  return candidatesFrom(paths.keys.get(target), paths.stems.get(stripMarkdownExtension(target)));
+}
+function suffixOrBasename(index, target, kind) {
   const stem = stripMarkdownExtension(target);
-  const basename = path7.posix.basename(stem);
-  return entries.filter(
-    (entry) => identitiesFor(entry, kind).some(
-      (identity) => identity.stem === stem || identity.stem.endsWith(`/${stem}`) || identity.basename === basename
-    )
+  const paths = index.paths[kind];
+  return candidatesFrom(
+    paths.suffixes.get(stem),
+    ...stem.includes("/") ? [] : [paths.basenames.get(stem)]
   );
 }
-function titleOrAlias(entries, target) {
-  return entries.filter((entry) => entry.names.includes(target));
+function titleOrAlias(index, target) {
+  return index.names.get(target) ?? [];
 }
-function caseFoldedCandidates(entries, sourceRelative, vaultRelative, kind, includeNames) {
+function caseFoldedCandidates(index, sourceRelative, vaultRelative, kind, includeNames) {
   const sourceFolded = sourceRelative.toLocaleLowerCase("en-US");
   const vaultFolded = vaultRelative.toLocaleLowerCase("en-US");
   const stemFolded = stripMarkdownExtension(vaultRelative).toLocaleLowerCase("en-US");
   const basenameFolded = path7.posix.basename(stemFolded);
-  return entries.filter((entry) => {
-    return identitiesFor(entry, kind).some((identity) => {
-      const key = identity.key.toLocaleLowerCase("en-US");
-      const stem = identity.stem.toLocaleLowerCase("en-US");
-      return key === sourceFolded || stem === stripMarkdownExtension(sourceFolded) || key === vaultFolded || stem === stemFolded || stem.endsWith(`/${stemFolded}`) || identity.basename.toLocaleLowerCase("en-US") === basenameFolded;
-    }) || includeNames && entry.names.some((name) => name.toLocaleLowerCase("en-US") === vaultFolded);
-  });
+  const paths = index.foldedPaths[kind];
+  return candidatesFrom(
+    paths.keys.get(sourceFolded),
+    paths.stems.get(stripMarkdownExtension(sourceFolded)),
+    paths.keys.get(vaultFolded),
+    paths.stems.get(stemFolded),
+    paths.suffixes.get(stemFolded),
+    ...stemFolded.includes("/") ? [] : [paths.basenames.get(basenameFolded)],
+    ...includeNames ? [index.foldedNames.get(vaultFolded)] : []
+  );
 }
-function resolveTarget(entries, sourceKey, rawTarget, options = {}) {
+function resolveTarget(index, sourceKey, rawTarget, options = {}) {
   const target = normalizeVaultPath(rawTarget);
   const sourceRelative = normalizeVaultPath(path7.posix.join(path7.posix.dirname(sourceKey), target));
   const pathKind = options.pathKind ?? "source";
   for (const candidates of [
-    exactPath(entries, sourceRelative, pathKind),
-    exactPath(entries, target, pathKind),
-    suffixOrBasename(entries, target, pathKind),
-    ...options.includeNames === false ? [] : [titleOrAlias(entries, target)]
+    exactPath(index, sourceRelative, pathKind),
+    exactPath(index, target, pathKind),
+    suffixOrBasename(index, target, pathKind),
+    ...options.includeNames === false ? [] : [titleOrAlias(index, target)]
   ]) {
     const result = resultFor(candidates);
     if (result) return result;
   }
   return resultFor(
-    caseFoldedCandidates(
-      entries,
-      sourceRelative,
-      target,
-      pathKind,
-      options.includeNames !== false
-    )
+    caseFoldedCandidates(index, sourceRelative, target, pathKind, options.includeNames !== false)
   ) ?? {
     status: "unresolved"
   };
@@ -702,7 +762,7 @@ function hasHeading(entry, heading) {
   const slug = new GithubSlugger2().slug(normalized);
   return entry.headings.has(normalized) || entry.headings.has(slug);
 }
-function resolveLink(entry, link, entries, includeMarkdownFragments) {
+function resolveLink(entry, link, index, includeMarkdownFragments) {
   if (link.kind === "markdown") {
     if (!includeMarkdownFragments) return void 0;
     const hash = link.target.indexOf("#");
@@ -711,7 +771,7 @@ function resolveLink(entry, link, entries, includeMarkdownFragments) {
     const fragment = link.target.slice(hash + 1);
     if (!target || !fragment || /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(target)) return void 0;
     const outputSourceKey = normalizeVaultPath(entry.document.outputPath ?? entry.sourceKey);
-    const resolution2 = resolveTarget(entries, outputSourceKey, target, {
+    const resolution2 = resolveTarget(index, outputSourceKey, target, {
       pathKind: "output",
       includeNames: false
     });
@@ -730,7 +790,7 @@ function resolveLink(entry, link, entries, includeMarkdownFragments) {
     };
   }
   if (link.kind !== "wikilink" && link.kind !== "note_embed") return void 0;
-  const resolution = resolveTarget(entries, entry.sourceKey, link.target || entry.sourceKey);
+  const resolution = resolveTarget(index, entry.sourceKey, link.target || entry.sourceKey);
   if (resolution.status === "unresolved") {
     link.resolution = "unresolved";
     delete link.resolvedSourceKey;
@@ -781,16 +841,12 @@ function compareDiagnostics(first, second) {
 }
 function resolveVaultDocuments(documents, options = {}) {
   const entries = documents.map(entryFor).filter((entry) => Boolean(entry)).sort((a, b) => compareText(a.sourceKey, b.sourceKey));
+  const index = buildVaultIndex(entries);
   const diagnostics = [];
   for (const entry of entries) {
     const documentDiagnostics = [];
     for (const link of entry.document.semanticLinks ?? []) {
-      const diagnostic = resolveLink(
-        entry,
-        link,
-        entries,
-        Boolean(options.includeMarkdownFragments)
-      );
+      const diagnostic = resolveLink(entry, link, index, Boolean(options.includeMarkdownFragments));
       if (diagnostic) documentDiagnostics.push(diagnostic);
     }
     documentDiagnostics.sort(compareDiagnostics);
