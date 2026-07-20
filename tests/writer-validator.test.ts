@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildGraph, extractInternalLinks } from "../src/graph.js";
 import { importLocal } from "../src/importer.js";
+import { parseMarkdown } from "../src/markdown-ast.js";
 import { normalizeDocument } from "../src/normalize.js";
 import { readBundle } from "../src/reader.js";
 import { validateBundle } from "../src/validate.js";
@@ -31,6 +32,26 @@ function raw(
 }
 
 describe("writer and validator", () => {
+  it("preserves opening brackets in portable wikilink labels", async () => {
+    const outDir = await tempOut();
+    const documents = [
+      normalizeDocument(
+        raw({ sourceId: "source.md", filePath: "source.md", raw: "# Source\n\n[[Target|A [ bracket]]" })
+      ),
+      normalizeDocument(
+        raw({ sourceId: "Target.md", filePath: "Target.md", raw: "# Target" })
+      )
+    ];
+
+    expect(resolveVaultDocuments(documents)).toEqual([]);
+    await writeOkfBundle(documents, { outDir, timestamp: "2026-06-14T00:00:00.000Z" });
+
+    const source = await fs.readFile(path.join(outDir, "source.md"), "utf8");
+    const parsed = parseMarkdown(source);
+    expect(source).toContain("[A \\[ bracket](./target.md)");
+    expect(parsed.markdownLinks).toEqual([{ href: "./target.md", text: "A [ bracket" }]);
+  });
+
   it("resolves writer-generated title headings without hiding genuinely missing fragments", async () => {
     const root = await tempOut();
     const input = path.join(root, "vault");

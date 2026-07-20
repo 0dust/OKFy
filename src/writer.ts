@@ -258,7 +258,7 @@ function headingFragment(link: SemanticLink, target: NormalizedDocument | undefi
 }
 
 function markdownLinkText(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/\]/g, "\\]");
+  return value.replace(/\\/g, "\\\\").replace(/\[/g, "\\[").replace(/\]/g, "\\]");
 }
 
 function rewriteLinks(

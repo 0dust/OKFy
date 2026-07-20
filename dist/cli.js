@@ -13,7 +13,7 @@ import {
   renderActivationSetupMarkdown,
   withActivationMetadata,
   writeActivationPacketFiles
-} from "./chunk-MNQ4MH4A.js";
+} from "./chunk-RLMDCBDB.js";
 import {
   MCP_TOOL_NAMES,
   assertUniqueWorkspaceRecordNames,

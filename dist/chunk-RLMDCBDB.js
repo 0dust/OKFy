@@ -424,7 +424,7 @@ function headingFragment(link, target) {
   return heading?.slug ?? new GithubSlugger().slug(requested);
 }
 function markdownLinkText(value) {
-  return value.replace(/\\/g, "\\\\").replace(/\]/g, "\\]");
+  return value.replace(/\\/g, "\\\\").replace(/\[/g, "\\[").replace(/\]/g, "\\]");
 }
 function rewriteLinks(doc, sourceToOutput, sourceToDocument) {
   const edits = /* @__PURE__ */ new Map();
