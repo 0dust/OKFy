@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { hasFrontmatter, parseFrontmatter, type ParsedFrontmatter } from "./frontmatter.js";
-import { buildGraph, extractInternalLinksFromSemantics } from "./graph.js";
+import { buildGraph } from "./graph.js";
+import { internalLinksFromSemantics } from "./internal-links.js";
 import { parseMarkdown } from "./markdown-ast.js";
 import { isConceptMarkdownPath, isReservedOkfPath } from "./okf.js";
 import { readBundle } from "./reader.js";
@@ -259,7 +260,7 @@ export async function validateBundle(bundleDir: string): Promise<ValidationRepor
   issues.push(...semantic.issues);
   const canonicalIds = new Set(canonicalConcepts.map((concept) => concept.id));
   for (const [index, concept] of canonicalConcepts.entries()) {
-    for (const target of extractInternalLinksFromSemantics(
+    for (const target of internalLinksFromSemantics(
       concept.path,
       semantic.documents[index]?.semanticLinks ?? []
     )) {
