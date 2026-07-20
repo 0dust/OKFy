@@ -9,6 +9,64 @@ export type RawDocument = {
   discoveredAt: string;
 };
 
+export type SourceRange = {
+  start: number;
+  end: number;
+};
+
+export type DocumentProperties = {
+  data: Record<string, unknown>;
+  range: SourceRange;
+  title?: string;
+  description?: string;
+  type?: string;
+  aliases: string[];
+  tags: string[];
+};
+
+export type DocumentHeading = {
+  depth: number;
+  text: string;
+  slug: string;
+  range: SourceRange;
+};
+
+export type DocumentBlockId = {
+  id: string;
+  raw: string;
+  range: SourceRange;
+};
+
+export type InlineTag = {
+  tag: string;
+  raw: string;
+  range: SourceRange;
+};
+
+export type SemanticLinkKind = "markdown" | "wikilink" | "note_embed" | "attachment_embed";
+
+export type SemanticLink = {
+  kind: SemanticLinkKind;
+  raw: string;
+  target: string;
+  text: string;
+  heading?: string;
+  blockId?: string;
+  range: SourceRange;
+  destinationRange?: SourceRange;
+  resolution?: "unresolved" | "ambiguous" | "resolved";
+  resolvedSourceKey?: string;
+};
+
+export type DocumentDiagnostic = {
+  severity: "warning";
+  code: string;
+  message: string;
+  sourcePath: string;
+  rawTarget: string;
+  candidates?: string[];
+};
+
 export type NormalizedDocument = {
   sourceId: string;
   title: string;
@@ -20,6 +78,12 @@ export type NormalizedDocument = {
   links: Array<{ href: string; text: string }>;
   tags: string[];
   type: string;
+  properties?: DocumentProperties;
+  aliases?: string[];
+  semanticLinks?: SemanticLink[];
+  blockIds?: DocumentBlockId[];
+  inlineTags?: InlineTag[];
+  diagnostics?: DocumentDiagnostic[];
 };
 
 export type Concept = {
