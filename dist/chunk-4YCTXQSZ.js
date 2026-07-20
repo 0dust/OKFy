@@ -21,7 +21,7 @@ import {
   toPosixPath,
   urlToOutputPath,
   validateBundle
-} from "./chunk-KMBDL7M3.js";
+} from "./chunk-5MJ3RX6G.js";
 
 // src/normalize.ts
 import * as cheerio from "cheerio";

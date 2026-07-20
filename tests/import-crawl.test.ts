@@ -341,7 +341,7 @@ describe("importLocal Obsidian resolution", () => {
         "[[Duplicate]] [[Shared Alias]] [[Missing Note]]",
         "[[Fragments#Present]] [[Fragments#Missing]]",
         "[[Fragments#^block-ok]] [[Fragments#^block-missing]]",
-        "![[diagram.png|600]]"
+        "![[diagram.png|600]] ![[recording.3gp|audio]]"
       ].join("\n"),
       "one/Duplicate.md": "# First",
       "two/Duplicate.mdx": "# Second",
@@ -357,10 +357,13 @@ describe("importLocal Obsidian resolution", () => {
       timestamp: "2026-06-14T00:00:00.000Z"
     });
     const source = result.documents.find((document) => document.sourcePath === "source.md");
-    const attachment = source?.semanticLinks?.find((link) => link.kind === "attachment_embed");
+    const attachments = source?.semanticLinks?.filter((link) => link.kind === "attachment_embed");
 
-    expect(attachment).toMatchObject({ target: "diagram.png" });
-    expect(attachment?.resolution).toBeUndefined();
+    expect(attachments?.map((attachment) => attachment.target)).toEqual([
+      "diagram.png",
+      "recording.3gp"
+    ]);
+    expect(attachments?.every((attachment) => attachment.resolution === undefined)).toBe(true);
     expect(
       result.diagnostics.map(({ code, rawTarget, candidates }) => ({ code, rawTarget, candidates }))
     ).toEqual([

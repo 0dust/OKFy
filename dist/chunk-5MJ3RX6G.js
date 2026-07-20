@@ -162,6 +162,7 @@ function parseFrontmatter(raw) {
 
 // src/markdown-ast.ts
 var BINARY_ATTACHMENT_EXTENSIONS = /* @__PURE__ */ new Set([
+  "3gp",
   "aac",
   "avif",
   "avi",

@@ -58,6 +58,7 @@ export type ParsedMarkdown = {
 type RecognizedFrontmatterProperty = "title" | "description" | "type" | "aliases" | "tags";
 
 const BINARY_ATTACHMENT_EXTENSIONS = new Set([
+  "3gp",
   "aac",
   "avif",
   "avi",
