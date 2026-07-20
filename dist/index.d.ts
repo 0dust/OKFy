@@ -10,6 +10,56 @@ type RawDocument = {
     raw: string;
     discoveredAt: string;
 };
+type SourceRange = {
+    start: number;
+    end: number;
+};
+type DocumentProperties = {
+    data: Record<string, unknown>;
+    range: SourceRange;
+    title?: string;
+    description?: string;
+    type?: string;
+    aliases: string[];
+    tags: string[];
+};
+type DocumentHeading = {
+    depth: number;
+    text: string;
+    slug: string;
+    range: SourceRange;
+};
+type DocumentBlockId = {
+    id: string;
+    raw: string;
+    range: SourceRange;
+};
+type InlineTag = {
+    tag: string;
+    raw: string;
+    range: SourceRange;
+};
+type SemanticLinkKind = "markdown" | "wikilink" | "note_embed" | "attachment_embed";
+type SemanticLink = {
+    kind: SemanticLinkKind;
+    raw: string;
+    target: string;
+    text: string;
+    heading?: string;
+    blockId?: string;
+    range: SourceRange;
+    destinationRange?: SourceRange;
+    resolution?: "unresolved" | "ambiguous" | "resolved";
+    resolvedSourceKey?: string;
+};
+type DocumentDiagnostic = {
+    severity: "warning";
+    code: string;
+    message: string;
+    sourcePath: string;
+    rawTarget: string;
+    candidates?: string[];
+};
 type NormalizedDocument = {
     sourceId: string;
     title: string;
@@ -28,6 +78,12 @@ type NormalizedDocument = {
     }>;
     tags: string[];
     type: string;
+    properties?: DocumentProperties;
+    aliases?: string[];
+    semanticLinks?: SemanticLink[];
+    blockIds?: DocumentBlockId[];
+    inlineTags?: InlineTag[];
+    diagnostics?: DocumentDiagnostic[];
 };
 type Concept = {
     id: string;
@@ -38,6 +94,7 @@ type Concept = {
     description?: string;
     resource?: string;
     tags: string[];
+    aliases?: string[];
     body: string;
 };
 type KnowledgeGraph = {
@@ -50,6 +107,8 @@ type ValidationIssue = {
     code: string;
     message: string;
     path?: string;
+    rawTarget?: string;
+    candidates?: string[];
 };
 type ValidationReport = {
     valid: boolean;
@@ -371,6 +430,7 @@ interface InspectorReadinessSource {
     conceptCount: number;
     warningCount: number;
     brokenLinkCount: number;
+    validationIssues: ValidationIssue[];
     orphanConcepts: string[];
     freshnessStatus?: string;
     refreshInProgress: boolean;
@@ -609,10 +669,12 @@ type ImportOptions = {
     dangerouslyAllowUnsafeOutput?: boolean;
     timestamp?: string;
 };
-declare function importLocal(options: ImportOptions): Promise<{
+type ImportResult = {
     written: string[];
     documents: NormalizedDocument[];
-}>;
+    diagnostics: DocumentDiagnostic[];
+};
+declare function importLocal(options: ImportOptions): Promise<ImportResult>;
 
 declare const MCP_TOOL_NAMES: readonly ["search_concepts", "read_concept", "get_neighbors", "list_types", "list_tags", "bundle_summary"];
 
@@ -771,4 +833,4 @@ declare function refreshSource(options: {
     staleLockTimeoutMs?: number;
 }): Promise<RefreshResult>;
 
-export { type ActivationPacket, type ActivationPacketFile, type ActivationProof, type ActivationProofSearchResult, type ActivationSetup, type BuildActivationPacketOptions, type BuildBundleInspectorOptions, type BuildWorkspaceInspectorOptions, BundleSearch, type BundleStats, type Concept, type ContentType, type CrawlOptions, type CrawlProgressEvent, type CrawlResult, type CrawlRunner, type FreshnessDecision, type FreshnessReason, type FreshnessState, type FreshnessStatus, type ImportOptions, type InspectorAgentStep, type InspectorAvailabilityStatus, type InspectorConcept, type InspectorEdge, type InspectorError, type InspectorReadiness, type InspectorReadinessSource, type InspectorReport, type InspectorTarget, type InspectorValidationStatus, type KnowledgeGraph, MCP_TOOL_NAMES, type NormalizedDocument, type PackageMetadata, type RawDocument, type RefreshContext, type RefreshErrorDetails, type RefreshHooks, type RefreshMode, type RefreshResult$1 as RefreshResult, type RefreshSkipReason, type RefreshSourceManifest, type SearchResult, type ServeOptions, type SourceKind, type SourceLoadError, type SourceManifest, type SourceMetadata, type SourceRecord, type RefreshMode$1 as SourceRefreshMode, type RefreshResult as SourceRefreshResult, type RefreshState as SourceRefreshState, type RefreshStatus as SourceRefreshStatus, type SourceStoreOptions, type RefreshState as StoredRefreshState, type ValidationIssue, type ValidationReport, type WorkspaceConceptCandidate, WorkspaceError, type WorkspaceProfile, WorkspaceSearch, type WorkspaceSearchResult, type WorkspaceSearchSource, type WorkspaceServeOptions, type WorkspaceServeSource, type WorkspaceSourceRecord, type WorkspaceSourceSelection, type WorkspaceSourceSet, type WriteBundleOptions, assertSafeForceOutDir, assertUniqueWorkspaceRecordNames, buildActivationPacket, buildBundleInspectorReport, buildGraph, buildWorkspaceInspectorReport, bundleSourceName, crawlWebsite, createMcpServer, createWorkspaceMcpServer, descriptionFromMarkdown, evaluateFreshness, extractHeadings, extractInternalLinks, extractMarkdownLinks, hashBundleContents, importLocal, inferTags, inferType, inspectBundle, isRegisteredWorkspaceRecord, listSources, localBundleRecord, normalizeDocument, okfyUserAgent, packageMetadata, packageVersion, parseDurationSeconds, protectedActivationInputPaths, readBundle, readConceptFile, readRefreshState, readSourceManifest, readSourceRecord, readWorkspaceProfile, refreshSource, removeSource, renderActivationSetupMarkdown, resolveBundleDir, resolveOkfyHome, resolveSourceDir, resolveWorkspaceSources, runtimePackageRoot, serveMcpStdio, serveWorkspaceMcpStdio, validateBundle, validateSourceName, withActivationMetadata, workspaceProfilePath, writeActivationPacketFiles, writeOkfBundle, writeRefreshState, writeSourceManifest, writeWorkspaceProfile };
+export { type ActivationPacket, type ActivationPacketFile, type ActivationProof, type ActivationProofSearchResult, type ActivationSetup, type BuildActivationPacketOptions, type BuildBundleInspectorOptions, type BuildWorkspaceInspectorOptions, BundleSearch, type BundleStats, type Concept, type ContentType, type CrawlOptions, type CrawlProgressEvent, type CrawlResult, type CrawlRunner, type DocumentBlockId, type DocumentDiagnostic, type DocumentHeading, type DocumentProperties, type FreshnessDecision, type FreshnessReason, type FreshnessState, type FreshnessStatus, type ImportOptions, type ImportResult, type InlineTag, type InspectorAgentStep, type InspectorAvailabilityStatus, type InspectorConcept, type InspectorEdge, type InspectorError, type InspectorReadiness, type InspectorReadinessSource, type InspectorReport, type InspectorTarget, type InspectorValidationStatus, type KnowledgeGraph, MCP_TOOL_NAMES, type NormalizedDocument, type PackageMetadata, type RawDocument, type RefreshContext, type RefreshErrorDetails, type RefreshHooks, type RefreshMode, type RefreshResult$1 as RefreshResult, type RefreshSkipReason, type RefreshSourceManifest, type SearchResult, type SemanticLink, type SemanticLinkKind, type ServeOptions, type SourceKind, type SourceLoadError, type SourceManifest, type SourceMetadata, type SourceRange, type SourceRecord, type RefreshMode$1 as SourceRefreshMode, type RefreshResult as SourceRefreshResult, type RefreshState as SourceRefreshState, type RefreshStatus as SourceRefreshStatus, type SourceStoreOptions, type RefreshState as StoredRefreshState, type ValidationIssue, type ValidationReport, type WorkspaceConceptCandidate, WorkspaceError, type WorkspaceProfile, WorkspaceSearch, type WorkspaceSearchResult, type WorkspaceSearchSource, type WorkspaceServeOptions, type WorkspaceServeSource, type WorkspaceSourceRecord, type WorkspaceSourceSelection, type WorkspaceSourceSet, type WriteBundleOptions, assertSafeForceOutDir, assertUniqueWorkspaceRecordNames, buildActivationPacket, buildBundleInspectorReport, buildGraph, buildWorkspaceInspectorReport, bundleSourceName, crawlWebsite, createMcpServer, createWorkspaceMcpServer, descriptionFromMarkdown, evaluateFreshness, extractHeadings, extractInternalLinks, extractMarkdownLinks, hashBundleContents, importLocal, inferTags, inferType, inspectBundle, isRegisteredWorkspaceRecord, listSources, localBundleRecord, normalizeDocument, okfyUserAgent, packageMetadata, packageVersion, parseDurationSeconds, protectedActivationInputPaths, readBundle, readConceptFile, readRefreshState, readSourceManifest, readSourceRecord, readWorkspaceProfile, refreshSource, removeSource, renderActivationSetupMarkdown, resolveBundleDir, resolveOkfyHome, resolveSourceDir, resolveWorkspaceSources, runtimePackageRoot, serveMcpStdio, serveWorkspaceMcpStdio, validateBundle, validateSourceName, withActivationMetadata, workspaceProfilePath, writeActivationPacketFiles, writeOkfBundle, writeRefreshState, writeSourceManifest, writeWorkspaceProfile };

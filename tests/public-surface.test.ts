@@ -225,9 +225,12 @@ describe("public surface", () => {
           "createMcpServer",
           "createWorkspaceMcpServer",
           "crawlWebsite",
+          "extractHeadings",
+          "extractMarkdownLinks",
           "importLocal",
           "inspectBundle",
           "localBundleRecord",
+          "normalizeDocument",
           "okfyUserAgent",
           "packageMetadata",
           "packageVersion",
@@ -293,6 +296,40 @@ describe("public surface", () => {
         if (!setup.serveCommand("stripe", "/tmp/okfy").display.includes("serve stripe --mcp")) {
           throw new Error("Missing setup serveCommand");
         }
+        for (const parserInternal of [
+          "parseMarkdown",
+          "createParser",
+          "extractInternalLinksFromSemantics",
+          "internalLinksFromSemantics"
+        ]) {
+          if (parserInternal in root) {
+            throw new Error("Parser internal unexpectedly exported: " + parserInternal);
+          }
+        }
+        const fs = await import("node:fs/promises");
+        await fs.mkdir("vault");
+        await fs.writeFile("vault/source.md", "# Source\n\n[[Missing Note]]\n");
+        const imported = await root.importLocal({
+          inputPath: "vault",
+          outDir: "bundle",
+          force: true,
+          timestamp: "2026-07-20T00:00:00.000Z"
+        });
+        if (!Array.isArray(imported.written) || !Array.isArray(imported.documents)) {
+          throw new Error("Existing import result fields changed");
+        }
+        if (!Array.isArray(imported.diagnostics) || imported.diagnostics.length !== 1) {
+          throw new Error("Missing additive import diagnostics");
+        }
+        const diagnostic = imported.diagnostics[0];
+        if (
+          diagnostic.code !== "unresolved_wikilink" ||
+          diagnostic.severity !== "warning" ||
+          diagnostic.sourcePath !== "source.md" ||
+          diagnostic.rawTarget !== "Missing Note"
+        ) {
+          throw new Error("Unexpected import diagnostic: " + JSON.stringify(diagnostic));
+        }
         async function expectBlocked(specifier) {
           try {
             await import(specifier);
@@ -304,6 +341,7 @@ describe("public surface", () => {
         }
         await expectBlocked("okfy-ai/src/source-store.js");
         await expectBlocked("okfy-ai/dist/index.js");
+        await expectBlocked("okfy-ai/dist/markdown-ast.js");
         console.log("ok");
       `;
       await expect(
@@ -312,6 +350,21 @@ describe("public surface", () => {
     } finally {
       await fs.rm(tempRoot, { recursive: true, force: true });
     }
+  });
+
+  it("ships additive import diagnostics types without parser internals", async () => {
+    const declarations = await fs.readFile("dist/index.d.ts", "utf8");
+
+    for (const publicType of [
+      "DocumentDiagnostic",
+      "DocumentProperties",
+      "ImportResult",
+      "NormalizedDocument",
+      "SemanticLink"
+    ]) {
+      expect(declarations).toMatch(new RegExp(`\\b${publicType}\\b`));
+    }
+    expect(declarations).not.toMatch(/\bParsedMarkdown\b|\bparseMarkdown\b|\bcreateParser\b/);
   });
 
   it("documents the publishable npm package", async () => {
@@ -378,6 +431,11 @@ describe("public surface", () => {
       "MCP tools are read-only; refresh is server-side maintenance, not an agent-callable write tool."
     );
     expect(npmReadme).not.toContain("including DNS-resolved hosts and redirects");
+    for (const documentation of [readme, npmReadme]) {
+      expect(documentation).toContain("Obsidian knowledge semantics are recognized automatically");
+      expect(documentation).toContain("importLocal");
+      expect(documentation).toContain("unresolved_wikilink");
+    }
     expect(npmReadme).toContain(
       "Turn docs into agent-readable Open Knowledge Format v0.1-conformant bundles, then serve them to Claude, Codex, Cursor"
     );

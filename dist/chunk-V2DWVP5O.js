@@ -37,7 +37,7 @@ function readPackageMetadata() {
   }
 }
 
-// src/graph.ts
+// src/internal-links.ts
 import path3 from "path";
 
 // src/util/path.ts
@@ -88,20 +88,350 @@ function relativeMarkdownLink(fromPath, toPath) {
   return rel;
 }
 
-// src/graph.ts
-function extractInternalLinks(concept) {
+// src/internal-links.ts
+function internalLinksFromSemantics(conceptPath, semanticLinks) {
   const links = /* @__PURE__ */ new Set();
-  for (const match of concept.body.matchAll(/\[[^\]]*]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)) {
-    const href = match[1] ?? "";
-    const noHash = href.split("#")[0] ?? href;
+  for (const link of semanticLinks) {
+    if (link.kind !== "markdown") continue;
+    const noHash = link.target.split("#")[0] ?? link.target;
     if (!noHash) continue;
     if (/^(https?:)?\/\//i.test(noHash) || /^mailto:/i.test(noHash)) continue;
     if (/^[a-z][a-z0-9+.-]*:/i.test(noHash)) continue;
-    const resolved = noHash.startsWith("/") ? path3.posix.normalize(noHash.slice(1)) : path3.posix.normalize(path3.posix.join(path3.posix.dirname(concept.path), noHash));
+    const resolved = noHash.startsWith("/") ? path3.posix.normalize(noHash.slice(1)) : path3.posix.normalize(path3.posix.join(path3.posix.dirname(conceptPath), noHash));
     if (!resolved || resolved === ".") continue;
     links.add(stripMdExtension(resolved));
   }
   return [...links].sort();
+}
+
+// src/markdown-ast.ts
+import wikiLinkPlugin from "@flowershow/remark-wiki-link";
+import GithubSlugger from "github-slugger";
+import { load } from "js-yaml";
+import { toString } from "mdast-util-to-string";
+import remarkFrontmatter from "remark-frontmatter";
+import remarkGfm from "remark-gfm";
+import remarkMdx from "remark-mdx";
+import remarkParse from "remark-parse";
+import { unified } from "unified";
+
+// src/util/object.ts
+function isRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+// src/markdown-ast.ts
+var BINARY_ATTACHMENT_EXTENSIONS = /* @__PURE__ */ new Set([
+  "aac",
+  "avif",
+  "avi",
+  "bmp",
+  "flac",
+  "gif",
+  "ico",
+  "jpeg",
+  "jpg",
+  "m4a",
+  "mkv",
+  "mov",
+  "mp3",
+  "mp4",
+  "oga",
+  "ogg",
+  "ogv",
+  "pdf",
+  "png",
+  "svg",
+  "tif",
+  "tiff",
+  "wav",
+  "webm",
+  "webp"
+]);
+function createParser(mdx) {
+  const parser = unified().use(remarkParse).use(remarkGfm).use(remarkFrontmatter, ["yaml"]);
+  if (mdx) parser.use(remarkMdx);
+  return parser.use(wikiLinkPlugin, { format: "regular" });
+}
+var markdownParser = createParser(false);
+var mdxParser = createParser(true);
+function nodeRange(node) {
+  const start = node.position?.start?.offset;
+  const end = node.position?.end?.offset;
+  return typeof start === "number" && typeof end === "number" ? { start, end } : void 0;
+}
+function visit(node, ancestors, callback) {
+  callback(node, ancestors);
+  for (const child of node.children ?? []) visit(child, [...ancestors, node], callback);
+}
+function normalizedStrings(value) {
+  const values = typeof value === "string" ? [value] : Array.isArray(value) ? value : [];
+  return values.filter((item) => typeof item === "string").map((item) => item.trim()).filter(Boolean);
+}
+function normalizedTags(value) {
+  const seen = /* @__PURE__ */ new Set();
+  const tags = [];
+  for (const item of normalizedStrings(value)) {
+    const tag = item.replace(/^#/, "").toLowerCase();
+    if (!tag || seen.has(tag)) continue;
+    seen.add(tag);
+    tags.push(tag);
+  }
+  return tags;
+}
+function optionalString(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : void 0;
+}
+function sourceProperties(node) {
+  const range = nodeRange(node);
+  if (!range) return void 0;
+  const loaded = load(node.value ?? "");
+  const data = isRecord(loaded) ? loaded : {};
+  return {
+    data,
+    range,
+    title: optionalString(data.title),
+    description: optionalString(data.description),
+    type: optionalString(data.type),
+    aliases: normalizedStrings(data.aliases),
+    tags: normalizedTags(data.tags)
+  };
+}
+function targetRangeAfterDelimiter(source, range, target, delimiter) {
+  const raw = source.slice(range.start, range.end);
+  let targetOffset = raw.indexOf(target);
+  while (targetOffset >= 0) {
+    const delimiterOffset = raw.lastIndexOf(delimiter, targetOffset);
+    const between = delimiterOffset < 0 ? void 0 : raw.slice(delimiterOffset + delimiter.length, targetOffset);
+    if (between !== void 0 && /^[\s<]*$/.test(between)) {
+      return {
+        start: range.start + targetOffset,
+        end: range.start + targetOffset + target.length
+      };
+    }
+    targetOffset = raw.indexOf(target, targetOffset + target.length);
+  }
+  return void 0;
+}
+function inlineDestinationRange(source, range, target) {
+  return targetRangeAfterDelimiter(source, range, target, "](");
+}
+function definitionDestinationRange(source, range, target) {
+  return targetRangeAfterDelimiter(source, range, target, "]:");
+}
+function splitTarget(value) {
+  const hash = value.indexOf("#");
+  if (hash < 0) return { target: value.trim() };
+  const target = value.slice(0, hash).trim();
+  const fragment = value.slice(hash + 1).trim();
+  if (fragment.startsWith("^")) return { target, blockId: fragment.slice(1) };
+  return { target, heading: fragment };
+}
+function defaultLinkText(parts) {
+  if (parts.heading) return parts.heading;
+  if (parts.blockId) return parts.blockId;
+  return parts.target.split("/").pop() ?? parts.target;
+}
+function attachmentExtension(target) {
+  const clean = target.split(/[?#]/, 1)[0] ?? target;
+  return clean.includes(".") ? (clean.split(".").pop() ?? "").toLowerCase() : "";
+}
+function isEligibleText(ancestors) {
+  return !ancestors.some(
+    (ancestor) => ancestor.type === "link" || ancestor.type === "linkReference" || ancestor.type === "wikiLink" || ancestor.type === "embed" || ancestor.type === "html" || ancestor.type.startsWith("mdx")
+  );
+}
+function adjustedRange(range, contentBase) {
+  return { start: range.start - contentBase, end: range.end - contentBase };
+}
+function parseMarkdown(markdown, options = {}) {
+  const source = markdown.startsWith("\uFEFF") ? markdown.slice(1) : markdown;
+  const tree = (options.mdx ? mdxParser : markdownParser).parse(source);
+  const definitions = /* @__PURE__ */ new Map();
+  let properties;
+  visit(tree, [], (node) => {
+    const range = nodeRange(node);
+    if (node.type === "yaml" && !properties) properties = sourceProperties(node);
+    if (node.type !== "definition" || !node.identifier || !node.url || !range) return;
+    definitions.set(node.identifier, {
+      url: node.url,
+      destinationRange: definitionDestinationRange(source, range, node.url)
+    });
+  });
+  const frontmatterEnd = properties?.range.end ?? 0;
+  const afterFrontmatter = source.slice(frontmatterEnd);
+  const leadingBodyWhitespace = afterFrontmatter.length - afterFrontmatter.trimStart().length;
+  const contentBase = frontmatterEnd + leadingBodyWhitespace;
+  const content = afterFrontmatter.trim();
+  const slugger = new GithubSlugger();
+  const headings = [];
+  const markdownLinks = [];
+  const semanticLinks = [];
+  const blockIds = [];
+  const htmlAnchors = [];
+  const inlineTags = [];
+  visit(tree, [], (node, ancestors) => {
+    const originalRange = nodeRange(node);
+    if (!originalRange || originalRange.start < contentBase) return;
+    const range = adjustedRange(originalRange, contentBase);
+    if (node.type === "html") {
+      const raw = source.slice(originalRange.start, originalRange.end);
+      for (const match of raw.matchAll(/^<a\s+id=(["'])([A-Za-z0-9-]+)\1\s*>$/gi)) {
+        const index = match.index ?? 0;
+        htmlAnchors.push({
+          id: match[2],
+          raw: match[0],
+          range: {
+            start: range.start + index,
+            end: range.start + index + match[0].length
+          }
+        });
+      }
+      return;
+    }
+    if (node.type.startsWith("mdxJsx")) {
+      const id = node.attributes?.find(
+        (attribute) => attribute.type === "mdxJsxAttribute" && attribute.name === "id" && typeof attribute.value === "string" && /^[A-Za-z0-9-]+$/.test(attribute.value)
+      )?.value;
+      if (typeof id === "string" && node.name === "a") {
+        htmlAnchors.push({
+          id,
+          raw: source.slice(originalRange.start, originalRange.end),
+          range
+        });
+      }
+      return;
+    }
+    if (ancestors.some((ancestor) => ancestor.type === "html" || ancestor.type.startsWith("mdx"))) {
+      return;
+    }
+    if (node.type === "heading" && typeof node.depth === "number") {
+      const text = toString(node).trim();
+      headings.push({ depth: node.depth, text, slug: slugger.slug(text), range });
+      return;
+    }
+    if (node.type === "link" && node.url) {
+      const text = toString(node);
+      const linkDestinationRange = inlineDestinationRange(source, originalRange, node.url);
+      markdownLinks.push({ href: node.url, text });
+      semanticLinks.push({
+        kind: "markdown",
+        raw: source.slice(originalRange.start, originalRange.end),
+        target: node.url,
+        text,
+        range,
+        destinationRange: linkDestinationRange ? adjustedRange(linkDestinationRange, contentBase) : void 0
+      });
+      return;
+    }
+    if (node.type === "linkReference" && node.identifier) {
+      const definition = definitions.get(node.identifier);
+      if (!definition) return;
+      const text = toString(node);
+      markdownLinks.push({ href: definition.url, text });
+      semanticLinks.push({
+        kind: "markdown",
+        raw: source.slice(originalRange.start, originalRange.end),
+        target: definition.url,
+        text,
+        range,
+        destinationRange: definition.destinationRange ? adjustedRange(definition.destinationRange, contentBase) : void 0
+      });
+      return;
+    }
+    if (node.type === "wikiLink" && node.value) {
+      const fullRange = { start: originalRange.start - 2, end: originalRange.end };
+      const parts = splitTarget(node.value);
+      semanticLinks.push({
+        kind: "wikilink",
+        raw: source.slice(fullRange.start, fullRange.end),
+        ...parts,
+        text: node.data?.alias ?? defaultLinkText(parts),
+        range: adjustedRange(fullRange, contentBase)
+      });
+      return;
+    }
+    if (node.type === "embed" && node.value) {
+      const parts = splitTarget(node.value);
+      const raw = source.slice(originalRange.start, originalRange.end);
+      const divider = raw.slice(3, -2).indexOf("|");
+      const alias = divider >= 0 ? raw.slice(3 + divider + 1, -2) : void 0;
+      semanticLinks.push({
+        kind: BINARY_ATTACHMENT_EXTENSIONS.has(attachmentExtension(parts.target)) ? "attachment_embed" : "note_embed",
+        raw,
+        ...parts,
+        text: alias ?? defaultLinkText(parts),
+        range
+      });
+      return;
+    }
+    if (node.type !== "text" || !node.value || !isEligibleText(ancestors)) return;
+    const textStart = originalRange.start;
+    for (const match of node.value.matchAll(/!\[\[([^\]\n]+)\]\]/g)) {
+      const index = match.index ?? 0;
+      const raw = match[0];
+      const [targetAndFragment = "", alias] = (match[1] ?? "").split("|", 2);
+      const parts = splitTarget(targetAndFragment);
+      const localRange = {
+        start: textStart + index,
+        end: textStart + index + raw.length
+      };
+      semanticLinks.push({
+        kind: BINARY_ATTACHMENT_EXTENSIONS.has(attachmentExtension(parts.target)) ? "attachment_embed" : "note_embed",
+        raw,
+        ...parts,
+        text: alias?.trim() || defaultLinkText(parts),
+        range: adjustedRange(localRange, contentBase)
+      });
+    }
+    for (const match of node.value.matchAll(/(^|[\s(>.,;:!?[{"'])#([\p{L}\p{N}\p{S}_/-]+)/gu)) {
+      const tag = match[2] ?? "";
+      if (!tag || /^\p{N}+$/u.test(tag)) continue;
+      const prefixLength = (match[1] ?? "").length;
+      const index = (match.index ?? 0) + prefixLength;
+      const raw = `#${tag}`;
+      const localRange = { start: textStart + index, end: textStart + index + raw.length };
+      inlineTags.push({
+        tag: tag.toLowerCase(),
+        raw,
+        range: adjustedRange(localRange, contentBase)
+      });
+    }
+    for (const match of node.value.matchAll(/(^|[ \t])\^([A-Za-z0-9-]+)(?=[ \t]*(?:\n|$))/g)) {
+      const prefixLength = (match[1] ?? "").length;
+      const index = (match.index ?? 0) + prefixLength;
+      const raw = `^${match[2] ?? ""}`;
+      const localRange = { start: textStart + index, end: textStart + index + raw.length };
+      blockIds.push({
+        id: match[2] ?? "",
+        raw,
+        range: adjustedRange(localRange, contentBase)
+      });
+    }
+  });
+  semanticLinks.sort((a, b) => a.range.start - b.range.start || a.range.end - b.range.end);
+  blockIds.sort((a, b) => a.range.start - b.range.start);
+  htmlAnchors.sort((a, b) => a.range.start - b.range.start);
+  inlineTags.sort((a, b) => a.range.start - b.range.start);
+  return {
+    content,
+    headings,
+    markdownLinks,
+    semanticLinks,
+    blockIds,
+    htmlAnchors,
+    inlineTags,
+    properties
+  };
+}
+
+// src/graph.ts
+function extractInternalLinks(concept) {
+  const sourcePath = concept.resource?.split(/[?#]/, 1)[0] ?? "";
+  return internalLinksFromSemantics(
+    concept.path,
+    parseMarkdown(concept.body, { mdx: /\.mdx$/i.test(sourcePath) }).semanticLinks
+  );
 }
 function buildGraph(conceptsByAnyKey) {
   const concepts = /* @__PURE__ */ new Map();
@@ -127,28 +457,41 @@ import fs3 from "fs/promises";
 import path6 from "path";
 
 // src/frontmatter.ts
-import { load } from "js-yaml";
-var FRONTMATTER_PATTERN = /^---[ \t]*\r?\n(?:---[ \t]*(?:\r?\n|$)|([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$))/;
+import { load as load2 } from "js-yaml";
 var UTF8_BOM = "\uFEFF";
 function stripLeadingBom(raw) {
   return raw.startsWith(UTF8_BOM) ? raw.slice(1) : raw;
 }
 function hasFrontmatter(raw) {
-  return stripLeadingBom(raw).startsWith("---");
+  return /^---[ \t]*(?:\r?\n|$)/.test(stripLeadingBom(raw));
 }
 function parseFrontmatter(raw) {
   const normalized = stripLeadingBom(raw);
-  if (!normalized.startsWith("---")) return { data: {}, content: normalized };
-  const match = normalized.match(FRONTMATTER_PATTERN);
-  if (!match) throw new Error("Malformed YAML frontmatter.");
-  const loaded = load(match[1] ?? "");
+  if (!hasFrontmatter(normalized)) return { data: {}, content: normalized };
+  const openingEnd = normalized.indexOf("\n");
+  if (openingEnd < 0) throw new Error("Malformed YAML frontmatter.");
+  let lineStart = openingEnd + 1;
+  let closingEnd = -1;
+  let yamlEnd = -1;
+  while (lineStart <= normalized.length) {
+    const nextNewline = normalized.indexOf("\n", lineStart);
+    const lineEnd = nextNewline < 0 ? normalized.length : nextNewline;
+    const line = normalized.slice(lineStart, lineEnd).replace(/\r$/, "");
+    if (/^---[ \t]*$/.test(line)) {
+      yamlEnd = lineStart;
+      closingEnd = nextNewline < 0 ? lineEnd : nextNewline + 1;
+      break;
+    }
+    if (nextNewline < 0) break;
+    lineStart = nextNewline + 1;
+  }
+  if (closingEnd < 0 || yamlEnd < 0) throw new Error("Malformed YAML frontmatter.");
+  const yaml = normalized.slice(openingEnd + 1, yamlEnd).replace(/\r?\n$/, "");
+  const loaded = load2(yaml);
   return {
     data: isRecord(loaded) ? loaded : {},
-    content: normalized.slice(match[0].length)
+    content: normalized.slice(closingEnd)
   };
-}
-function isRecord(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 // src/okf.ts
@@ -192,6 +535,7 @@ async function readConceptFile(bundleDir, absolutePath) {
   if (isReservedOkfPath(relPath)) throw new Error(`Reserved OKF file is not a concept: ${relPath}`);
   const id = stripMdExtension(relPath);
   const frontmatter = parsed.data;
+  const aliases = stringArray(frontmatter.aliases);
   return {
     id,
     path: relPath,
@@ -201,6 +545,7 @@ async function readConceptFile(bundleDir, absolutePath) {
     description: typeof frontmatter.description === "string" ? frontmatter.description : void 0,
     resource: typeof frontmatter.resource === "string" ? frontmatter.resource : void 0,
     tags: stringArray(frontmatter.tags),
+    ...aliases.length ? { aliases } : {},
     body: parsed.content.trim()
   };
 }
@@ -219,7 +564,243 @@ async function readBundle(bundleDir) {
 
 // src/validate.ts
 import fs4 from "fs/promises";
+import path8 from "path";
+
+// src/vault-index.ts
 import path7 from "path";
+import GithubSlugger2 from "github-slugger";
+function compareText(first, second) {
+  return first < second ? -1 : first > second ? 1 : 0;
+}
+function normalizeVaultPath(value) {
+  const withSeparators = value.trim().replace(/\\/g, "/").normalize("NFC");
+  const withoutRoot = withSeparators.replace(/^\/+/, "");
+  const normalized = path7.posix.normalize(withoutRoot);
+  return normalized === "." ? "" : normalized.replace(/^\.\//, "");
+}
+function stripMarkdownExtension(value) {
+  return value.replace(/\.(?:md|mdx)$/i, "");
+}
+function decodeFragment(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+function identitiesFor(entry, kind) {
+  return entry.identityPaths.filter((identity) => identity.kind === kind);
+}
+function pathMatches(entry, target, kind) {
+  const stem = stripMarkdownExtension(target);
+  return identitiesFor(entry, kind).some(
+    (identity) => identity.key === target || identity.stem === stem
+  );
+}
+function uniqueEntries(entries) {
+  return [...new Set(entries)].sort((a, b) => compareText(a.sourceKey, b.sourceKey));
+}
+function resultFor(entries) {
+  const candidates = uniqueEntries(entries);
+  if (candidates.length === 0) return void 0;
+  if (candidates.length === 1) return { status: "resolved", entry: candidates[0] };
+  return { status: "ambiguous", entries: candidates };
+}
+function exactPath(entries, target, kind) {
+  return entries.filter((entry) => pathMatches(entry, target, kind));
+}
+function suffixOrBasename(entries, target, kind) {
+  const stem = stripMarkdownExtension(target);
+  const basename = path7.posix.basename(stem);
+  return entries.filter(
+    (entry) => identitiesFor(entry, kind).some(
+      (identity) => identity.stem === stem || identity.stem.endsWith(`/${stem}`) || identity.basename === basename
+    )
+  );
+}
+function titleOrAlias(entries, target) {
+  return entries.filter((entry) => entry.names.includes(target));
+}
+function caseFoldedCandidates(entries, sourceRelative, vaultRelative, kind, includeNames) {
+  const sourceFolded = sourceRelative.toLocaleLowerCase("en-US");
+  const vaultFolded = vaultRelative.toLocaleLowerCase("en-US");
+  const stemFolded = stripMarkdownExtension(vaultRelative).toLocaleLowerCase("en-US");
+  const basenameFolded = path7.posix.basename(stemFolded);
+  return entries.filter((entry) => {
+    return identitiesFor(entry, kind).some((identity) => {
+      const key = identity.key.toLocaleLowerCase("en-US");
+      const stem = identity.stem.toLocaleLowerCase("en-US");
+      return key === sourceFolded || stem === stripMarkdownExtension(sourceFolded) || key === vaultFolded || stem === stemFolded || stem.endsWith(`/${stemFolded}`) || identity.basename.toLocaleLowerCase("en-US") === basenameFolded;
+    }) || includeNames && entry.names.some((name) => name.toLocaleLowerCase("en-US") === vaultFolded);
+  });
+}
+function resolveTarget(entries, sourceKey, rawTarget, options = {}) {
+  const target = normalizeVaultPath(rawTarget);
+  const sourceRelative = normalizeVaultPath(path7.posix.join(path7.posix.dirname(sourceKey), target));
+  const pathKind = options.pathKind ?? "source";
+  for (const candidates of [
+    exactPath(entries, sourceRelative, pathKind),
+    exactPath(entries, target, pathKind),
+    suffixOrBasename(entries, target, pathKind),
+    ...options.includeNames === false ? [] : [titleOrAlias(entries, target)]
+  ]) {
+    const result = resultFor(candidates);
+    if (result) return result;
+  }
+  return resultFor(
+    caseFoldedCandidates(
+      entries,
+      sourceRelative,
+      target,
+      pathKind,
+      options.includeNames !== false
+    )
+  ) ?? {
+    status: "unresolved"
+  };
+}
+function diagnosticTarget(link) {
+  if (link.heading) return `${link.target}#${link.heading}`;
+  if (link.blockId) return `${link.target}#^${link.blockId}`;
+  return link.target;
+}
+function unresolvedDiagnostic(sourcePath, link) {
+  const rawTarget = diagnosticTarget(link);
+  return {
+    severity: "warning",
+    code: "unresolved_wikilink",
+    message: `Unresolved Obsidian reference ${JSON.stringify(rawTarget)} in ${sourcePath}.`,
+    sourcePath,
+    rawTarget
+  };
+}
+function ambiguousDiagnostic(sourcePath, link, entries) {
+  const rawTarget = diagnosticTarget(link);
+  const candidates = entries.map((entry) => entry.sourceKey);
+  return {
+    severity: "warning",
+    code: "ambiguous_wikilink",
+    message: `Ambiguous Obsidian reference ${JSON.stringify(rawTarget)} in ${sourcePath}: ${candidates.join(", ")}.`,
+    sourcePath,
+    rawTarget,
+    candidates
+  };
+}
+function fragmentDiagnostic(sourcePath, link, targetPath) {
+  const rawTarget = diagnosticTarget(link);
+  return {
+    severity: "warning",
+    code: "missing_wikilink_fragment",
+    message: `Missing fragment in Obsidian reference ${JSON.stringify(rawTarget)} from ${sourcePath} to ${targetPath}.`,
+    sourcePath,
+    rawTarget,
+    candidates: [targetPath]
+  };
+}
+function hasHeading(entry, heading) {
+  const normalized = heading.trim().normalize("NFC");
+  const slug = new GithubSlugger2().slug(normalized);
+  return entry.headings.has(normalized) || entry.headings.has(slug);
+}
+function resolveLink(entry, link, entries, includeMarkdownFragments) {
+  if (link.kind === "markdown") {
+    if (!includeMarkdownFragments) return void 0;
+    const hash = link.target.indexOf("#");
+    if (hash < 0) return void 0;
+    const target = link.target.slice(0, hash);
+    const fragment = link.target.slice(hash + 1);
+    if (!target || !fragment || /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(target)) return void 0;
+    const outputSourceKey = normalizeVaultPath(entry.document.outputPath ?? entry.sourceKey);
+    const resolution2 = resolveTarget(entries, outputSourceKey, target, {
+      pathKind: "output",
+      includeNames: false
+    });
+    if (resolution2.status !== "resolved") return void 0;
+    const decodedFragment = decodeFragment(fragment).normalize("NFC");
+    if (resolution2.entry.headings.has(decodedFragment) || resolution2.entry.blockIds.has(decodedFragment.replace(/^\^/, ""))) {
+      return void 0;
+    }
+    return {
+      severity: "warning",
+      code: "missing_wikilink_fragment",
+      message: `Missing fragment in Obsidian reference ${JSON.stringify(link.target)} from ${entry.sourceKey} to ${resolution2.entry.sourceKey}.`,
+      sourcePath: entry.sourceKey,
+      rawTarget: link.target,
+      candidates: [resolution2.entry.sourceKey]
+    };
+  }
+  if (link.kind !== "wikilink" && link.kind !== "note_embed") return void 0;
+  const resolution = resolveTarget(entries, entry.sourceKey, link.target || entry.sourceKey);
+  if (resolution.status === "unresolved") {
+    link.resolution = "unresolved";
+    delete link.resolvedSourceKey;
+    return unresolvedDiagnostic(entry.sourceKey, link);
+  }
+  if (resolution.status === "ambiguous") {
+    link.resolution = "ambiguous";
+    delete link.resolvedSourceKey;
+    return ambiguousDiagnostic(entry.sourceKey, link, resolution.entries);
+  }
+  link.resolution = "resolved";
+  link.resolvedSourceKey = resolution.entry.sourceKey;
+  if (link.heading && !hasHeading(resolution.entry, link.heading)) {
+    return fragmentDiagnostic(entry.sourceKey, link, resolution.entry.sourceKey);
+  }
+  if (link.blockId && !resolution.entry.blockIds.has(link.blockId.normalize("NFC"))) {
+    return fragmentDiagnostic(entry.sourceKey, link, resolution.entry.sourceKey);
+  }
+  return void 0;
+}
+function entryFor(document) {
+  const sourceKey = normalizeVaultPath(document.sourcePath ?? document.sourceId);
+  if (!/\.(?:md|mdx)$/i.test(sourceKey)) return void 0;
+  const outputKey = normalizeVaultPath(document.outputPath ?? "");
+  const names = [document.title, ...document.aliases ?? []].map((name) => name.trim().normalize("NFC")).filter(Boolean);
+  return {
+    document,
+    sourceKey,
+    identityPaths: [
+      { key: sourceKey, kind: "source" },
+      ...outputKey ? [{ key: outputKey, kind: "output" }] : []
+    ].map(({ key, kind }) => {
+      const stem = stripMarkdownExtension(key);
+      return { key, stem, basename: path7.posix.basename(stem), kind };
+    }),
+    names: [...new Set(names)].sort(compareText),
+    headings: new Set(
+      document.headings.flatMap((heading) => [
+        heading.text.normalize("NFC"),
+        heading.slug.normalize("NFC")
+      ])
+    ),
+    blockIds: new Set((document.blockIds ?? []).map((block) => block.id.normalize("NFC")))
+  };
+}
+function compareDiagnostics(first, second) {
+  return compareText(first.sourcePath, second.sourcePath) || compareText(first.rawTarget, second.rawTarget) || compareText(first.code, second.code) || compareText((first.candidates ?? []).join("\0"), (second.candidates ?? []).join("\0"));
+}
+function resolveVaultDocuments(documents, options = {}) {
+  const entries = documents.map(entryFor).filter((entry) => Boolean(entry)).sort((a, b) => compareText(a.sourceKey, b.sourceKey));
+  const diagnostics = [];
+  for (const entry of entries) {
+    const documentDiagnostics = [];
+    for (const link of entry.document.semanticLinks ?? []) {
+      const diagnostic = resolveLink(
+        entry,
+        link,
+        entries,
+        Boolean(options.includeMarkdownFragments)
+      );
+      if (diagnostic) documentDiagnostics.push(diagnostic);
+    }
+    documentDiagnostics.sort(compareDiagnostics);
+    entry.document.diagnostics = documentDiagnostics;
+    diagnostics.push(...documentDiagnostics);
+  }
+  return diagnostics.sort(compareDiagnostics);
+}
+
+// src/validate.ts
 function issue(severity, code, message, file) {
   return { severity, code, message, path: file };
 }
@@ -307,9 +888,50 @@ function validateLogFile(raw, rel, issues) {
   }
 }
 function validateReservedFile(raw, rel, issues) {
-  const name = path7.posix.basename(rel).toLowerCase();
+  const name = path8.posix.basename(rel).toLowerCase();
   if (name === "index.md") validateIndexFile(raw, rel, issues);
   if (name === "log.md") validateLogFile(raw, rel, issues);
+}
+function conceptSourcePath(concept) {
+  const resourcePath = concept.resource?.split(/[?#]/, 1)[0] ?? "";
+  if (resourcePath && !/^[a-z][a-z0-9+.-]*:/i.test(resourcePath)) return resourcePath;
+  return concept.path;
+}
+function semanticDocument(concept) {
+  const sourcePath = conceptSourcePath(concept);
+  const parsed = parseMarkdown(concept.body, { mdx: /\.mdx$/i.test(sourcePath) });
+  return {
+    sourceId: sourcePath,
+    sourcePath,
+    outputPath: concept.path,
+    title: concept.title ?? path8.posix.basename(concept.path, path8.posix.extname(concept.path)),
+    markdown: parsed.content,
+    resource: concept.resource,
+    headings: parsed.headings.map(({ depth, text, slug }) => ({ depth, text, slug })),
+    links: parsed.markdownLinks,
+    tags: concept.tags,
+    type: concept.type,
+    aliases: concept.aliases,
+    semanticLinks: parsed.semanticLinks,
+    blockIds: [...parsed.blockIds, ...parsed.htmlAnchors]
+  };
+}
+function semanticValidation(concepts) {
+  const documents = concepts.map(semanticDocument);
+  const diagnostics = resolveVaultDocuments(documents, {
+    includeMarkdownFragments: true
+  });
+  return {
+    documents,
+    issues: diagnostics.map((diagnostic) => ({
+      severity: diagnostic.severity,
+      code: diagnostic.code,
+      message: diagnostic.message,
+      path: diagnostic.sourcePath,
+      rawTarget: diagnostic.rawTarget,
+      ...diagnostic.candidates ? { candidates: diagnostic.candidates } : {}
+    }))
+  };
 }
 async function validateBundle(bundleDir) {
   const issues = [];
@@ -326,20 +948,20 @@ async function validateBundle(bundleDir) {
     };
   }
   const conceptFiles = files.filter(
-    (file) => isConceptMarkdownPath(toPosixPath(path7.relative(bundleDir, file)))
+    (file) => isConceptMarkdownPath(toPosixPath(path8.relative(bundleDir, file)))
   );
   const reservedFiles = files.filter(
-    (file) => isReservedOkfPath(toPosixPath(path7.relative(bundleDir, file)))
+    (file) => isReservedOkfPath(toPosixPath(path8.relative(bundleDir, file)))
   );
   for (const file of reservedFiles) {
-    const rel = toPosixPath(path7.relative(bundleDir, file));
+    const rel = toPosixPath(path8.relative(bundleDir, file));
     const raw = await fs4.readFile(file, "utf8");
     validateReservedFile(raw, rel, issues);
   }
   for (const file of files) {
-    const rel = toPosixPath(path7.relative(bundleDir, file));
+    const rel = toPosixPath(path8.relative(bundleDir, file));
     if (!isConceptMarkdownPath(rel)) continue;
-    if (rel.includes("..") || path7.isAbsolute(rel)) {
+    if (rel.includes("..") || path8.isAbsolute(rel)) {
       issues.push(issue("error", "unsafe_path", "Concept path is unsafe.", rel));
     }
     const raw = await fs4.readFile(file, "utf8");
@@ -383,11 +1005,17 @@ async function validateBundle(bundleDir) {
     }
   }
   const concepts = await readBundle(bundleDir).catch(() => /* @__PURE__ */ new Map());
-  const canonicalIds = new Set([...concepts.values()].map((concept) => concept.id));
-  for (const concept of new Map(
-    [...concepts.values()].map((concept2) => [concept2.id, concept2])
-  ).values()) {
-    for (const target of extractInternalLinks(concept)) {
+  const canonicalConcepts = [
+    ...new Map([...concepts.values()].map((concept) => [concept.id, concept])).values()
+  ].sort((first, second) => first.id.localeCompare(second.id));
+  const semantic = semanticValidation(canonicalConcepts);
+  issues.push(...semantic.issues);
+  const canonicalIds = new Set(canonicalConcepts.map((concept) => concept.id));
+  for (const [index, concept] of canonicalConcepts.entries()) {
+    for (const target of internalLinksFromSemantics(
+      concept.path,
+      semantic.documents[index]?.semanticLinks ?? []
+    )) {
       if (!canonicalIds.has(target)) {
         issues.push(
           issue(
@@ -400,16 +1028,16 @@ async function validateBundle(bundleDir) {
       }
     }
   }
-  const dirs = new Set(conceptFiles.map((file) => path7.dirname(file)));
+  const dirs = new Set(conceptFiles.map((file) => path8.dirname(file)));
   for (const dir of dirs) {
-    const index = path7.join(dir, "index.md");
+    const index = path8.join(dir, "index.md");
     if (!files.includes(index)) {
       issues.push(
         issue(
           "warning",
           "missing_folder_index",
           "Folder has concepts but no index.md.",
-          toPosixPath(path7.relative(bundleDir, dir)) || "."
+          toPosixPath(path8.relative(bundleDir, dir)) || "."
         )
       );
     }
@@ -445,7 +1073,7 @@ async function inspectBundle(bundleDir) {
   const linkCount = [...graph.outbound.values()].reduce((sum, links) => sum + links.length, 0);
   const validation = await validateBundle(bundleDir);
   return {
-    title: path7.basename(bundleDir),
+    title: path8.basename(bundleDir),
     conceptCount: concepts.length,
     reservedFileCount: validation.reservedFileCount,
     warningCount: validation.warningCount,
@@ -462,15 +1090,15 @@ async function inspectBundle(bundleDir) {
 // src/source-store.ts
 import fs5 from "fs/promises";
 import { randomUUID } from "crypto";
-import path9 from "path";
+import path10 from "path";
 
 // src/okfy-home.ts
 import os from "os";
-import path8 from "path";
+import path9 from "path";
 function resolveOkfyHome(options = {}) {
   const configured = options.okfyHome ?? options.env?.OKFY_HOME ?? process.env.OKFY_HOME;
-  if (configured && configured.trim() !== "") return path8.resolve(configured);
-  return path8.join(os.homedir(), ".okfy");
+  if (configured && configured.trim() !== "") return path9.resolve(configured);
+  return path9.join(os.homedir(), ".okfy");
 }
 
 // src/source-store.ts
@@ -525,7 +1153,7 @@ function validateSourceName(name) {
 function resolveSourceDir(name, options = {}) {
   const safeName = validateSourceName(name);
   const sourcesRoot = resolveSourcesRoot(options);
-  const sourceDir = path9.resolve(sourcesRoot, safeName);
+  const sourceDir = path10.resolve(sourcesRoot, safeName);
   if (!isInsideOrEqual(sourcesRoot, sourceDir)) {
     throw new Error(`Invalid source name "${name}". Source directory escapes OKFY_HOME.`);
   }
@@ -537,8 +1165,8 @@ function resolveBundleDir(manifest, options = {}) {
   if (!bundleDir || bundleDir.trim() === "") {
     throw new Error(`Invalid bundle directory for source "${manifest.name}".`);
   }
-  if (path9.isAbsolute(bundleDir)) return path9.normalize(bundleDir);
-  const resolved = path9.resolve(sourceDir, bundleDir);
+  if (path10.isAbsolute(bundleDir)) return path10.normalize(bundleDir);
+  const resolved = path10.resolve(sourceDir, bundleDir);
   if (resolved === sourceDir || !isInsideOrEqual(sourceDir, resolved)) {
     throw new Error(
       `Invalid bundle directory for source "${manifest.name}". Relative bundle paths must stay inside the source directory.`
@@ -548,12 +1176,12 @@ function resolveBundleDir(manifest, options = {}) {
 }
 async function writeSourceManifest(manifest, options = {}) {
   const sourceDir = resolveSourceDir(manifest.name, options);
-  await writeStableJson(path9.join(sourceDir, "source.json"), manifest);
+  await writeStableJson(path10.join(sourceDir, "source.json"), manifest);
 }
 async function readSourceManifest(name, options = {}) {
   const sourceDir = resolveSourceDir(name, options);
   const manifest = validateSourceManifest(
-    await readJson(path9.join(sourceDir, "source.json")),
+    await readJson(path10.join(sourceDir, "source.json")),
     name
   );
   if (manifest.name !== name) {
@@ -563,11 +1191,11 @@ async function readSourceManifest(name, options = {}) {
 }
 async function writeRefreshState(name, state, options = {}) {
   const sourceDir = resolveSourceDir(name, options);
-  await writeStableJson(path9.join(sourceDir, "state.json"), state);
+  await writeStableJson(path10.join(sourceDir, "state.json"), state);
 }
 async function readRefreshState(name, options = {}) {
   const sourceDir = resolveSourceDir(name, options);
-  return validateRefreshState(await readJson(path9.join(sourceDir, "state.json")), name);
+  return validateRefreshState(await readJson(path10.join(sourceDir, "state.json")), name);
 }
 async function readSourceRecord(name, options = {}) {
   const manifest = await readSourceManifest(name, options);
@@ -586,7 +1214,7 @@ async function sourceRecordFromManifest(manifest, options = {}) {
   try {
     bundleDir = resolveBundleDir(manifest, options);
   } catch (error) {
-    bundleDir = path9.join(dir, "bundle");
+    bundleDir = path10.join(dir, "bundle");
     loadError ??= errorDetails(error);
   }
   return {
@@ -626,16 +1254,16 @@ async function removeSource(name, options = {}) {
   await fs5.rm(sourceDir, { recursive: true, force: true });
 }
 function resolveSourcesRoot(options) {
-  return path9.join(resolveOkfyHome2(options), "sources");
+  return path10.join(resolveOkfyHome2(options), "sources");
 }
 function invalidSourceRecord(sourcesRoot, name, error) {
-  const dir = path9.join(sourcesRoot, name);
+  const dir = path10.join(sourcesRoot, name);
   const sourceName = fallbackSourceName(name);
   return {
     name: sourceName,
     dir,
     manifest: fallbackSourceManifest(sourceName),
-    bundleDir: path9.join(dir, "bundle"),
+    bundleDir: path10.join(dir, "bundle"),
     loadError: errorDetails(error, name)
   };
 }
@@ -878,10 +1506,10 @@ async function readJson(filePath) {
   return JSON.parse(await fs5.readFile(filePath, "utf8"));
 }
 async function writeStableJson(filePath, value) {
-  const dir = path9.dirname(filePath);
-  const tempPath = path9.join(
+  const dir = path10.dirname(filePath);
+  const tempPath = path10.join(
     dir,
-    `.${path9.basename(filePath)}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`
+    `.${path10.basename(filePath)}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`
   );
   await fs5.mkdir(dir, { recursive: true });
   try {
@@ -931,8 +1559,8 @@ function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function isInsideOrEqual(parent, child) {
-  const relative = path9.relative(parent, child);
-  return relative === "" || !relative.startsWith("..") && !path9.isAbsolute(relative);
+  const relative = path10.relative(parent, child);
+  return relative === "" || !relative.startsWith("..") && !path10.isAbsolute(relative);
 }
 function isNodeError(error) {
   return error instanceof Error && "code" in error;
@@ -1220,15 +1848,15 @@ var BundleSearch = class _BundleSearch {
 
 // src/workspace.ts
 import fs6 from "fs/promises";
-import path10 from "path";
+import path11 from "path";
 import { pathToFileURL } from "url";
 function bundleSourceName(bundleDir) {
-  const baseName = path10.basename(path10.resolve(bundleDir));
+  const baseName = path11.basename(path11.resolve(bundleDir));
   const candidate = baseName.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[._-]+|[._-]+$/g, "");
   return validateSourceName(candidate || "bundle");
 }
 function localBundleRecord(bundleDir) {
-  const resolved = path10.resolve(bundleDir);
+  const resolved = path11.resolve(bundleDir);
   const name = bundleSourceName(resolved);
   const timestamp = "1970-01-01T00:00:00.000Z";
   return {
@@ -1296,7 +1924,7 @@ var WorkspaceError = class extends Error {
   }
 };
 function workspaceProfilePath(name, options = {}) {
-  return path10.join(resolveOkfyHome2(options), "workspaces", `${validateSourceName(name)}.json`);
+  return path11.join(resolveOkfyHome2(options), "workspaces", `${validateSourceName(name)}.json`);
 }
 async function readWorkspaceProfile(name, options = {}) {
   const profile = JSON.parse(
@@ -1308,7 +1936,7 @@ async function readWorkspaceProfile(name, options = {}) {
 async function writeWorkspaceProfile(profile, options = {}) {
   validateWorkspaceProfile(profile);
   const filePath = workspaceProfilePath(profile.name, options);
-  await fs6.mkdir(path10.dirname(filePath), { recursive: true });
+  await fs6.mkdir(path11.dirname(filePath), { recursive: true });
   await fs6.writeFile(filePath, `${JSON.stringify(profile, null, 2)}
 `, "utf8");
 }
@@ -2164,7 +2792,7 @@ async function serveWorkspaceMcpStdio(options) {
 
 // src/setup.ts
 import fs7 from "fs/promises";
-import path11 from "path";
+import path12 from "path";
 import { spawn } from "child_process";
 var EXPECTED_MCP_TOOLS = [...MCP_TOOL_NAMES];
 var MAX_CAPTURE_CHARS = 64e3;
@@ -2194,7 +2822,7 @@ function setupStatus(checks) {
   return "ready";
 }
 function createSetupReport(input) {
-  const okfyHome = path11.resolve(input.okfyHome ?? resolveOkfyHome2());
+  const okfyHome = path12.resolve(input.okfyHome ?? resolveOkfyHome2());
   const defaultHome = defaultOkfyHome();
   const sourceNames = setupSourceNames(input);
   const workspace = Boolean(input.workspaceAll) || sourceNames.length > 1;
@@ -2229,7 +2857,7 @@ function createSetupReport(input) {
   };
 }
 function renderClientArtifacts(input) {
-  const okfyHome = path11.resolve(input.okfyHome ?? resolveOkfyHome2());
+  const okfyHome = path12.resolve(input.okfyHome ?? resolveOkfyHome2());
   const defaultHome = input.defaultOkfyHome ?? defaultOkfyHome();
   const sourceNames = setupSourceNames(input);
   const serverIdentity = input.workspaceAll ? ["all"] : sourceNames;
@@ -2302,7 +2930,7 @@ function firstAgentPrompt(serverName, options = {}) {
 }
 function serveCommand(sourceNameOrNames, okfyHome, defaultHome = defaultOkfyHome(), options = {}) {
   const args = ["-y", "okfy-ai", ...serveCommandArgs(sourceNameOrNames, options)];
-  const env = needsOkfyHomeEnv(okfyHome, defaultHome) ? { OKFY_HOME: path11.resolve(okfyHome) } : {};
+  const env = needsOkfyHomeEnv(okfyHome, defaultHome) ? { OKFY_HOME: path12.resolve(okfyHome) } : {};
   return {
     command: "npx",
     args,
@@ -2330,10 +2958,10 @@ function setupCheck(id, label, severity, message, fix) {
 async function executableOnPath(command, env = process.env) {
   const searchPath = env.PATH ?? "";
   const extensions = process.platform === "win32" ? (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";") : [""];
-  for (const directory of searchPath.split(path11.delimiter)) {
+  for (const directory of searchPath.split(path12.delimiter)) {
     if (!directory) continue;
     for (const extension of extensions) {
-      const candidate = path11.join(directory, `${command}${extension}`);
+      const candidate = path12.join(directory, `${command}${extension}`);
       try {
         await fs7.access(candidate, fs7.constants.X_OK);
         return true;
@@ -2521,7 +3149,7 @@ function formatExit(exit) {
   return `exit code ${exit.code ?? "unknown"}`;
 }
 function needsOkfyHomeEnv(okfyHome, defaultHome) {
-  return path11.resolve(okfyHome) !== path11.resolve(defaultHome);
+  return path12.resolve(okfyHome) !== path12.resolve(defaultHome);
 }
 function mcpServerName(sourceNameOrNames) {
   const sourceNames = Array.isArray(sourceNameOrNames) ? sourceNameOrNames : [sourceNameOrNames];
@@ -2564,13 +3192,16 @@ export {
   packageMetadata,
   packageVersion,
   okfyUserAgent,
+  isRecord,
+  parseMarkdown,
+  isReservedOkfPath,
   toPosixPath,
-  safeSegment,
   ensureMarkdownPath,
   urlToOutputPath,
   relativeMarkdownLink,
-  isReservedOkfPath,
   resolveOkfyHome,
+  normalizeVaultPath,
+  resolveVaultDocuments,
   extractInternalLinks,
   buildGraph,
   readConceptFile,

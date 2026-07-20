@@ -5,20 +5,23 @@ import {
   ensureMarkdownPath,
   firstAgentPrompt,
   inspectBundle,
+  isRecord,
   isRegisteredWorkspaceRecord,
   isReservedOkfPath,
   localBundleRecord,
   mcpServerName,
+  normalizeVaultPath,
   okfyUserAgent,
+  parseMarkdown,
   relativeMarkdownLink,
   renderMcpClientArtifacts,
   resolveOkfyHome,
-  safeSegment,
+  resolveVaultDocuments,
   serveCommand,
   toPosixPath,
   urlToOutputPath,
   validateBundle
-} from "./chunk-2AYKAJHP.js";
+} from "./chunk-V2DWVP5O.js";
 
 // src/normalize.ts
 import * as cheerio from "cheerio";
@@ -30,22 +33,16 @@ var turndown = new TurndownService({
 });
 turndown.keep(["table"]);
 function extractHeadings(markdown) {
-  return [...markdown.matchAll(/^(#{1,6})\s+(.+)$/gm)].map((match) => ({
-    depth: match[1]?.length ?? 1,
-    text: (match[2] ?? "").trim(),
-    slug: safeSegment(match[2] ?? "")
-  }));
+  return parseMarkdown(markdown).headings.map(({ depth, text, slug }) => ({ depth, text, slug }));
 }
 function extractMarkdownLinks(markdown) {
-  return [...markdown.matchAll(/\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)].map((match) => ({
-    text: match[1] ?? "",
-    href: match[2] ?? ""
-  }));
+  return parseMarkdown(markdown).markdownLinks;
 }
 function inferType(title, sourceId, markdown) {
   const haystack = `${title} ${sourceId} ${markdown.slice(0, 2e3)}`.toLowerCase();
   if (/\breadme\b/.test(haystack)) return "README";
-  if (/\b(api|reference|sdk|endpoint|parameter|request|response)\b/.test(haystack)) return "API Reference";
+  if (/\b(api|reference|sdk|endpoint|parameter|request|response)\b/.test(haystack))
+    return "API Reference";
   if (/\b(quickstart|guide|tutorial|walkthrough|get started)\b/.test(haystack)) return "Guide";
   if (/\bdocs?\b/.test(haystack)) return "Documentation Page";
   return "Concept";
@@ -55,8 +52,8 @@ function inferTags(title, sourceId, headings) {
   const words = raw.toLowerCase().replace(/https?:\/\/[^/]+/g, "").split(/[^a-z0-9]+/).filter((word) => word.length >= 3 && word.length <= 24).filter((word) => !["html", "markdown", "index", "docs", "page", "guide"].includes(word));
   return [...new Set(words)].slice(0, 6);
 }
-function titleFromMarkdown(markdown, fallback) {
-  const heading = markdown.match(/^#\s+(.+)$/m)?.[1]?.trim();
+function titleFromMarkdown(headings, fallback) {
+  const heading = headings.find((candidate) => candidate.depth === 1)?.text;
   if (heading) return plainTitle(heading);
   return fallback;
 }
@@ -66,6 +63,15 @@ function plainTitle(title) {
 function fallbackTitle(sourceId) {
   const leaf = sourceId.split(/[/?#]/).filter(Boolean).pop() ?? "Index";
   return leaf.replace(/\.[a-z0-9]+$/i, "").split(/[-_\s]+/).filter(Boolean).map((word) => word.slice(0, 1).toUpperCase() + word.slice(1)).join(" ");
+}
+function deduplicateTags(tags) {
+  const seen = /* @__PURE__ */ new Set();
+  return tags.filter((tag) => {
+    const key = tag.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 function normalizeDocument(raw) {
   let markdown = raw.raw;
@@ -85,10 +91,18 @@ ${raw.raw.trim()}
 \`\`\``;
   }
   markdown = markdown.replace(/\r\n/g, "\n").trim();
-  title = titleFromMarkdown(markdown, plainTitle(title)).replace(/\s+/g, " ").trim();
-  const headings = extractHeadings(markdown);
-  const links = extractMarkdownLinks(markdown);
+  const parsed = parseMarkdown(markdown, { mdx: raw.contentType === "mdx" });
+  markdown = parsed.content;
+  title = (parsed.properties?.title ?? titleFromMarkdown(parsed.headings, plainTitle(title))).replace(/\s+/g, " ").trim();
+  const headings = parsed.headings.map(({ depth, text, slug }) => ({ depth, text, slug }));
+  const links = parsed.markdownLinks;
   const sourceId = raw.url ?? raw.filePath ?? raw.sourceId;
+  const inferredTags = inferTags(title, sourceId, headings);
+  const tags = deduplicateTags([
+    ...parsed.properties?.tags ?? [],
+    ...parsed.inlineTags.map((inlineTag) => inlineTag.tag),
+    ...inferredTags
+  ]);
   return {
     sourceId,
     title,
@@ -97,8 +111,13 @@ ${raw.raw.trim()}
     sourcePath: raw.filePath,
     headings,
     links,
-    tags: inferTags(title, sourceId, headings),
-    type: inferType(title, sourceId, markdown)
+    tags,
+    type: parsed.properties?.type ?? inferType(title, sourceId, markdown),
+    ...parsed.properties ? { properties: parsed.properties } : {},
+    ...parsed.properties?.aliases.length ? { aliases: parsed.properties.aliases } : {},
+    ...parsed.semanticLinks.length ? { semanticLinks: parsed.semanticLinks } : {},
+    ...parsed.blockIds.length ? { blockIds: parsed.blockIds } : {},
+    ...parsed.inlineTags.length ? { inlineTags: parsed.inlineTags } : {}
   };
 }
 function descriptionFromMarkdown(markdown) {
@@ -110,6 +129,8 @@ function descriptionFromMarkdown(markdown) {
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+import GithubSlugger from "github-slugger";
+import { dump } from "js-yaml";
 
 // src/util/url.ts
 import dns from "dns/promises";
@@ -203,19 +224,57 @@ async function assertPublicNetworkUrl(input) {
 function yamlScalar(value) {
   return JSON.stringify(value);
 }
+var OWNED_FRONTMATTER_KEYS = /* @__PURE__ */ new Set([
+  "type",
+  "title",
+  "description",
+  "resource",
+  "tags",
+  "aliases",
+  "timestamp"
+]);
+var UNSAFE_PROPERTY_KEYS = /* @__PURE__ */ new Set(["__proto__", "constructor", "prototype"]);
+function stableYamlValue(value) {
+  if (Array.isArray(value)) return value.map(stableYamlValue);
+  if (value instanceof Date) return new Date(value.getTime());
+  if (!isRecord(value)) return value;
+  const sorted = {};
+  for (const key of Object.keys(value).sort()) {
+    if (UNSAFE_PROPERTY_KEYS.has(key)) continue;
+    sorted[key] = stableYamlValue(value[key]);
+  }
+  return sorted;
+}
+function yamlProperty(key, value) {
+  return dump(
+    { [key]: stableYamlValue(value) },
+    {
+      forceQuotes: true,
+      lineWidth: -1,
+      noRefs: true,
+      quotingType: '"',
+      sortKeys: false
+    }
+  ).trimEnd();
+}
 function frontmatter(doc, timestamp) {
+  const description = doc.properties?.description ?? descriptionFromMarkdown(doc.markdown);
   const lines = [
     "---",
     `type: ${yamlScalar(doc.type)}`,
     `title: ${yamlScalar(doc.title)}`,
-    `description: ${yamlScalar(descriptionFromMarkdown(doc.markdown))}`,
+    `description: ${yamlScalar(description)}`,
     `resource: ${yamlScalar(doc.resource ?? doc.sourcePath ?? doc.sourceId)}`,
     "tags:",
     ...doc.tags.length ? doc.tags.map((tag) => `  - ${yamlScalar(tag)}`) : ["  []"],
-    `timestamp: ${yamlScalar(timestamp)}`,
-    "---",
-    ""
+    ...doc.aliases?.length ? ["aliases:", ...doc.aliases.map((alias) => `  - ${yamlScalar(alias)}`)] : [],
+    `timestamp: ${yamlScalar(timestamp)}`
   ];
+  for (const key of Object.keys(doc.properties?.data ?? {}).sort()) {
+    if (OWNED_FRONTMATTER_KEYS.has(key) || UNSAFE_PROPERTY_KEYS.has(key)) continue;
+    lines.push(yamlProperty(key, doc.properties.data[key]));
+  }
+  lines.push("---", "");
   return lines.join("\n");
 }
 function withTitle(title, markdown) {
@@ -255,41 +314,106 @@ function safeConceptOutputPath(candidate) {
   const safeName = parsed.name.toLowerCase() === "log" ? "change-log" : parsed.dir ? "overview" : "home";
   return path.posix.join(parsed.dir, `${safeName}.md`);
 }
-function rewriteLinks(doc, sourceToOutput) {
-  return doc.markdown.replace(/\[([^\]]*)\]\(([^)\s]+)([^)]*)\)/g, (full, text, href, suffix) => {
-    if (/^(https?:)?\/\//.test(href)) {
-      try {
-        const key = canonicalizeUrl(href);
-        const target = sourceToOutput.get(key);
-        if (target && doc.outputPath) {
-          return `[${text}](${relativeMarkdownLink(doc.outputPath, target)}${suffix})`;
-        }
-      } catch {
-        return full;
-      }
-    }
-    if (!href.startsWith("#") && doc.resource) {
-      try {
-        const key = canonicalizeUrl(href, doc.resource);
-        const target = sourceToOutput.get(key);
-        if (target && doc.outputPath)
-          return `[${text}](${relativeMarkdownLink(doc.outputPath, target)}${suffix})`;
-        return `[${text}](${key}${suffix})`;
-      } catch {
-        return full;
-      }
-    }
-    if (!href.startsWith("#") && doc.sourcePath) {
-      const abs = toPosixPath(
-        path.posix.normalize(path.posix.join(path.posix.dirname(doc.sourcePath), href))
+function addEdit(edits, edit) {
+  const key = `${edit.start}:${edit.end}`;
+  const existing = edits.get(key);
+  if (existing && existing.replacement !== edit.replacement) {
+    throw new Error(`Conflicting Markdown edits at ${key}.`);
+  }
+  edits.set(key, edit);
+}
+function applyEdits(markdown, editMap) {
+  const edits = [...editMap.values()].sort(
+    (first, second) => first.start - second.start || first.end - second.end
+  );
+  for (let index = 1; index < edits.length; index += 1) {
+    const previous = edits[index - 1];
+    const current = edits[index];
+    if (current.start < previous.end) {
+      throw new Error(
+        `Overlapping Markdown edits at ${previous.start}:${previous.end} and ${current.start}:${current.end}.`
       );
-      const noHash = abs.split("#")[0] ?? abs;
-      const target = sourceToOutput.get(noHash);
-      if (target && doc.outputPath)
-        return `[${text}](${relativeMarkdownLink(doc.outputPath, target)}${suffix})`;
     }
-    return full;
-  });
+  }
+  const rendered = [];
+  let cursor = 0;
+  for (const edit of edits) {
+    rendered.push(markdown.slice(cursor, edit.start), edit.replacement);
+    cursor = edit.end;
+  }
+  rendered.push(markdown.slice(cursor));
+  return rendered.join("");
+}
+function rewriteMarkdownDestination(doc, href, sourceToOutput) {
+  if (/^(https?:)?\/\//.test(href)) {
+    try {
+      const target = sourceToOutput.get(canonicalizeUrl(href));
+      if (target && doc.outputPath) return relativeMarkdownLink(doc.outputPath, target);
+    } catch {
+      return void 0;
+    }
+    return void 0;
+  }
+  if (!href.startsWith("#") && doc.resource) {
+    try {
+      const key = canonicalizeUrl(href, doc.resource);
+      const target = sourceToOutput.get(key);
+      if (target && doc.outputPath) return relativeMarkdownLink(doc.outputPath, target);
+      return key;
+    } catch {
+      return void 0;
+    }
+  }
+  if (!href.startsWith("#") && doc.sourcePath) {
+    const absolute = toPosixPath(
+      path.posix.normalize(path.posix.join(path.posix.dirname(doc.sourcePath), href))
+    );
+    const target = sourceToOutput.get(absolute.split("#")[0] ?? absolute);
+    if (target && doc.outputPath) return relativeMarkdownLink(doc.outputPath, target);
+  }
+  return void 0;
+}
+function headingFragment(link, target) {
+  if (link.blockId) return link.blockId.normalize("NFC");
+  const requested = link.heading?.trim().normalize("NFC");
+  if (!requested) return "";
+  const heading = target?.headings.find(
+    (candidate) => candidate.text.normalize("NFC") === requested || candidate.slug.normalize("NFC") === requested
+  );
+  return heading?.slug ?? new GithubSlugger().slug(requested);
+}
+function markdownLinkText(value) {
+  return value.replace(/\\/g, "\\\\").replace(/\]/g, "\\]");
+}
+function rewriteLinks(doc, sourceToOutput, sourceToDocument) {
+  const edits = /* @__PURE__ */ new Map();
+  for (const block of doc.blockIds ?? []) {
+    addEdit(edits, {
+      ...block.range,
+      replacement: `<a id="${block.id}"></a>`
+    });
+  }
+  for (const link of doc.semanticLinks ?? []) {
+    if (link.kind === "markdown") {
+      if (!link.destinationRange) continue;
+      const replacement = rewriteMarkdownDestination(doc, link.target, sourceToOutput);
+      if (replacement === void 0 || replacement === link.target) continue;
+      addEdit(edits, { ...link.destinationRange, replacement });
+      continue;
+    }
+    if (link.kind !== "wikilink" && link.kind !== "note_embed" || link.resolution !== "resolved" || !link.resolvedSourceKey || !doc.outputPath) {
+      continue;
+    }
+    const targetOutput = sourceToOutput.get(link.resolvedSourceKey);
+    if (!targetOutput) continue;
+    const fragment = headingFragment(link, sourceToDocument.get(link.resolvedSourceKey));
+    const destination = `${relativeMarkdownLink(doc.outputPath, targetOutput)}${fragment ? `#${fragment}` : ""}`;
+    addEdit(edits, {
+      ...link.range,
+      replacement: `[${markdownLinkText(link.text)}](${destination})`
+    });
+  }
+  return applyEdits(doc.markdown, edits);
 }
 async function pathExists(target) {
   try {
@@ -436,13 +560,14 @@ async function writeOkfBundle(docs, options) {
   const timestamp = options.timestamp ?? (/* @__PURE__ */ new Date()).toISOString();
   const orderedDocs = docs.slice().sort((first, second) => sourceKey(first).localeCompare(sourceKey(second)));
   const sourceToOutput = assignOutputPaths(orderedDocs);
+  const sourceToDocument = new Map(orderedDocs.map((doc) => [sourceKey(doc), doc]));
   const written = [];
   const concepts = [];
   for (const doc of orderedDocs) {
     const relPath = doc.outputPath ?? "index.md";
     const absolute = path.join(options.outDir, relPath);
     await fs.mkdir(path.dirname(absolute), { recursive: true });
-    const body = withTitle(doc.title, rewriteLinks(doc, sourceToOutput));
+    const body = withTitle(doc.title, rewriteLinks(doc, sourceToOutput, sourceToDocument));
     await fs.writeFile(absolute, `${frontmatter(doc, timestamp)}${body}
 `, "utf8");
     written.push(relPath);
@@ -750,7 +875,7 @@ function contentTypeFor(file) {
 }
 async function listFiles(root) {
   const stat = await fs2.stat(root);
-  if (stat.isFile()) return [root];
+  if (stat.isFile()) return { files: [root], rootIsFile: true };
   const files = [];
   async function walk(dir) {
     for (const entry of await fs2.readdir(dir, { withFileTypes: true })) {
@@ -763,14 +888,14 @@ async function listFiles(root) {
     }
   }
   await walk(root);
-  return files.sort();
+  return { files: files.sort(), rootIsFile: false };
 }
 async function importLocal(options) {
   const root = path2.resolve(options.inputPath);
-  const files = await listFiles(root);
+  const { files, rootIsFile } = await listFiles(root);
   const docs = [];
   for (const file of files) {
-    const rel = path2.relative(root, file).split(path2.sep).join("/");
+    const rel = normalizeVaultPath(rootIsFile ? path2.basename(file) : path2.relative(root, file));
     if (options.include?.length && !matchesAnyPattern(rel, options.include)) continue;
     if (matchesAnyPattern(rel, options.exclude)) continue;
     const contentType = contentTypeFor(file);
@@ -785,6 +910,10 @@ async function importLocal(options) {
     docs.push(normalizeDocument(raw));
   }
   if (docs.length === 0) throw new Error("No supported Markdown, MDX, HTML, or text files found.");
+  docs.sort(
+    (first, second) => first.sourceId < second.sourceId ? -1 : first.sourceId > second.sourceId ? 1 : 0
+  );
+  const diagnostics = resolveVaultDocuments(docs);
   const written = await writeOkfBundle(docs, {
     outDir: options.outDir,
     title: options.sourceName,
@@ -794,7 +923,7 @@ async function importLocal(options) {
     dangerouslyAllowUnsafeOutput: options.dangerouslyAllowUnsafeOutput,
     timestamp: options.timestamp
   });
-  return { written, documents: docs };
+  return { written, documents: docs, diagnostics };
 }
 
 // src/hash.ts
@@ -1584,6 +1713,7 @@ async function sourceReport(record, options) {
       conceptCount: stats.conceptCount,
       warningCount: validation.warningCount,
       brokenLinkCount: brokenLinkCount(validation.issues),
+      validationIssues: validation.issues,
       orphanConcepts: stats.orphanConcepts.map(refFor2),
       freshnessStatus: record.state?.status ?? "fresh",
       refreshInProgress: Boolean(record.state?.refreshInProgress),
@@ -1668,6 +1798,7 @@ function unavailableSource(baseSource, error, state) {
     conceptCount: state?.bundle?.conceptCount ?? 0,
     warningCount: state?.bundle?.warningCount ?? 0,
     brokenLinkCount: 0,
+    validationIssues: [],
     orphanConcepts: [],
     freshnessStatus: state?.status ?? "failed",
     refreshInProgress: Boolean(state?.refreshInProgress),
