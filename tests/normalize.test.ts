@@ -402,6 +402,26 @@ describe("normalization", () => {
     expect(doc.inlineTags?.map((tag) => tag.tag)).toEqual(["real-tag"]);
   });
 
+  it("derives semantic token values and ranges from exact source text", () => {
+    const markdown = [
+      "# Source",
+      "",
+      String.raw`Emoji 🧭 escaped \!\[\[Target\]\], \#escaped, and \^escaped-block beside [[Target]].`,
+      "Entities &#33;&#91;&#91;Entity&#93;&#93;, &#35;entity, and &#94;entity-block.",
+      "Real #real and a block ^real-block"
+    ].join("\n");
+    const parsed = parseMarkdown(markdown);
+
+    expect(parsed.semanticLinks.map((link) => [link.kind, link.target])).toEqual([
+      ["wikilink", "Target"]
+    ]);
+    expect(parsed.inlineTags.map((tag) => tag.tag)).toEqual(["real"]);
+    expect(parsed.blockIds.map((block) => block.id)).toEqual(["real-block"]);
+    for (const token of [...parsed.semanticLinks, ...parsed.inlineTags, ...parsed.blockIds]) {
+      expect(parsed.content.slice(token.range.start, token.range.end)).toBe(token.raw);
+    }
+  });
+
   it("handles deeply nested Markdown while keeping literal content inert", () => {
     const markdown = `${"> ".repeat(5_000)}\`[[Code Hidden]] #code-hidden\` [linked #link-hidden](./hidden.md) [[Visible]] #visible`;
     const parsed = parseMarkdown(markdown);

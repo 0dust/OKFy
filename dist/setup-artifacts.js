@@ -8,7 +8,7 @@ import {
   renderMcpClientArtifacts,
   serveCommand,
   serveCommandArgs
-} from "./chunk-CJ4K6P52.js";
+} from "./chunk-KMBDL7M3.js";
 export {
   codexMcpServerName,
   expectedMcpTools,

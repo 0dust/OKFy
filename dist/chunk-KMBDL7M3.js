@@ -458,9 +458,11 @@ function parseMarkdown(markdown, options = {}) {
       });
       return;
     }
-    if (node.type !== "text" || !node.value || !isEligibleText(ancestors)) return;
+    if (node.type !== "text" || !isEligibleText(ancestors)) return;
     const textStart = originalRange.start;
-    for (const match of node.value.matchAll(/!\[\[([^\]\n]+)\]\]/g)) {
+    const rawText = source.slice(originalRange.start, originalRange.end);
+    if (!rawText) return;
+    for (const match of rawText.matchAll(/!\[\[([^\]\n]+)\]\]/g)) {
       const index = match.index ?? 0;
       const raw = match[0];
       const [targetAndFragment = "", alias] = (match[1] ?? "").split("|", 2);
@@ -477,7 +479,7 @@ function parseMarkdown(markdown, options = {}) {
         range: adjustedRange(localRange, contentBase)
       });
     }
-    for (const match of node.value.matchAll(/(^|[\s(>.,;:!?[{"'])#([\p{L}\p{N}\p{S}_/-]+)/gu)) {
+    for (const match of rawText.matchAll(/(^|[\s(>.,;:!?[{"'])#([\p{L}\p{N}\p{S}_/-]+)/gu)) {
       const tag = match[2] ?? "";
       if (!tag || /^\p{N}+$/u.test(tag)) continue;
       const prefixLength = (match[1] ?? "").length;
@@ -490,7 +492,7 @@ function parseMarkdown(markdown, options = {}) {
         range: adjustedRange(localRange, contentBase)
       });
     }
-    for (const match of node.value.matchAll(/(^|[ \t])\^([A-Za-z0-9-]+)(?=[ \t]*(?:\n|$))/g)) {
+    for (const match of rawText.matchAll(/(^|[ \t])\^([A-Za-z0-9-]+)(?=[ \t]*(?:\n|$))/g)) {
       const prefixLength = (match[1] ?? "").length;
       const index = (match.index ?? 0) + prefixLength;
       const raw = `^${match[2] ?? ""}`;

@@ -391,6 +391,56 @@ describe("writer and validator", () => {
     expect(graph.outbound.get("source")).not.toContain("ghost");
   });
 
+  it("preserves escaped and entity-decoded semantic lookalikes around a real rewritten link", async () => {
+    const outDir = await tempOut();
+    const escapedLine = String.raw`Emoji 🧭 escaped \!\[\[Target\]\], \#escaped, and \^escaped-block beside [[Target]].`;
+    const entityLine =
+      "Entities &#33;&#91;&#91;Entity&#93;&#93;, &#35;entity, and &#94;entity-block.";
+    const documents = [
+      normalizeDocument(
+        raw({
+          sourceId: "source.md",
+          filePath: "source.md",
+          raw: ["# Source", "", escapedLine, entityLine].join("\n")
+        })
+      ),
+      normalizeDocument(
+        raw({
+          sourceId: "Target.md",
+          filePath: "Target.md",
+          raw: "# Target"
+        })
+      )
+    ];
+    const sourceDocument = documents[0]!;
+
+    expect(sourceDocument.semanticLinks?.map((link) => [link.kind, link.target])).toEqual([
+      ["wikilink", "Target"]
+    ]);
+    expect(sourceDocument.inlineTags).toBeUndefined();
+    expect(sourceDocument.blockIds).toBeUndefined();
+    expect(resolveVaultDocuments(documents)).toEqual([]);
+
+    await writeOkfBundle(documents, {
+      outDir,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+
+    const rendered = await fs.readFile(path.join(outDir, "source.md"), "utf8");
+    const expectedBody = [
+      "# Source",
+      "",
+      escapedLine.replace("[[Target]]", "[Target](./target.md)"),
+      entityLine
+    ].join("\n");
+    expect(rendered).toContain(expectedBody);
+
+    const concepts = await readBundle(outDir);
+    expect(concepts.get("source")?.body).toBe(expectedBody);
+    const graph = buildGraph(concepts);
+    expect(graph.outbound.get("source")).toEqual(["target"]);
+  });
+
   it("keeps links inside MDX expressions out of graph edges", () => {
     const concept: Concept = {
       id: "source",
