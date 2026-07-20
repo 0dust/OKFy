@@ -3,7 +3,8 @@ import path from "node:path";
 import { normalizeDocument } from "./normalize.js";
 import { writeOkfBundle } from "./writer.js";
 import { matchesAnyPattern } from "./util/match.js";
-import type { ContentType, NormalizedDocument, RawDocument } from "./types.js";
+import { normalizeVaultPath, resolveVaultDocuments } from "./vault-index.js";
+import type { ContentType, DocumentDiagnostic, NormalizedDocument, RawDocument } from "./types.js";
 
 export type ImportOptions = {
   inputPath: string;
@@ -43,12 +44,21 @@ async function listFiles(root: string): Promise<string[]> {
   return files.sort();
 }
 
-export async function importLocal(options: ImportOptions): Promise<{ written: string[]; documents: NormalizedDocument[] }> {
+export type ImportResult = {
+  written: string[];
+  documents: NormalizedDocument[];
+  diagnostics: DocumentDiagnostic[];
+};
+
+export async function importLocal(options: ImportOptions): Promise<ImportResult> {
   const root = path.resolve(options.inputPath);
+  const rootStat = await fs.stat(root);
   const files = await listFiles(root);
   const docs: NormalizedDocument[] = [];
   for (const file of files) {
-    const rel = path.relative(root, file).split(path.sep).join("/");
+    const rel = normalizeVaultPath(
+      rootStat.isFile() ? path.basename(file) : path.relative(root, file)
+    );
     if (options.include?.length && !matchesAnyPattern(rel, options.include)) continue;
     if (matchesAnyPattern(rel, options.exclude)) continue;
     const contentType = contentTypeFor(file);
@@ -63,6 +73,10 @@ export async function importLocal(options: ImportOptions): Promise<{ written: st
     docs.push(normalizeDocument(raw));
   }
   if (docs.length === 0) throw new Error("No supported Markdown, MDX, HTML, or text files found.");
+  docs.sort((first, second) =>
+    first.sourceId < second.sourceId ? -1 : first.sourceId > second.sourceId ? 1 : 0
+  );
+  const diagnostics = resolveVaultDocuments(docs);
   const written = await writeOkfBundle(docs, {
     outDir: options.outDir,
     title: options.sourceName,
@@ -72,5 +86,5 @@ export async function importLocal(options: ImportOptions): Promise<{ written: st
     dangerouslyAllowUnsafeOutput: options.dangerouslyAllowUnsafeOutput,
     timestamp: options.timestamp
   });
-  return { written, documents: docs };
+  return { written, documents: docs, diagnostics };
 }

@@ -1,12 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import pc from "picocolors";
-import {
-  printCrawlProgress,
-  printStats,
-  printStatus,
-  printValidation
-} from "./cli-presenters.js";
+import { printCrawlProgress, printStats, printStatus, printValidation } from "./cli-presenters.js";
 import { crawlWebsite } from "./crawler.js";
 import { importLocal } from "./importer.js";
 import { inspectBundle, validateBundle } from "./validate.js";
@@ -55,6 +50,17 @@ export async function runImportCommand(input: string, options: any): Promise<voi
     console.log(`Source: ${input}`);
     console.log(`Concepts: ${result.documents.length} written`);
     console.log(`Output: ${options.out}`);
+    if (result.diagnostics.length > 0) {
+      const counts = new Map<string, number>();
+      for (const diagnostic of result.diagnostics) {
+        counts.set(diagnostic.code, (counts.get(diagnostic.code) ?? 0) + 1);
+      }
+      const summary = [...counts.entries()]
+        .sort(([first], [second]) => (first < second ? -1 : first > second ? 1 : 0))
+        .map(([code, count]) => `${code}: ${count}`)
+        .join(", ");
+      console.warn(`Warnings: ${result.diagnostics.length} (${summary})`);
+    }
     printStatus(`okfy import: done, wrote ${result.documents.length} concepts`);
   } catch (error: any) {
     console.error(pc.red(error?.message ?? "Import failed."));
