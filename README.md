@@ -20,6 +20,7 @@
     <img alt="Node 20 plus" src="https://img.shields.io/badge/node-20%2B-4b5563">
     <img alt="MCP stdio" src="https://img.shields.io/badge/MCP-stdio-5f5a4f">
     <a href="https://bundledex.net/bundles/okfy/"><img alt="BundleDex" src="https://bundledex.net/badge/okfy.svg"></a>
+    <a href="https://bundledex.net"><img alt="OKF BundleDex" src="https://bundledex.net/static-badge.svg"></a>
   </p>
 
   <p>
