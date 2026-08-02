@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import GithubSlugger from "github-slugger";
 import { dump } from "js-yaml";
+import { needsGeneratedTitle, slugGeneratedTitle } from "./markdown-title.js";
 import { isReservedOkfPath } from "./okf.js";
 import { canonicalizeUrl } from "./util/url.js";
 import {
@@ -48,51 +49,51 @@ const OWNED_FRONTMATTER_KEYS = new Set([
 
 const UNSAFE_PROPERTY_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const MAX_FRONTMATTER_VALUE_DEPTH = 100;
+const MAX_FRONTMATTER_EXPANDED_VALUES = 10_000;
 
-function stableYamlValue(
-  value: unknown,
-  propertyKey: string,
-  path = propertyKey,
-  ancestors = new WeakSet<object>(),
-  depth = 0
-): unknown {
-  if (value instanceof Date) return new Date(value.getTime());
-  const isArray = Array.isArray(value);
-  if (!isArray && !isRecord(value)) return value;
-  if (depth >= MAX_FRONTMATTER_VALUE_DEPTH) {
-    throw new Error(
-      `Cannot serialize frontmatter property ${JSON.stringify(propertyKey)}: nesting exceeds ${MAX_FRONTMATTER_VALUE_DEPTH} levels.`
-    );
-  }
-  if (ancestors.has(value)) {
-    throw new Error(
-      `Cannot serialize frontmatter property ${JSON.stringify(propertyKey)}: cyclic value at ${path}.`
-    );
-  }
+function stableYamlValue(value: unknown, propertyKey: string): unknown {
+  const ancestors = new WeakSet<object>();
+  let visited = 0;
 
-  ancestors.add(value);
-  try {
-    if (isArray) {
-      return value.map((item, index) =>
-        stableYamlValue(item, propertyKey, `${path}[${index}]`, ancestors, depth + 1)
+  const visit = (current: unknown, currentPath: string, depth: number): unknown => {
+    visited += 1;
+    if (visited > MAX_FRONTMATTER_EXPANDED_VALUES) {
+      throw new Error(
+        `Cannot serialize frontmatter property ${JSON.stringify(propertyKey)}: expansion exceeds ${MAX_FRONTMATTER_EXPANDED_VALUES} values; reduce nested collections or YAML aliases.`
+      );
+    }
+    if (current instanceof Date) return new Date(current.getTime());
+    const isArray = Array.isArray(current);
+    if (!isArray && !isRecord(current)) return current;
+    if (depth >= MAX_FRONTMATTER_VALUE_DEPTH) {
+      throw new Error(
+        `Cannot serialize frontmatter property ${JSON.stringify(propertyKey)}: nesting exceeds ${MAX_FRONTMATTER_VALUE_DEPTH} levels.`
+      );
+    }
+    if (ancestors.has(current)) {
+      throw new Error(
+        `Cannot serialize frontmatter property ${JSON.stringify(propertyKey)}: cyclic value at ${currentPath}.`
       );
     }
 
-    const sorted: Record<string, unknown> = {};
-    for (const key of Object.keys(value).sort()) {
-      if (UNSAFE_PROPERTY_KEYS.has(key)) continue;
-      sorted[key] = stableYamlValue(
-        value[key],
-        propertyKey,
-        `${path}.${key}`,
-        ancestors,
-        depth + 1
-      );
+    ancestors.add(current);
+    try {
+      if (isArray) {
+        return current.map((item, index) => visit(item, `${currentPath}[${index}]`, depth + 1));
+      }
+
+      const sorted: Record<string, unknown> = {};
+      for (const key of Object.keys(current).sort()) {
+        if (UNSAFE_PROPERTY_KEYS.has(key)) continue;
+        sorted[key] = visit(current[key], `${currentPath}.${key}`, depth + 1);
+      }
+      return sorted;
+    } finally {
+      ancestors.delete(current);
     }
-    return sorted;
-  } finally {
-    ancestors.delete(value);
-  }
+  };
+
+  return visit(value, propertyKey, 0);
 }
 
 function yamlProperty(key: string, value: unknown): string {
@@ -139,7 +140,7 @@ function markdownPlainText(value: string): string {
 
 function withTitle(title: string, markdown: string): string {
   const trimmed = markdown.trimEnd();
-  if (trimmed.match(/^#\s+/)) return trimmed;
+  if (!needsGeneratedTitle(trimmed)) return trimmed;
   return `# ${markdownPlainText(title)}\n\n${trimmed}`;
 }
 
@@ -250,21 +251,32 @@ function rewriteMarkdownDestination(
   return undefined;
 }
 
-function headingFragment(link: SemanticLink, target: NormalizedDocument | undefined): string {
+type HeadingFragments = Map<string, string>;
+
+function emittedHeadingFragments(document: NormalizedDocument): HeadingFragments {
+  const fragments = new Map<string, string>();
+  const slugger = new GithubSlugger();
+  if (needsGeneratedTitle(document.markdown)) slugGeneratedTitle(slugger, document.title);
+  for (const heading of document.headings) {
+    const fragment = slugger.slug(heading.text);
+    for (const key of [heading.text.normalize("NFC"), heading.slug.normalize("NFC")]) {
+      if (!fragments.has(key)) fragments.set(key, fragment);
+    }
+  }
+  return fragments;
+}
+
+function headingFragment(link: SemanticLink, target: HeadingFragments | undefined): string {
   if (link.blockId) return link.blockId.normalize("NFC");
   const requested = link.heading?.trim().normalize("NFC");
   if (!requested) return "";
-  const heading = target?.headings.find(
-    (candidate) =>
-      candidate.text.normalize("NFC") === requested || candidate.slug.normalize("NFC") === requested
-  );
-  return heading?.slug ?? new GithubSlugger().slug(requested);
+  return target?.get(requested) ?? new GithubSlugger().slug(requested);
 }
 
 function rewriteLinks(
   doc: NormalizedDocument,
   sourceToOutput: Map<string, string>,
-  sourceToDocument: Map<string, NormalizedDocument>
+  sourceToHeadingFragments: Map<string, HeadingFragments>
 ): string {
   const edits = new Map<string, TextEdit>();
 
@@ -295,7 +307,7 @@ function rewriteLinks(
 
     const targetOutput = sourceToOutput.get(link.resolvedSourceKey);
     if (!targetOutput) continue;
-    const fragment = headingFragment(link, sourceToDocument.get(link.resolvedSourceKey));
+    const fragment = headingFragment(link, sourceToHeadingFragments.get(link.resolvedSourceKey));
     const destination = `${relativeMarkdownLink(doc.outputPath, targetOutput)}${
       fragment ? `#${fragment}` : ""
     }`;
@@ -470,7 +482,7 @@ async function writePlainIndex(
     "",
     ...entries.map(
       (concept) =>
-        `* [${concept.title}](${markdownLink(dir, concept.relPath)}) - ${concept.description}`
+        `* [${markdownPlainText(concept.title)}](${markdownLink(dir, concept.relPath)}) - ${concept.description}`
     )
   ];
   await fs.mkdir(path.dirname(path.join(outDir, indexPath)), { recursive: true });
@@ -489,7 +501,9 @@ export async function writeOkfBundle(
     .slice()
     .sort((first, second) => sourceKey(first).localeCompare(sourceKey(second)));
   const sourceToOutput = assignOutputPaths(orderedDocs);
-  const sourceToDocument = new Map(orderedDocs.map((doc) => [sourceKey(doc), doc]));
+  const sourceToHeadingFragments = new Map(
+    orderedDocs.map((doc) => [sourceKey(doc), emittedHeadingFragments(doc)])
+  );
   const written: string[] = [];
   const concepts: WrittenConcept[] = [];
 
@@ -497,7 +511,7 @@ export async function writeOkfBundle(
     const relPath = doc.outputPath ?? "index.md";
     const absolute = path.join(options.outDir, relPath);
     await fs.mkdir(path.dirname(absolute), { recursive: true });
-    const body = withTitle(doc.title, rewriteLinks(doc, sourceToOutput, sourceToDocument));
+    const body = withTitle(doc.title, rewriteLinks(doc, sourceToOutput, sourceToHeadingFragments));
     await fs.writeFile(absolute, `${frontmatter(doc, timestamp)}${body}\n`, "utf8");
     written.push(relPath);
     concepts.push({

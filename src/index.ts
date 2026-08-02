@@ -1,14 +1,14 @@
 export * from "./crawler.js";
 export * from "./activation.js";
-export * from "./graph.js";
+export { buildGraph, extractInternalLinks } from "./graph.js";
 export * from "./importer.js";
 export * from "./mcp.js";
 export * from "./metadata.js";
 export * from "./normalize.js";
-export * from "./reader.js";
+export { readBundle, readConceptFile } from "./reader.js";
 export * from "./search.js";
 export * from "./types.js";
-export * from "./validate.js";
+export { inspectBundle, validateBundle } from "./validate.js";
 export * from "./workspace.js";
 export * from "./writer.js";
 export {

@@ -10,12 +10,14 @@ import {
   LIST_TYPES_TOOL,
   READ_CONCEPT_TOOL,
   SEARCH_CONCEPTS_TOOL,
+  bundleSummarySchema,
   mcpToolDefinitions,
   neighborsSchema,
   readSchema,
   refreshableTool,
   searchSchema,
   sourceFilterSchema,
+  type ValidationPaging,
   workspaceNeighborsSchema,
   workspaceReadSchema,
   workspaceSearchSchema
@@ -23,11 +25,11 @@ import {
 export { MCP_TOOL_NAMES } from "./mcp-contract.js";
 import { argumentError, json, toolError } from "./mcp-results.js";
 import {
+  createSourceRuntime,
   errorDetails,
-  normalizeFreshness,
-  shouldRefresh,
-  type FreshnessState,
-  type RefreshErrorDetails,
+  getSourceFreshness,
+  prepareSourceRuntime,
+  sourceFreshnessFields,
   type RefreshHooks,
   type RefreshMode,
   type SourceMetadata,
@@ -44,7 +46,8 @@ export type {
   SourceMetadata
 } from "./mcp-source-runtime.js";
 import { BundleSearch } from "./search.js";
-import { inspectBundle, validateBundle } from "./validate.js";
+import type { ValidationIssue, ValidationReport } from "./types.js";
+import { analyzeBundle, inspectBundle } from "./validate.js";
 import {
   WorkspaceError,
   WorkspaceSearch,
@@ -81,6 +84,66 @@ type NeighborEdge = {
   relationship_text?: string;
 };
 
+const DEFAULT_VALIDATION_LIMIT = 50;
+
+function pageValidationIssues(
+  summary: Record<string, unknown>,
+  issues: ValidationIssue[],
+  paging: ValidationPaging,
+  maxChars: number
+): Record<string, unknown> {
+  const offset = paging.validation_offset ?? 0;
+  const limit = paging.validation_limit ?? DEFAULT_VALIDATION_LIMIT;
+  const requested = issues.slice(offset, offset + limit);
+
+  const result = (pageIssues: ValidationIssue[], diagnosticsTruncated = false) => ({
+    ...summary,
+    validationIssues: pageIssues,
+    validationIssuePage: {
+      total: issues.length,
+      offset,
+      limit,
+      count: pageIssues.length,
+      nextOffset: offset + pageIssues.length < issues.length ? offset + pageIssues.length : null,
+      ...(diagnosticsTruncated ? { diagnosticsTruncated: true } : {})
+    }
+  });
+
+  let low = 1;
+  let high = requested.length;
+  let fittingCount = 0;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    if (JSON.stringify(result(requested.slice(0, middle)), null, 2).length <= maxChars) {
+      fittingCount = middle;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  if (fittingCount > 0 || requested.length === 0) {
+    return result(requested.slice(0, fittingCount));
+  }
+  return result([compactValidationIssue(requested[0]!)], true);
+}
+
+function compactValidationIssue(issue: ValidationIssue): ValidationIssue {
+  const truncate = (value: string | undefined): string | undefined => {
+    if (value === undefined || value.length <= 160) return value;
+    return `${value.slice(0, 159)}…`;
+  };
+  return {
+    severity: issue.severity,
+    code: issue.code,
+    message: truncate(issue.message) ?? "",
+    ...(issue.path ? { path: truncate(issue.path) } : {}),
+    ...(issue.rawTarget ? { rawTarget: truncate(issue.rawTarget) } : {}),
+    ...(issue.candidates
+      ? { candidates: issue.candidates.slice(0, 5).map((candidate) => truncate(candidate)!) }
+      : {})
+  };
+}
+
 function collectNeighbors(
   search: BundleSearch,
   rootId: string,
@@ -116,20 +179,8 @@ function collectNeighbors(
 }
 
 export async function createMcpServer(options: ServeOptions): Promise<Server> {
-  let activeBundleDir = options.bundleDir;
-  let search: BundleSearch | undefined = options.search;
-  let observedFreshness: FreshnessState | undefined;
-  let lastRefreshError: RefreshErrorDetails | null = null;
-  let inFlightRefresh: Promise<void> | undefined;
-
-  if (!search) {
-    try {
-      search = await BundleSearch.fromBundle(activeBundleDir);
-    } catch (error) {
-      if (!options.source) throw error;
-      lastRefreshError = errorDetails(error);
-    }
-  }
+  const runtime = await createSourceRuntime(options);
+  if (!runtime.search && !options.source) throw runtime.initialLoadError;
 
   const server = new Server(
     { name: options.name ?? "okfy", version: packageVersion() },
@@ -139,40 +190,18 @@ export async function createMcpServer(options: ServeOptions): Promise<Server> {
   const refreshMode = (): RefreshMode =>
     options.refresh?.mode ?? (options.source ? "stale-while-refresh" : "off");
 
-  async function getFreshness(): Promise<FreshnessState> {
-    if (options.refresh?.getFreshness) {
-      observedFreshness = await options.refresh.getFreshness();
-      return observedFreshness;
-    }
-    observedFreshness ??= {
-      freshnessStatus: search ? "fresh" : "missing",
-      refreshInProgress: false,
-      lastRefreshError: null
-    };
-    return observedFreshness;
-  }
-
   function sourceSummaryFields(): Record<string, unknown> {
     if (!options.source) return {};
-    const normalized = normalizeFreshness(observedFreshness);
-    const lastError = lastRefreshError ?? normalized.lastRefreshError;
-    const status = lastError
-      ? "failed"
-      : (normalized.freshnessStatus ?? (search ? "fresh" : "missing"));
     return {
       sourceName: options.source.name,
       sourceKind: options.source.kind,
       seedUrl: options.source.seedUrl,
-      freshnessStatus: status,
-      lastSuccessfulRefreshAt: normalized.lastSuccessfulRefreshAt,
-      refreshInProgress: Boolean(inFlightRefresh) || normalized.refreshInProgress,
-      lastRefreshError: lastError,
-      nextRefreshAllowedAt: normalized.nextRefreshAllowedAt
+      ...sourceFreshnessFields(runtime)
     };
   }
 
   function bundleUnavailable() {
-    const details = lastRefreshError ?? errorDetails("No OKF bundle is available.");
+    const details = runtime.lastRefreshError ?? errorDetails("No OKF bundle is available.");
     return toolError(
       {
         code: "bundle_unavailable",
@@ -185,46 +214,10 @@ export async function createMcpServer(options: ServeOptions): Promise<Server> {
     );
   }
 
-  function startRefresh(
-    mode: Exclude<RefreshMode, "off">,
-    freshness: FreshnessState
-  ): Promise<void> | undefined {
-    if (!options.refresh?.refreshIfNeeded) return undefined;
-    if (inFlightRefresh) return inFlightRefresh;
-    inFlightRefresh = (async () => {
-      try {
-        const result = await options.refresh?.refreshIfNeeded?.({
-          mode,
-          bundleDir: activeBundleDir,
-          source: options.source,
-          freshness
-        });
-        if (result?.freshness) observedFreshness = result.freshness;
-        const nextBundleDir = result?.bundleDir ?? activeBundleDir;
-        const nextSearch = await BundleSearch.fromBundle(nextBundleDir);
-        activeBundleDir = nextBundleDir;
-        search = nextSearch;
-        lastRefreshError = null;
-      } catch (error) {
-        lastRefreshError = errorDetails(error);
-      } finally {
-        inFlightRefresh = undefined;
-      }
-    })();
-    return inFlightRefresh;
-  }
-
   async function prepareBundleForTool(toolName: string): Promise<void> {
     const mode = refreshMode();
     if (mode === "off" || !refreshableTool(toolName)) return;
-
-    const freshness = await getFreshness();
-    const normalized = normalizeFreshness(freshness);
-    if (!shouldRefresh(normalized.freshnessStatus, Boolean(search))) return;
-
-    const refresh = startRefresh(mode, freshness);
-    if (!refresh) return;
-    if (mode === "blocking" || !search) await refresh;
+    await prepareSourceRuntime(runtime, mode, mode === "blocking" || !runtime.search);
   }
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -234,8 +227,10 @@ export async function createMcpServer(options: ServeOptions): Promise<Server> {
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const args = request.params.arguments ?? {};
     try {
-      if (request.params.name === BUNDLE_SUMMARY_TOOL && options.source) await getFreshness();
+      if (request.params.name === BUNDLE_SUMMARY_TOOL && options.source)
+        await getSourceFreshness(runtime);
       await prepareBundleForTool(request.params.name);
+      const search = runtime.search;
       if (request.params.name === SEARCH_CONCEPTS_TOOL) {
         if (!search) return bundleUnavailable();
         const parsed = searchSchema.parse(args);
@@ -292,29 +287,33 @@ export async function createMcpServer(options: ServeOptions): Promise<Server> {
       }
       if (request.params.name === LIST_TYPES_TOOL) {
         if (!search) return bundleUnavailable();
-        const stats = await inspectBundle(activeBundleDir);
+        const stats = await inspectBundle(runtime.activeBundleDir);
         return json(stats.typeDistribution, maxResultChars);
       }
       if (request.params.name === LIST_TAGS_TOOL) {
         if (!search) return bundleUnavailable();
-        const stats = await inspectBundle(activeBundleDir);
+        const stats = await inspectBundle(runtime.activeBundleDir);
         return json(stats.tagDistribution, maxResultChars);
       }
       if (request.params.name === BUNDLE_SUMMARY_TOOL) {
         if (!search) return bundleUnavailable();
-        const [stats, validation] = await Promise.all([
-          inspectBundle(activeBundleDir),
-          validateBundle(activeBundleDir)
-        ]);
+        const parsed = bundleSummarySchema.parse(args);
+        const analysis = await analyzeBundle(runtime.activeBundleDir);
+        const validation = analysis.validation;
+        const stats = await inspectBundle(runtime.activeBundleDir, { analysis });
         return json(
-          {
-            ...stats,
-            reservedFileCount: validation.reservedFileCount,
-            warningCount: validation.warningCount,
-            validationStatus: validation.valid ? "valid" : "invalid",
-            validationIssues: validation.issues,
-            ...sourceSummaryFields()
-          },
+          pageValidationIssues(
+            {
+              ...stats,
+              reservedFileCount: validation.reservedFileCount,
+              warningCount: validation.warningCount,
+              validationStatus: validation.valid ? "valid" : "invalid",
+              ...sourceSummaryFields()
+            },
+            validation.issues,
+            parsed,
+            maxResultChars
+          ),
           maxResultChars
         );
       }
@@ -337,20 +336,21 @@ export async function createWorkspaceMcpServer(options: WorkspaceServeOptions): 
   const maxResultChars = options.maxResultChars ?? 12000;
   const runtimes: WorkspaceSourceRuntime[] = await Promise.all(
     options.sources.map(async (source) => {
-      const runtime: WorkspaceSourceRuntime = {
-        record: source.record,
-        activeBundleDir: source.record.bundleDir,
+      const lifecycle = await createSourceRuntime({
+        bundleDir: source.record.bundleDir,
         search: source.search,
-        lastRefreshError: source.record.loadError ? errorDetails(source.record.loadError) : null,
-        refresh: source.refresh
-      };
-      if (!runtime.search) {
-        try {
-          runtime.search = await BundleSearch.fromBundle(runtime.activeBundleDir);
-        } catch (error) {
-          runtime.lastRefreshError ??= errorDetails(error);
+        refresh: source.refresh,
+        loadError: source.record.loadError,
+        source: {
+          name: source.record.name,
+          kind: source.record.manifest.kind,
+          seedUrl: source.record.manifest.source.seedUrl
         }
-      }
+      });
+      const runtime: WorkspaceSourceRuntime = {
+        ...lifecycle,
+        record: source.record
+      };
       return runtime;
     })
   );
@@ -394,84 +394,17 @@ export async function createWorkspaceMcpServer(options: WorkspaceServeOptions): 
     );
   }
 
-  async function getRuntimeFreshness(runtime: WorkspaceSourceRuntime): Promise<FreshnessState> {
-    if (runtime.record.loadError) {
-      const freshness = runtime.observedFreshness ?? {
-        freshnessStatus: "failed",
-        refreshInProgress: false,
-        lastRefreshError: errorDetails(runtime.record.loadError)
-      };
-      runtime.observedFreshness = freshness;
-      return freshness;
-    }
-    if (runtime.refresh?.getFreshness) {
-      runtime.observedFreshness = await runtime.refresh.getFreshness();
-      return runtime.observedFreshness;
-    }
-    runtime.observedFreshness ??= {
-      freshnessStatus: runtime.search ? "fresh" : "missing",
-      refreshInProgress: false,
-      lastRefreshError: null
-    };
-    return runtime.observedFreshness;
-  }
-
   function runtimeRefreshMode(runtime: WorkspaceSourceRuntime): RefreshMode {
     return runtime.refresh?.mode ?? "stale-while-refresh";
   }
 
   function sourceSummaryFields(runtime: WorkspaceSourceRuntime): Record<string, unknown> {
-    const normalized = normalizeFreshness(runtime.observedFreshness);
-    const lastError = runtime.lastRefreshError ?? normalized.lastRefreshError;
-    const refreshing = Boolean(runtime.inFlightRefresh) || normalized.refreshInProgress;
-    const status = refreshing
-      ? "refreshing"
-      : lastError
-        ? "failed"
-        : (normalized.freshnessStatus ?? (runtime.search ? "fresh" : "missing"));
     return {
       sourceName: runtime.record.name,
       sourceKind: runtime.record.manifest.kind,
       seedUrl: runtime.record.manifest.source.seedUrl,
-      freshnessStatus: status,
-      lastSuccessfulRefreshAt: normalized.lastSuccessfulRefreshAt,
-      refreshInProgress: refreshing,
-      lastRefreshError: lastError,
-      nextRefreshAllowedAt: normalized.nextRefreshAllowedAt
+      ...sourceFreshnessFields(runtime)
     };
-  }
-
-  function startRuntimeRefresh(
-    runtime: WorkspaceSourceRuntime,
-    mode: Exclude<RefreshMode, "off">,
-    freshness: FreshnessState
-  ): Promise<void> | undefined {
-    if (!runtime.refresh?.refreshIfNeeded) return undefined;
-    if (runtime.inFlightRefresh) return runtime.inFlightRefresh;
-    runtime.inFlightRefresh = (async () => {
-      try {
-        const result = await runtime.refresh?.refreshIfNeeded?.({
-          mode,
-          bundleDir: runtime.activeBundleDir,
-          source: {
-            name: runtime.record.name,
-            kind: runtime.record.manifest.kind,
-            seedUrl: runtime.record.manifest.source.seedUrl
-          },
-          freshness
-        });
-        if (result?.freshness) runtime.observedFreshness = result.freshness;
-        const nextBundleDir = result?.bundleDir ?? runtime.activeBundleDir;
-        runtime.search = await BundleSearch.fromBundle(nextBundleDir);
-        runtime.activeBundleDir = nextBundleDir;
-        runtime.lastRefreshError = null;
-      } catch (error) {
-        runtime.lastRefreshError = errorDetails(error);
-      } finally {
-        runtime.inFlightRefresh = undefined;
-      }
-    })();
-    return runtime.inFlightRefresh;
   }
 
   async function prepareRuntime(
@@ -483,17 +416,10 @@ export async function createWorkspaceMcpServer(options: WorkspaceServeOptions): 
     try {
       const mode = runtimeRefreshMode(runtime);
       if (mode === "off" || !refreshableTool(toolName)) return;
-
-      const freshness = await getRuntimeFreshness(runtime);
-      const normalized = normalizeFreshness(freshness);
-      if (!shouldRefresh(normalized.freshnessStatus, Boolean(runtime.search))) return;
-
-      const refresh = startRuntimeRefresh(runtime, mode, freshness);
-      if (!refresh) return;
-      const shouldAwait = sourceFiltered
+      const awaitRefresh = sourceFiltered
         ? mode === "blocking" || !runtime.search
         : !workspaceHadUsableSource && !runtime.search;
-      if (shouldAwait) await refresh;
+      await prepareSourceRuntime(runtime, mode, awaitRefresh);
     } catch (error) {
       runtime.lastRefreshError = errorDetails(error);
     }
@@ -540,9 +466,12 @@ export async function createWorkspaceMcpServer(options: WorkspaceServeOptions): 
     );
   }
 
-  async function sourceSummary(runtime: WorkspaceSourceRuntime): Promise<Record<string, unknown>> {
+  async function sourceSummary(
+    runtime: WorkspaceSourceRuntime,
+    paging: ValidationPaging
+  ): Promise<Record<string, unknown>> {
     try {
-      await getRuntimeFreshness(runtime);
+      await getSourceFreshness(runtime);
     } catch (error) {
       runtime.lastRefreshError = errorDetails(error);
     }
@@ -551,31 +480,34 @@ export async function createWorkspaceMcpServer(options: WorkspaceServeOptions): 
       return unavailableSourceSummary(runtime);
     }
     let stats: Awaited<ReturnType<typeof inspectBundle>>;
-    let validation: Awaited<ReturnType<typeof validateBundle>>;
+    let validation: ValidationReport;
     try {
-      [stats, validation] = await Promise.all([
-        inspectBundle(runtime.activeBundleDir),
-        validateBundle(runtime.activeBundleDir)
-      ]);
+      const analysis = await analyzeBundle(runtime.activeBundleDir);
+      validation = analysis.validation;
+      stats = await inspectBundle(runtime.activeBundleDir, { analysis });
     } catch (error) {
       runtime.lastRefreshError = errorDetails(error);
       return unavailableSourceSummary(runtime);
     }
-    return {
-      ...freshness,
-      bundleDir: runtime.activeBundleDir,
-      conceptCount: stats.conceptCount,
-      reservedFileCount: validation.reservedFileCount,
-      warningCount: validation.warningCount,
-      validationStatus: validation.valid ? "valid" : "invalid",
-      validationIssues: validation.issues,
-      typeDistribution: stats.typeDistribution,
-      tagDistribution: stats.tagDistribution,
-      linkCount: stats.linkCount,
-      brokenLinks: stats.brokenLinks,
-      orphanConcepts: stats.orphanConcepts,
-      sourceDomains: stats.sourceDomains
-    };
+    return pageValidationIssues(
+      {
+        ...freshness,
+        bundleDir: runtime.activeBundleDir,
+        conceptCount: stats.conceptCount,
+        reservedFileCount: validation.reservedFileCount,
+        warningCount: validation.warningCount,
+        validationStatus: validation.valid ? "valid" : "invalid",
+        typeDistribution: stats.typeDistribution,
+        tagDistribution: stats.tagDistribution,
+        linkCount: stats.linkCount,
+        brokenLinks: stats.brokenLinks,
+        orphanConcepts: stats.orphanConcepts,
+        sourceDomains: stats.sourceDomains
+      },
+      validation.issues,
+      paging,
+      maxResultChars
+    );
   }
 
   function unavailableSourceSummary(runtime: WorkspaceSourceRuntime): Record<string, unknown> {
@@ -591,9 +523,12 @@ export async function createWorkspaceMcpServer(options: WorkspaceServeOptions): 
     };
   }
 
-  async function workspaceSummary(sourceName?: string): Promise<Record<string, unknown>> {
+  async function workspaceSummary(
+    sourceName: string | undefined,
+    paging: ValidationPaging
+  ): Promise<Record<string, unknown>> {
     const selected = sourceName ? [runtimeForSource(sourceName)] : runtimes;
-    const sources = await Promise.all(selected.map(sourceSummary));
+    const sources = await Promise.all(selected.map((runtime) => sourceSummary(runtime, paging)));
     const usableSourceCount = selected.filter((runtime) => runtime.search).length;
     const conceptCount = sources.reduce((sum, source) => sum + numberField(source.conceptCount), 0);
     const reservedFileCount = sources.reduce(
@@ -634,11 +569,12 @@ export async function createWorkspaceMcpServer(options: WorkspaceServeOptions): 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const args = request.params.arguments ?? {};
     try {
-      const sourceName = sourceFilterSchema.partial().parse(args).source;
       if (request.params.name === BUNDLE_SUMMARY_TOOL) {
-        return json(await workspaceSummary(sourceName), maxResultChars);
+        const parsed = bundleSummarySchema.parse(args);
+        return json(await workspaceSummary(parsed.source, parsed), maxResultChars);
       }
 
+      const sourceName = sourceFilterSchema.partial().parse(args).source;
       await prepareWorkspaceForTool(request.params.name, sourceName);
       if (sourceName) {
         const runtime = runtimeForSource(sourceName);

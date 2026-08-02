@@ -1,3 +1,5 @@
+import { isVaultDiagnosticCode } from "./vault-diagnostics.js";
+
 type RenderReadiness = {
   validationStatus?: string;
   availabilityStatus?: string;
@@ -312,17 +314,17 @@ function renderSources(sources: NormalizedReport["sources"]): string {
 }
 
 function renderSemanticWarnings(issues: RenderValidationIssue[]): string {
-  const semanticIssues = issues.filter((issue) =>
-    ["unresolved_wikilink", "ambiguous_wikilink", "missing_wikilink_fragment"].includes(
-      issue.code ?? ""
-    )
-  );
+  const semanticIssues = issues.filter((issue) => isVaultDiagnosticCode(issue.code ?? ""));
   if (!semanticIssues.length) return "";
   return `<small>Semantic warnings</small><ul class="warnings">${semanticIssues
-    .map(
-      (issue) =>
-        `<li><code>${escapeHtml(issue.code ?? "warning")}</code>: ${escapeHtml(issue.rawTarget ?? issue.message ?? "")}</li>`
-    )
+    .map((issue) => {
+      const target = issue.rawTarget ?? issue.message ?? "";
+      const source = issue.path ? `<small>Source: ${escapeHtml(issue.path)}</small>` : "";
+      const candidates = issue.candidates?.length
+        ? `<small>Candidates: ${escapeHtml(issue.candidates.join(", "))}</small>`
+        : "";
+      return `<li><code>${escapeHtml(issue.code ?? "warning")}</code><small>Target: ${escapeHtml(target)}</small>${source}${candidates}</li>`;
+    })
     .join("")}</ul>`;
 }
 

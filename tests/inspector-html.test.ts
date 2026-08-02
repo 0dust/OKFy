@@ -438,6 +438,32 @@ describe("renderInspectorHtml", () => {
     expect(html).not.toContain("<svg/onload=alert(2)>");
   });
 
+  it("renders escaped semantic warning provenance and ambiguity candidates", () => {
+    const fixture = reportFixture();
+    const html = renderInspectorHtml({
+      ...fixture,
+      sources: fixture.sources.map((source) => ({
+        ...source,
+        validationIssues: [
+          {
+            severity: "warning",
+            code: "ambiguous_wikilink",
+            message: "Ambiguous reference.",
+            path: "vault/<source>.md",
+            rawTarget: "Shared <Alias>",
+            candidates: ["one/<Alias>.md", "two/&Alias.md"]
+          }
+        ]
+      }))
+    });
+
+    expect(html).toContain("Source: vault/&lt;source&gt;.md");
+    expect(html).toContain("Target: Shared &lt;Alias&gt;");
+    expect(html).toContain("Candidates: one/&lt;Alias&gt;.md, two/&amp;Alias.md");
+    expect(html).not.toContain("vault/<source>.md");
+    expect(html).not.toContain("one/<Alias>.md");
+  });
+
   it("renders byte-identical HTML for the same report", () => {
     const report = reportFixture();
 

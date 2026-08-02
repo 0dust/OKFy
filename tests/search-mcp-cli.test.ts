@@ -5,8 +5,15 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { createMcpServer, createWorkspaceMcpServer } from "../src/mcp.js";
+import {
+  createSourceRuntime,
+  getSourceFreshness,
+  prepareSourceRuntime
+} from "../src/mcp-source-runtime.js";
 import { BundleSearch } from "../src/search.js";
 import type { SourceRecord } from "../src/source-store.js";
+import type { Concept } from "../src/types.js";
+import { mcpHandler as handler, type McpTextResult } from "./support/mcp-handler.js";
 import { withBuiltCliMcpSession } from "./support/mcp-session.js";
 
 const execFileAsync = promisify(execFile);
@@ -22,20 +29,6 @@ async function tempRoot(): Promise<string> {
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
 });
-
-type McpTextResult = {
-  content: Array<{ type: "text"; text: string }>;
-  structuredContent?: Record<string, unknown>;
-  isError?: boolean;
-};
-type Handler = (request: unknown, extra?: unknown) => Promise<McpTextResult>;
-
-function handler(server: unknown, method: string): Handler {
-  const handlers = (server as { _requestHandlers: Map<string, Handler> })._requestHandlers;
-  const found = handlers.get(method);
-  if (!found) throw new Error(`Missing MCP handler: ${method}`);
-  return found;
-}
 
 function parseText(result: McpTextResult): unknown {
   return JSON.parse(result.content[0]?.text ?? "null");
@@ -58,7 +51,14 @@ async function waitForValue<T>(
 
 async function writeSingleConceptBundle(
   dir: string,
-  concept: { title: string; type: string; body: string; description?: string; tags?: string[] }
+  concept: {
+    title: string;
+    type: string;
+    body: string;
+    description?: string;
+    tags?: string[];
+    aliases?: string[];
+  }
 ): Promise<void> {
   await fs.rm(dir, { recursive: true, force: true });
   await fs.mkdir(dir, { recursive: true });
@@ -70,7 +70,7 @@ async function writeSingleConceptBundle(
   );
   await fs.writeFile(
     path.join(dir, "concept.md"),
-    `---\ntype: "${concept.type}"\ntitle: "${concept.title}"\ndescription: "${concept.description ?? concept.body}"\nresource: "https://docs.example.com/concept"\ntags:\n${tags.map((tag) => `  - "${tag}"`).join("\n")}\ntimestamp: "2026-06-14T00:00:00.000Z"\n---\n\n# ${concept.title}\n\n${concept.body}\n`,
+    `---\ntype: "${concept.type}"\ntitle: "${concept.title}"\ndescription: "${concept.description ?? concept.body}"\nresource: "https://docs.example.com/concept"\ntags:\n${tags.map((tag) => `  - "${tag}"`).join("\n")}${concept.aliases?.length ? `\naliases:\n${concept.aliases.map((alias) => `  - ${JSON.stringify(alias)}`).join("\n")}` : ""}\ntimestamp: "2026-06-14T00:00:00.000Z"\n---\n\n# ${concept.title}\n\n${concept.body}\n`,
     "utf8"
   );
 }
@@ -133,6 +133,30 @@ function sourceState(
 }
 
 describe("search", () => {
+  it("finds a concept by its imported alias", () => {
+    const concept: Concept = {
+      id: "guides/identity",
+      path: "guides/identity.md",
+      frontmatter: {},
+      type: "Guide",
+      title: "Account Identity",
+      description: "Configure the canonical user profile.",
+      tags: [],
+      aliases: ["Customer Passport"],
+      body: "Use the primary identity record."
+    };
+    const search = new BundleSearch(
+      new Map([
+        [concept.id, concept],
+        [concept.path, concept]
+      ])
+    );
+
+    expect(search.search("Customer Passport", { limit: 5 }).map((item) => item.id)).toEqual([
+      "guides/identity"
+    ]);
+  });
+
   it("searches concepts with type/tag filters and path lookup", async () => {
     const search = await BundleSearch.fromBundle(bundleDir);
 
@@ -189,6 +213,32 @@ describe("search", () => {
 });
 
 describe("MCP server", () => {
+  it("finds imported aliases through search_concepts", async () => {
+    const root = await tempRoot();
+    const aliasBundle = path.join(root, "alias-bundle");
+    await writeSingleConceptBundle(aliasBundle, {
+      title: "Account Identity",
+      type: "Guide",
+      body: "Configure the canonical user profile.",
+      aliases: ["Customer Passport"]
+    });
+    const server = await createMcpServer({ bundleDir: aliasBundle, maxResultChars: 2000 });
+    const result = await handler(
+      server,
+      "tools/call"
+    )({
+      method: "tools/call",
+      params: {
+        name: "search_concepts",
+        arguments: { query: "Customer Passport", limit: 5 }
+      }
+    });
+
+    expect(result.structuredContent?.results).toEqual([
+      expect.objectContaining({ id: "concept", title: "Account Identity" })
+    ]);
+  });
+
   it("lists PRD tools and calls search/read/neighbors directly", async () => {
     const server = await createMcpServer({ bundleDir, maxResultChars: 2000 });
     const listTools = handler(server, "tools/list");
@@ -217,6 +267,12 @@ describe("MCP server", () => {
     expect(listed.tools.find((tool) => tool.name === "get_neighbors")?.inputSchema).toMatchObject({
       properties: { depth: { type: "integer", minimum: 1, maximum: 2 } },
       required: ["id"]
+    });
+    expect(listed.tools.find((tool) => tool.name === "bundle_summary")?.inputSchema).toMatchObject({
+      properties: {
+        validation_offset: { type: "integer", minimum: 0 },
+        validation_limit: { type: "integer", minimum: 1, maximum: 100 }
+      }
     });
 
     const searchCall = await callTool({
@@ -333,6 +389,71 @@ describe("MCP server", () => {
     ]);
   });
 
+  it("pages large validation diagnostics without losing structured MCP results", async () => {
+    const root = await tempRoot();
+    const warningBundle = path.join(root, "large-warning-bundle");
+    const warnings = Array.from(
+      { length: 80 },
+      (_, index) => `[[Missing Note ${String(index).padStart(3, "0")}]]`
+    );
+    await writeSingleConceptBundle(warningBundle, {
+      title: "Large Warning Source",
+      type: "Note",
+      body: warnings.join("\n")
+    });
+    const server = await createMcpServer({ bundleDir: warningBundle, maxResultChars: 2600 });
+    const callTool = handler(server, "tools/call");
+
+    const first = await callTool({
+      method: "tools/call",
+      params: {
+        name: "bundle_summary",
+        arguments: { validation_offset: 0, validation_limit: 100 }
+      }
+    });
+    const firstSummary = first.structuredContent as {
+      validationIssues: Array<{ rawTarget: string }>;
+      validationIssuePage: {
+        total: number;
+        offset: number;
+        limit: number;
+        count: number;
+        nextOffset: number | null;
+      };
+    };
+
+    expect(firstSummary).toBeDefined();
+    expect(first.content[0]?.text).not.toContain("...truncated");
+    expect(firstSummary.validationIssuePage).toMatchObject({ total: 80, offset: 0, limit: 100 });
+    expect(firstSummary.validationIssuePage.count).toBeGreaterThan(0);
+    expect(firstSummary.validationIssuePage.count).toBeLessThan(80);
+    expect(firstSummary.validationIssuePage.nextOffset).toBe(
+      firstSummary.validationIssuePage.count
+    );
+    expect(firstSummary.validationIssues).toHaveLength(firstSummary.validationIssuePage.count);
+
+    const second = await callTool({
+      method: "tools/call",
+      params: {
+        name: "bundle_summary",
+        arguments: {
+          validation_offset: firstSummary.validationIssuePage.nextOffset,
+          validation_limit: 100
+        }
+      }
+    });
+    const secondSummary = second.structuredContent as typeof firstSummary;
+
+    expect(secondSummary).toBeDefined();
+    expect(second.content[0]?.text).not.toContain("...truncated");
+    expect(secondSummary.validationIssuePage.offset).toBe(
+      firstSummary.validationIssuePage.nextOffset
+    );
+    expect(secondSummary.validationIssues[0]?.rawTarget).not.toBe(
+      firstSummary.validationIssues[0]?.rawTarget
+    );
+  });
+
   it("omits structuredContent when the text payload is truncated", async () => {
     const server = await createMcpServer({ bundleDir, maxResultChars: 25 });
     const callTool = handler(server, "tools/call");
@@ -408,6 +529,93 @@ describe("MCP server", () => {
       lastRefreshError: null,
       nextRefreshAllowedAt: "2026-06-16T00:16:10.000Z"
     });
+  });
+
+  it("projects identical shared freshness fields for equivalent bundle and workspace runtimes", async () => {
+    let release!: () => void;
+    const canFinish = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let refreshCount = 0;
+    const refresh = {
+      mode: "stale-while-refresh" as const,
+      getFreshness: () => ({
+        freshnessStatus: "stale" as const,
+        lastSuccessfulRefreshAt: "2026-06-16T00:01:10.000Z",
+        refreshInProgress: false,
+        lastRefreshError: { message: "previous failure" },
+        nextRefreshAllowedAt: "2026-06-16T00:16:10.000Z"
+      }),
+      refreshIfNeeded: async () => {
+        refreshCount += 1;
+        await canFinish;
+      }
+    };
+    const source = {
+      name: "stripe",
+      kind: "website",
+      seedUrl: "https://docs.stripe.com/checkout"
+    };
+    const bundleServer = await createMcpServer({
+      bundleDir,
+      maxResultChars: 4000,
+      source,
+      refresh
+    });
+    const workspaceServer = await createWorkspaceMcpServer({
+      maxResultChars: 4000,
+      sources: [{ record: sourceRecord("stripe", bundleDir, sourceState()), refresh }]
+    });
+    const bundleCall = handler(bundleServer, "tools/call");
+    const workspaceCall = handler(workspaceServer, "tools/call");
+
+    await Promise.all([
+      bundleCall({
+        method: "tools/call",
+        params: { name: "search_concepts", arguments: { query: "MCP" } }
+      }),
+      workspaceCall({
+        method: "tools/call",
+        params: { name: "search_concepts", arguments: { query: "MCP", source: "stripe" } }
+      })
+    ]);
+    await waitForValue(
+      async () => refreshCount,
+      (count) => count === 2
+    );
+
+    const bundleSummary = parseText(
+      await bundleCall({
+        method: "tools/call",
+        params: { name: "bundle_summary", arguments: {} }
+      })
+    ) as Record<string, unknown>;
+    const workspaceSummary = parseText(
+      await workspaceCall({
+        method: "tools/call",
+        params: { name: "bundle_summary", arguments: { source: "stripe" } }
+      })
+    ) as { sources: Array<Record<string, unknown>> };
+    const sharedKeys = [
+      "freshnessStatus",
+      "lastSuccessfulRefreshAt",
+      "refreshInProgress",
+      "lastRefreshError",
+      "nextRefreshAllowedAt"
+    ];
+    const sharedFields = (summary: Record<string, unknown>) =>
+      Object.fromEntries(sharedKeys.map((key) => [key, summary[key]]));
+
+    expect(sharedFields(bundleSummary)).toEqual(sharedFields(workspaceSummary.sources[0]!));
+    expect(sharedFields(bundleSummary)).toEqual({
+      freshnessStatus: "refreshing",
+      lastSuccessfulRefreshAt: "2026-06-16T00:01:10.000Z",
+      refreshInProgress: true,
+      lastRefreshError: { message: "previous failure" },
+      nextRefreshAllowedAt: "2026-06-16T00:16:10.000Z"
+    });
+
+    release();
   });
 
   it("exposes source-aware workspace tools without changing the tool list", async () => {
@@ -1275,6 +1483,105 @@ describe("MCP server", () => {
       sourceName: "missing"
     });
     expect(missingSearch.error.message).toContain("first crawl failed");
+  });
+});
+
+describe("MCP source runtime", () => {
+  it("preserves the original load error for an unregistered missing bundle", async () => {
+    const root = await tempRoot();
+    await expect(
+      createMcpServer({ bundleDir: path.join(root, "missing-bundle") })
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("coalesces concurrent blocking refreshes into one in-flight operation", async () => {
+    let release!: () => void;
+    const canFinish = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let refreshCount = 0;
+    const runtime = await createSourceRuntime({
+      bundleDir,
+      refresh: {
+        getFreshness: () => ({ freshnessStatus: "stale" }),
+        refreshIfNeeded: async () => {
+          refreshCount += 1;
+          await canFinish;
+        }
+      }
+    });
+
+    const first = prepareSourceRuntime(runtime, "blocking", true);
+    const second = prepareSourceRuntime(runtime, "blocking", true);
+    await waitForValue(
+      async () => refreshCount,
+      (count) => count === 1
+    );
+    expect(refreshCount).toBe(1);
+    release();
+    await Promise.all([first, second]);
+  });
+
+  it("cleans up a synchronous refresh failure so a later request can retry", async () => {
+    let refreshCount = 0;
+    const runtime = await createSourceRuntime({
+      bundleDir,
+      refresh: {
+        getFreshness: () => ({ freshnessStatus: "stale" }),
+        refreshIfNeeded: () => {
+          refreshCount += 1;
+          throw new Error("refresh failed synchronously");
+        }
+      }
+    });
+
+    await prepareSourceRuntime(runtime, "blocking", true);
+    await prepareSourceRuntime(runtime, "blocking", true);
+
+    expect(refreshCount).toBe(2);
+    expect(runtime.inFlightRefresh).toBeUndefined();
+    expect(runtime.lastRefreshError).toMatchObject({
+      message: "refresh failed synchronously"
+    });
+  });
+
+  it("keeps the previous search and bundle path when refreshed bundle loading fails", async () => {
+    const root = await tempRoot();
+    const invalidBundle = path.join(root, "invalid-refreshed-bundle");
+    await fs.mkdir(invalidBundle, { recursive: true });
+    await fs.writeFile(path.join(invalidBundle, "concept.md"), "---\ntitle: [\n---\n", "utf8");
+    const runtime = await createSourceRuntime({
+      bundleDir,
+      refresh: {
+        getFreshness: () => ({ freshnessStatus: "stale" }),
+        refreshIfNeeded: () => ({ bundleDir: invalidBundle })
+      }
+    });
+    const previousSearch = runtime.search;
+
+    await prepareSourceRuntime(runtime, "blocking", true);
+
+    expect(runtime.activeBundleDir).toBe(bundleDir);
+    expect(runtime.search).toBe(previousSearch);
+    expect(runtime.lastRefreshError?.message).toBeTruthy();
+    expect(runtime.inFlightRefresh).toBeUndefined();
+  });
+
+  it("does not call freshness hooks when a registered source has a load error", async () => {
+    let freshnessCalls = 0;
+    const runtime = await createSourceRuntime({
+      bundleDir,
+      loadError: { code: "ENOENT", message: "source.json is missing" },
+      refresh: {
+        getFreshness: () => {
+          freshnessCalls += 1;
+          return { freshnessStatus: "fresh" };
+        }
+      }
+    });
+
+    expect(await getSourceFreshness(runtime)).toMatchObject({ freshnessStatus: "failed" });
+    expect(freshnessCalls).toBe(0);
   });
 });
 

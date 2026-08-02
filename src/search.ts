@@ -28,6 +28,7 @@ type SearchHit = {
 type SearchDoc = {
   id: string;
   title: string;
+  aliases: string;
   type: string;
   description: string;
   tags: string;
@@ -98,13 +99,13 @@ export class BundleSearch {
   readonly graph: KnowledgeGraph;
   private readonly index: MiniSearch<SearchDoc>;
 
-  constructor(conceptsByAnyKey: Map<string, Concept>) {
-    this.graph = buildGraph(conceptsByAnyKey);
+  constructor(conceptsByAnyKey: Map<string, Concept>, graph?: KnowledgeGraph) {
+    this.graph = graph ?? buildGraph(conceptsByAnyKey);
     this.index = new MiniSearch<SearchDoc>({
-      fields: ["title", "description", "tags", "type", "body"],
+      fields: ["title", "aliases", "description", "tags", "type", "body"],
       storeFields: ["id"],
       searchOptions: {
-        boost: { title: 4, tags: 3, type: 2, description: 2 },
+        boost: { title: 4, aliases: 3, tags: 3, type: 2, description: 2 },
         fuzzy: 0.2,
         prefix: true
       }
@@ -113,6 +114,7 @@ export class BundleSearch {
       [...this.graph.concepts.values()].map((concept) => ({
         id: concept.id,
         title: concept.title ?? concept.id,
+        aliases: (concept.aliases ?? []).join(" "),
         type: concept.type,
         description: concept.description ?? "",
         tags: concept.tags.join(" "),

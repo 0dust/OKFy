@@ -43,6 +43,31 @@ type Definition = {
   destinationRange?: SourceRange;
 };
 
+type MarkdownCollectionContext = {
+  source: string;
+  tree: AstNode;
+  htmlTagsByRange: Array<{ tag: HtmlTag; range: SourceRange }>;
+  htmlRanges: SourceRange[];
+  definitions: Map<string, Definition>;
+  content: string;
+  contentBase: number;
+  slugger: GithubSlugger;
+  headings: DocumentHeading[];
+  rootHeadingTitle?: string;
+  markdownLinks: Array<{ href: string; text: string }>;
+  semanticLinks: SemanticLink[];
+  blockIds: DocumentBlockId[];
+  htmlAnchors: DocumentBlockId[];
+  inlineTags: InlineTag[];
+  properties?: DocumentProperties;
+  invalidFrontmatterProperties: RecognizedFrontmatterProperty[];
+};
+
+type LocatedNode = {
+  originalRange: SourceRange;
+  range: SourceRange;
+};
+
 export type ParsedMarkdown = {
   content: string;
   headings: DocumentHeading[];
@@ -124,12 +149,12 @@ function nodeRange(node: AstNode): SourceRange | undefined {
 
 function visit(
   node: AstNode,
-  ancestors: AstNode[],
-  callback: (node: AstNode, ancestors: AstNode[]) => void
+  ancestors: readonly AstNode[],
+  callback: (node: AstNode, ancestors: readonly AstNode[]) => void
 ): void {
   const stack: Array<{ node: AstNode; nextChildIndex: number }> = [{ node, nextChildIndex: 0 }];
   const path = [...ancestors];
-  callback(node, [...path]);
+  callback(node, path);
 
   while (stack.length > 0) {
     const frame = stack[stack.length - 1]!;
@@ -137,7 +162,7 @@ function visit(
     if (child) {
       frame.nextChildIndex += 1;
       path.push(frame.node);
-      callback(child, [...path]);
+      callback(child, path);
       stack.push({ node: child, nextChildIndex: 0 });
       continue;
     }
@@ -177,10 +202,6 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function hasOwn(data: Record<string, unknown>, property: RecognizedFrontmatterProperty): boolean {
-  return Object.prototype.hasOwnProperty.call(data, property);
-}
-
 function sourceProperties(node: AstNode):
   | {
       properties: DocumentProperties;
@@ -205,7 +226,7 @@ function sourceProperties(node: AstNode):
     ["aliases", aliases],
     ["tags", tags]
   ] as const) {
-    if (hasOwn(data, property) && value === undefined) invalidProperties.push(property);
+    if (Object.hasOwn(data, property) && value === undefined) invalidProperties.push(property);
   }
 
   return {
@@ -301,7 +322,7 @@ function attachmentExtension(target: string): string {
   return clean.includes(".") ? (clean.split(".").pop() ?? "").toLowerCase() : "";
 }
 
-function isEligibleText(ancestors: AstNode[]): boolean {
+function isEligibleText(ancestors: readonly AstNode[]): boolean {
   return !ancestors.some(
     (ancestor) =>
       ancestor.type === "link" ||
@@ -422,12 +443,10 @@ function htmlTags(node: AstNode, source: string): Array<{ tag: HtmlTag; range: S
   return tags;
 }
 
-function htmlContentRanges(tree: AstNode, source: string): SourceRange[] {
-  const tags: Array<{ tag: HtmlTag; range: SourceRange }> = [];
-  visit(tree, [], (node) => {
-    tags.push(...htmlTags(node, source));
-  });
-
+function htmlContentRanges(
+  tags: Array<{ tag: HtmlTag; range: SourceRange }>,
+  sourceLength: number
+): SourceRange[] {
   const open: Array<{ name: string; start: number }> = [];
   const ranges: SourceRange[] = [];
   for (const { tag, range } of tags) {
@@ -444,7 +463,7 @@ function htmlContentRanges(tree: AstNode, source: string): SourceRange[] {
     }
   }
   for (const unclosed of open) {
-    if (unclosed.start < source.length) ranges.push({ start: unclosed.start, end: source.length });
+    if (unclosed.start < sourceLength) ranges.push({ start: unclosed.start, end: sourceLength });
   }
   ranges.sort((first, second) => first.start - second.start || first.end - second.end);
   const merged: SourceRange[] = [];
@@ -472,236 +491,341 @@ function isInsideRange(node: SourceRange, ranges: SourceRange[]): boolean {
   return false;
 }
 
-export function parseMarkdown(markdown: string, options: { mdx?: boolean } = {}): ParsedMarkdown {
-  const source = markdown.startsWith("\uFEFF") ? markdown.slice(1) : markdown;
-  const tree = (options.mdx ? mdxParser : markdownParser).parse(source) as AstNode;
-  const htmlRanges = htmlContentRanges(tree, source);
-  const definitions = new Map<string, Definition>();
-  let properties: DocumentProperties | undefined;
-  let invalidFrontmatterProperties: RecognizedFrontmatterProperty[] = [];
+function createCollectionContext(source: string, tree: AstNode): MarkdownCollectionContext {
+  return {
+    source,
+    tree,
+    htmlTagsByRange: [],
+    htmlRanges: [],
+    definitions: new Map(),
+    content: source.trimEnd(),
+    contentBase: 0,
+    slugger: new GithubSlugger(),
+    headings: [],
+    markdownLinks: [],
+    semanticLinks: [],
+    blockIds: [],
+    htmlAnchors: [],
+    inlineTags: [],
+    invalidFrontmatterProperties: []
+  };
+}
 
-  visit(tree, [], (node) => {
+function collectStructuralMetadata(context: MarkdownCollectionContext): void {
+  visit(context.tree, [], (node) => {
+    context.htmlTagsByRange.push(...htmlTags(node, context.source));
     const range = nodeRange(node);
-    if (node.type === "yaml" && !properties) {
-      const source = sourceProperties(node);
-      properties = source?.properties;
-      invalidFrontmatterProperties = source?.invalidProperties ?? [];
+    if (node.type === "yaml" && !context.properties) {
+      const parsedProperties = sourceProperties(node);
+      context.properties = parsedProperties?.properties;
+      context.invalidFrontmatterProperties = parsedProperties?.invalidProperties ?? [];
     }
     if (node.type !== "definition" || !node.identifier || !node.url || !range) return;
-    if (definitions.has(node.identifier)) return;
-    definitions.set(node.identifier, {
+    if (context.definitions.has(node.identifier)) return;
+    context.definitions.set(node.identifier, {
       url: node.url,
-      destinationRange: definitionDestinationRange(source, range, node.url)
+      destinationRange: definitionDestinationRange(context.source, range, node.url)
     });
   });
+  context.htmlRanges = htmlContentRanges(context.htmlTagsByRange, context.source.length);
 
-  if (hasFrontmatter(source) && !properties) {
+  if (hasFrontmatter(context.source) && !context.properties) {
     throw new Error("Malformed YAML frontmatter.");
   }
 
-  const frontmatterEnd = properties?.range.end ?? 0;
-  const { content, contentBase } = bodyBoundary(source, frontmatterEnd);
-  const slugger = new GithubSlugger();
-  const headings: DocumentHeading[] = [];
-  let rootHeadingTitle: string | undefined;
-  const markdownLinks: Array<{ href: string; text: string }> = [];
-  const semanticLinks: SemanticLink[] = [];
-  const blockIds: DocumentBlockId[] = [];
-  const htmlAnchors: DocumentBlockId[] = [];
-  const inlineTags: InlineTag[] = [];
+  const frontmatterEnd = context.properties?.range.end ?? 0;
+  const body = bodyBoundary(context.source, frontmatterEnd);
+  context.content = body.content;
+  context.contentBase = body.contentBase;
+}
 
-  visit(tree, [], (node, ancestors) => {
-    const originalRange = nodeRange(node);
-    if (!originalRange || originalRange.start < contentBase) return;
-    const range = adjustedRange(originalRange, contentBase);
+function locateContentNode(
+  context: MarkdownCollectionContext,
+  node: AstNode
+): LocatedNode | undefined {
+  const originalRange = nodeRange(node);
+  if (!originalRange || originalRange.start < context.contentBase) return undefined;
+  return {
+    originalRange,
+    range: adjustedRange(originalRange, context.contentBase)
+  };
+}
 
-    if (node.type === "html") {
-      const raw = source.slice(originalRange.start, originalRange.end);
-      for (const match of raw.matchAll(/^<a\s+id=(["'])([A-Za-z0-9-]+)\1\s*>$/gi)) {
-        const index = match.index ?? 0;
-        htmlAnchors.push({
-          id: match[2]!,
-          raw: match[0],
-          range: {
-            start: range.start + index,
-            end: range.start + index + match[0].length
-          }
-        });
-      }
-      return;
+function collectAnchorNode(
+  context: MarkdownCollectionContext,
+  node: AstNode,
+  location: LocatedNode
+): boolean {
+  const { originalRange, range } = location;
+  if (node.type === "html") {
+    const raw = context.source.slice(originalRange.start, originalRange.end);
+    for (const match of raw.matchAll(/^<a\s+id=(["'])([A-Za-z0-9-]+)\1\s*>$/gi)) {
+      const index = match.index ?? 0;
+      context.htmlAnchors.push({
+        id: match[2]!,
+        raw: match[0],
+        range: {
+          start: range.start + index,
+          end: range.start + index + match[0].length
+        }
+      });
     }
+    return true;
+  }
 
-    if (node.type.startsWith("mdxJsx")) {
-      const id = node.attributes?.find(
-        (attribute) =>
-          attribute.type === "mdxJsxAttribute" &&
-          attribute.name === "id" &&
-          typeof attribute.value === "string" &&
-          /^[A-Za-z0-9-]+$/.test(attribute.value)
-      )?.value;
-      if (typeof id === "string" && node.name === "a") {
-        htmlAnchors.push({
-          id,
-          raw: source.slice(originalRange.start, originalRange.end),
-          range
-        });
-      }
-      return;
-    }
+  if (!node.type.startsWith("mdxJsx")) return false;
+  const id = node.attributes?.find(
+    (attribute) =>
+      attribute.type === "mdxJsxAttribute" &&
+      attribute.name === "id" &&
+      typeof attribute.value === "string" &&
+      /^[A-Za-z0-9-]+$/.test(attribute.value)
+  )?.value;
+  if (typeof id === "string" && node.name === "a") {
+    context.htmlAnchors.push({
+      id,
+      raw: context.source.slice(originalRange.start, originalRange.end),
+      range
+    });
+  }
+  return true;
+}
 
-    if (isInsideRange(originalRange, htmlRanges)) return;
+function collectHeadingNode(
+  context: MarkdownCollectionContext,
+  node: AstNode,
+  ancestors: readonly AstNode[],
+  range: SourceRange
+): boolean {
+  if (node.type !== "heading" || typeof node.depth !== "number") return false;
+  const text = toString(node as never).trim();
+  context.headings.push({
+    depth: node.depth,
+    text,
+    slug: context.slugger.slug(text),
+    range
+  });
+  if (
+    node.depth === 1 &&
+    context.rootHeadingTitle === undefined &&
+    ancestors.length === 1 &&
+    ancestors[0]?.type === "root"
+  ) {
+    context.rootHeadingTitle = text;
+  }
+  return true;
+}
 
+function collectMarkdownLink(
+  context: MarkdownCollectionContext,
+  node: AstNode,
+  location: LocatedNode
+): boolean {
+  const { originalRange, range } = location;
+  if (node.type === "link" && node.url) {
+    const text = toString(node as never);
+    const linkDestinationRange = inlineDestinationRange(context.source, originalRange, node.url);
+    context.markdownLinks.push({ href: node.url, text });
+    context.semanticLinks.push({
+      kind: "markdown",
+      raw: context.source.slice(originalRange.start, originalRange.end),
+      target: node.url,
+      text,
+      range,
+      destinationRange: linkDestinationRange
+        ? adjustedRange(linkDestinationRange, context.contentBase)
+        : undefined
+    });
+    return true;
+  }
+
+  if (node.type !== "linkReference" || !node.identifier) return false;
+  const definition = context.definitions.get(node.identifier);
+  if (!definition) return true;
+  const text = toString(node as never);
+  context.markdownLinks.push({ href: definition.url, text });
+  context.semanticLinks.push({
+    kind: "markdown",
+    raw: context.source.slice(originalRange.start, originalRange.end),
+    target: definition.url,
+    text,
+    range,
+    destinationRange: definition.destinationRange
+      ? adjustedRange(definition.destinationRange, context.contentBase)
+      : undefined
+  });
+  return true;
+}
+
+function collectWikiLink(
+  context: MarkdownCollectionContext,
+  node: AstNode,
+  ancestors: readonly AstNode[],
+  location: LocatedNode
+): boolean {
+  const { originalRange } = location;
+  if (node.type === "wikiLink" && node.value && isEligibleText(ancestors)) {
+    const fullRange = { start: originalRange.start - 2, end: originalRange.end };
+    const raw = context.source.slice(fullRange.start, fullRange.end);
+    const wikiData = normalizedWikiData(raw, 2, node.value, node.data?.alias);
+    const parts = splitTarget(wikiData.target);
+    context.semanticLinks.push({
+      kind: "wikilink",
+      raw,
+      ...parts,
+      text: wikiData.alias ?? defaultLinkText(parts),
+      range: adjustedRange(fullRange, context.contentBase)
+    });
+    return true;
+  }
+
+  if (node.type !== "embed" || !node.value || !isEligibleText(ancestors)) return false;
+  const raw = context.source.slice(originalRange.start, originalRange.end);
+  const wikiData = normalizedWikiData(raw, 3, node.value, node.data?.alias);
+  const parts = splitTarget(wikiData.target);
+  context.semanticLinks.push({
+    kind: BINARY_ATTACHMENT_EXTENSIONS.has(attachmentExtension(parts.target))
+      ? "attachment_embed"
+      : "note_embed",
+    raw,
+    ...parts,
+    text: wikiData.alias ?? defaultLinkText(parts),
+    range: location.range
+  });
+  return true;
+}
+
+function collectLinkLikeNode(
+  context: MarkdownCollectionContext,
+  node: AstNode,
+  ancestors: readonly AstNode[],
+  location: LocatedNode
+): boolean {
+  return (
+    collectMarkdownLink(context, node, location) ||
+    collectWikiLink(context, node, ancestors, location)
+  );
+}
+
+function collectTextEmbeds(
+  context: MarkdownCollectionContext,
+  rawText: string,
+  textStart: number
+): void {
+  for (const match of rawText.matchAll(/!\[\[([^\]\n]+)\]\]/g)) {
+    const index = match.index ?? 0;
+    const raw = match[0];
+    const [targetAndFragment = "", alias] = (match[1] ?? "").split("|", 2);
+    const parts = splitTarget(targetAndFragment);
+    const localRange = { start: textStart + index, end: textStart + index + raw.length };
+    context.semanticLinks.push({
+      kind: BINARY_ATTACHMENT_EXTENSIONS.has(attachmentExtension(parts.target))
+        ? "attachment_embed"
+        : "note_embed",
+      raw,
+      ...parts,
+      text: alias?.trim() || defaultLinkText(parts),
+      range: adjustedRange(localRange, context.contentBase)
+    });
+  }
+}
+
+function collectInlineTags(
+  context: MarkdownCollectionContext,
+  rawText: string,
+  textStart: number
+): void {
+  for (const match of rawText.matchAll(/(^|[\s(>.,;:!?[{"'])#([\p{L}\p{N}\p{S}_/-]+)/gu)) {
+    const tag = match[2] ?? "";
+    if (!tag || /^\p{N}+$/u.test(tag)) continue;
+    const prefixLength = (match[1] ?? "").length;
+    const index = (match.index ?? 0) + prefixLength;
+    const raw = `#${tag}`;
+    const localRange = { start: textStart + index, end: textStart + index + raw.length };
+    context.inlineTags.push({
+      tag: tag.toLowerCase(),
+      raw,
+      range: adjustedRange(localRange, context.contentBase)
+    });
+  }
+}
+
+function collectBlockIds(
+  context: MarkdownCollectionContext,
+  rawText: string,
+  textStart: number
+): void {
+  for (const match of rawText.matchAll(/(^|[ \t])\^([A-Za-z0-9-]+)(?=[ \t]*(?:\n|$))/g)) {
+    const prefixLength = (match[1] ?? "").length;
+    const index = (match.index ?? 0) + prefixLength;
+    const raw = `^${match[2] ?? ""}`;
+    const localRange = { start: textStart + index, end: textStart + index + raw.length };
+    context.blockIds.push({
+      id: match[2] ?? "",
+      raw,
+      range: adjustedRange(localRange, context.contentBase)
+    });
+  }
+}
+
+function collectProseTokens(
+  context: MarkdownCollectionContext,
+  node: AstNode,
+  ancestors: readonly AstNode[],
+  originalRange: SourceRange
+): void {
+  if (node.type !== "text" || !isEligibleText(ancestors)) return;
+  const rawText = context.source.slice(originalRange.start, originalRange.end);
+  if (!rawText) return;
+  collectTextEmbeds(context, rawText, originalRange.start);
+  collectInlineTags(context, rawText, originalRange.start);
+  collectBlockIds(context, rawText, originalRange.start);
+}
+
+function collectContentMetadata(context: MarkdownCollectionContext): void {
+  visit(context.tree, [], (node, ancestors) => {
+    const location = locateContentNode(context, node);
+    if (!location || collectAnchorNode(context, node, location)) return;
+    if (isInsideRange(location.originalRange, context.htmlRanges)) return;
     if (ancestors.some((ancestor) => ancestor.type === "html" || ancestor.type.startsWith("mdx"))) {
       return;
     }
-
-    if (node.type === "heading" && typeof node.depth === "number") {
-      const text = toString(node as never).trim();
-      headings.push({ depth: node.depth, text, slug: slugger.slug(text), range });
-      if (
-        node.depth === 1 &&
-        rootHeadingTitle === undefined &&
-        ancestors.length === 1 &&
-        ancestors[0]?.type === "root"
-      ) {
-        rootHeadingTitle = text;
-      }
-      return;
-    }
-
-    if (node.type === "link" && node.url) {
-      const text = toString(node as never);
-      const linkDestinationRange = inlineDestinationRange(source, originalRange, node.url);
-      markdownLinks.push({ href: node.url, text });
-      semanticLinks.push({
-        kind: "markdown",
-        raw: source.slice(originalRange.start, originalRange.end),
-        target: node.url,
-        text,
-        range,
-        destinationRange: linkDestinationRange
-          ? adjustedRange(linkDestinationRange, contentBase)
-          : undefined
-      });
-      return;
-    }
-
-    if (node.type === "linkReference" && node.identifier) {
-      const definition = definitions.get(node.identifier);
-      if (!definition) return;
-      const text = toString(node as never);
-      markdownLinks.push({ href: definition.url, text });
-      semanticLinks.push({
-        kind: "markdown",
-        raw: source.slice(originalRange.start, originalRange.end),
-        target: definition.url,
-        text,
-        range,
-        destinationRange: definition.destinationRange
-          ? adjustedRange(definition.destinationRange, contentBase)
-          : undefined
-      });
-      return;
-    }
-
-    if (node.type === "wikiLink" && node.value && isEligibleText(ancestors)) {
-      const fullRange = { start: originalRange.start - 2, end: originalRange.end };
-      const raw = source.slice(fullRange.start, fullRange.end);
-      const wikiData = normalizedWikiData(raw, 2, node.value, node.data?.alias);
-      const parts = splitTarget(wikiData.target);
-      semanticLinks.push({
-        kind: "wikilink",
-        raw,
-        ...parts,
-        text: wikiData.alias ?? defaultLinkText(parts),
-        range: adjustedRange(fullRange, contentBase)
-      });
-      return;
-    }
-
-    if (node.type === "embed" && node.value && isEligibleText(ancestors)) {
-      const raw = source.slice(originalRange.start, originalRange.end);
-      const wikiData = normalizedWikiData(raw, 3, node.value, node.data?.alias);
-      const parts = splitTarget(wikiData.target);
-      semanticLinks.push({
-        kind: BINARY_ATTACHMENT_EXTENSIONS.has(attachmentExtension(parts.target))
-          ? "attachment_embed"
-          : "note_embed",
-        raw,
-        ...parts,
-        text: wikiData.alias ?? defaultLinkText(parts),
-        range
-      });
-      return;
-    }
-
-    if (node.type !== "text" || !isEligibleText(ancestors)) return;
-    const textStart = originalRange.start;
-    const rawText = source.slice(originalRange.start, originalRange.end);
-    if (!rawText) return;
-
-    for (const match of rawText.matchAll(/!\[\[([^\]\n]+)\]\]/g)) {
-      const index = match.index ?? 0;
-      const raw = match[0];
-      const [targetAndFragment = "", alias] = (match[1] ?? "").split("|", 2);
-      const parts = splitTarget(targetAndFragment);
-      const localRange = {
-        start: textStart + index,
-        end: textStart + index + raw.length
-      };
-      semanticLinks.push({
-        kind: BINARY_ATTACHMENT_EXTENSIONS.has(attachmentExtension(parts.target))
-          ? "attachment_embed"
-          : "note_embed",
-        raw,
-        ...parts,
-        text: alias?.trim() || defaultLinkText(parts),
-        range: adjustedRange(localRange, contentBase)
-      });
-    }
-
-    for (const match of rawText.matchAll(/(^|[\s(>.,;:!?[{"'])#([\p{L}\p{N}\p{S}_/-]+)/gu)) {
-      const tag = match[2] ?? "";
-      if (!tag || /^\p{N}+$/u.test(tag)) continue;
-      const prefixLength = (match[1] ?? "").length;
-      const index = (match.index ?? 0) + prefixLength;
-      const raw = `#${tag}`;
-      const localRange = { start: textStart + index, end: textStart + index + raw.length };
-      inlineTags.push({
-        tag: tag.toLowerCase(),
-        raw,
-        range: adjustedRange(localRange, contentBase)
-      });
-    }
-
-    for (const match of rawText.matchAll(/(^|[ \t])\^([A-Za-z0-9-]+)(?=[ \t]*(?:\n|$))/g)) {
-      const prefixLength = (match[1] ?? "").length;
-      const index = (match.index ?? 0) + prefixLength;
-      const raw = `^${match[2] ?? ""}`;
-      const localRange = { start: textStart + index, end: textStart + index + raw.length };
-      blockIds.push({
-        id: match[2] ?? "",
-        raw,
-        range: adjustedRange(localRange, contentBase)
-      });
-    }
+    if (collectHeadingNode(context, node, ancestors, location.range)) return;
+    if (collectLinkLikeNode(context, node, ancestors, location)) return;
+    collectProseTokens(context, node, ancestors, location.originalRange);
   });
+}
 
-  semanticLinks.sort((a, b) => a.range.start - b.range.start || a.range.end - b.range.end);
-  blockIds.sort((a, b) => a.range.start - b.range.start);
-  htmlAnchors.sort((a, b) => a.range.start - b.range.start);
-  inlineTags.sort((a, b) => a.range.start - b.range.start);
+function sortCollectedTokens(context: MarkdownCollectionContext): void {
+  context.semanticLinks.sort(
+    (first, second) => first.range.start - second.range.start || first.range.end - second.range.end
+  );
+  context.blockIds.sort((first, second) => first.range.start - second.range.start);
+  context.htmlAnchors.sort((first, second) => first.range.start - second.range.start);
+  context.inlineTags.sort((first, second) => first.range.start - second.range.start);
+}
 
+function collectionResult(context: MarkdownCollectionContext): ParsedMarkdown {
   return {
-    content,
-    headings,
-    rootHeadingTitle,
-    markdownLinks,
-    semanticLinks,
-    blockIds,
-    htmlAnchors,
-    inlineTags,
-    properties,
-    invalidFrontmatterProperties
+    content: context.content,
+    headings: context.headings,
+    rootHeadingTitle: context.rootHeadingTitle,
+    markdownLinks: context.markdownLinks,
+    semanticLinks: context.semanticLinks,
+    blockIds: context.blockIds,
+    htmlAnchors: context.htmlAnchors,
+    inlineTags: context.inlineTags,
+    properties: context.properties,
+    invalidFrontmatterProperties: context.invalidFrontmatterProperties
   };
+}
+
+export function parseMarkdown(markdown: string, options: { mdx?: boolean } = {}): ParsedMarkdown {
+  const source = markdown.startsWith("\uFEFF") ? markdown.slice(1) : markdown;
+  const tree = (options.mdx ? mdxParser : markdownParser).parse(source) as AstNode;
+  const context = createCollectionContext(source, tree);
+  collectStructuralMetadata(context);
+  collectContentMetadata(context);
+  sortCollectedTokens(context);
+  return collectionResult(context);
 }

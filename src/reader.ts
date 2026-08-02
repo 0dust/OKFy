@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { parseFrontmatter } from "./frontmatter.js";
+import { parseFrontmatter, type ParsedFrontmatter } from "./frontmatter.js";
 import { isConceptMarkdownPath, isReservedOkfPath } from "./okf.js";
 import { listMarkdownFiles } from "./util/markdown-files.js";
 import { stripMdExtension, toPosixPath } from "./util/path.js";
@@ -11,9 +11,11 @@ function stringArray(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === "string");
 }
 
-export async function readConceptFile(bundleDir: string, absolutePath: string): Promise<Concept> {
-  const raw = await fs.readFile(absolutePath, "utf8");
-  const parsed = parseFrontmatter(raw);
+export function conceptFromParsed(
+  bundleDir: string,
+  absolutePath: string,
+  parsed: ParsedFrontmatter
+): Concept {
   const relPath = toPosixPath(path.relative(bundleDir, absolutePath));
   if (isReservedOkfPath(relPath)) throw new Error(`Reserved OKF file is not a concept: ${relPath}`);
   const id = stripMdExtension(relPath);
@@ -31,6 +33,14 @@ export async function readConceptFile(bundleDir: string, absolutePath: string): 
     ...(aliases.length ? { aliases } : {}),
     body: parsed.content.trim()
   };
+}
+
+export function conceptFromRaw(bundleDir: string, absolutePath: string, raw: string): Concept {
+  return conceptFromParsed(bundleDir, absolutePath, parseFrontmatter(raw));
+}
+
+export async function readConceptFile(bundleDir: string, absolutePath: string): Promise<Concept> {
+  return conceptFromRaw(bundleDir, absolutePath, await fs.readFile(absolutePath, "utf8"));
 }
 
 export async function readBundle(bundleDir: string): Promise<Map<string, Concept>> {

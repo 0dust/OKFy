@@ -162,7 +162,7 @@ describe("writer and validator", () => {
     await expect(validateBundle(outDir)).resolves.toMatchObject({ valid: true, warningCount: 0 });
   });
 
-  it("resolves writer-generated title headings without hiding genuinely missing fragments", async () => {
+  it("reports source wikilink fragments without relabeling portable Markdown output", async () => {
     const root = await tempOut();
     const input = path.join(root, "vault");
     const outDir = path.join(root, "bundle");
@@ -204,17 +204,34 @@ describe("writer and validator", () => {
     );
 
     const report = await validateBundle(outDir);
-    expect(report.issues.filter((item) => item.code === "missing_wikilink_fragment")).toEqual([
-      {
-        severity: "warning",
-        code: "missing_wikilink_fragment",
-        message:
-          'Missing fragment in Obsidian reference "./target.md#absent" from Source.md to Target.md.',
-        path: "Source.md",
-        rawTarget: "./target.md#absent",
-        candidates: ["Target.md"]
-      }
-    ]);
+    expect(report.issues.filter((item) => item.code === "missing_wikilink_fragment")).toEqual([]);
+  });
+
+  it("keeps links to source headings correct when a generated H1 has the same title", async () => {
+    const outDir = await tempOut();
+    const source = normalizeDocument(
+      raw({ sourceId: "Source.md", filePath: "Source.md", raw: "# Source\n\n[[Target#Setup]]" })
+    );
+    const target = normalizeDocument(
+      raw({
+        sourceId: "Target.md",
+        filePath: "Target.md",
+        raw: ["---", "title: Setup", "---", "", "## Setup", "", "Detailed steps."].join("\n")
+      })
+    );
+
+    expect(resolveVaultDocuments([source, target])).toEqual([]);
+    await writeOkfBundle([source, target], {
+      outDir,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+
+    await expect(fs.readFile(path.join(outDir, "source.md"), "utf8")).resolves.toContain(
+      "[Setup](./target.md#setup-1)"
+    );
+    await expect(fs.readFile(path.join(outDir, "target.md"), "utf8")).resolves.toContain(
+      "# Setup\n\n## Setup"
+    );
   });
 
   it("writes valid OKF bundles with index and rewritten internal source links", async () => {
@@ -263,6 +280,30 @@ describe("writer and validator", () => {
     expect(report.valid).toBe(true);
     expect(report.conceptCount).toBe(2);
     expect(report.issues.filter((issue) => issue.severity === "error")).toEqual([]);
+  });
+
+  it("renders hostile frontmatter titles as literal text in generated indexes", async () => {
+    const outDir = await tempOut();
+    const title = "[Click](https://evil.example) <img src=x onerror=alert(1)> [[Missing]]";
+    const document = normalizeDocument(
+      raw({
+        sourceId: "notes/hostile.md",
+        filePath: "notes/hostile.md",
+        raw: ["---", `title: ${JSON.stringify(title)}`, "---", "", "Safe body."].join("\n")
+      })
+    );
+
+    await writeOkfBundle([document], {
+      outDir,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+
+    const rootIndex = await fs.readFile(path.join(outDir, "index.md"), "utf8");
+    const parsed = parseMarkdown(rootIndex);
+    expect(parsed.markdownLinks).toEqual([{ href: "notes/hostile.md", text: title }]);
+    expect(parsed.semanticLinks).toHaveLength(1);
+    expect(rootIndex).not.toMatch(/(?<!\\)<img/);
+    expect(rootIndex).not.toContain("](https://evil.example)");
   });
 
   it("does not write root or folder index source pages as concept documents", async () => {
@@ -481,6 +522,32 @@ describe("writer and validator", () => {
       })
     ).rejects.toThrow(
       'Cannot serialize frontmatter property "payload": nesting exceeds 100 levels.'
+    );
+  });
+
+  it("rejects frontmatter alias expansion that exceeds the serialization budget", async () => {
+    const outDir = await tempOut();
+    const layers = ["  seed: &seed [leaf]"];
+    for (let depth = 1; depth <= 14; depth += 1) {
+      const previous = depth === 1 ? "seed" : `layer${depth - 1}`;
+      layers.push(`  layer${depth}: &layer${depth} [*${previous}, *${previous}]`);
+    }
+    layers.push("  value: [*layer14, *layer14]");
+    const document = normalizeDocument(
+      raw({
+        sourceId: "notes/alias-expansion.md",
+        filePath: "notes/alias-expansion.md",
+        raw: ["---", "payload:", ...layers, "---", "", "# Alias expansion"].join("\n")
+      })
+    );
+
+    await expect(
+      writeOkfBundle([document], {
+        outDir,
+        timestamp: "2026-06-14T00:00:00.000Z"
+      })
+    ).rejects.toThrow(
+      'Cannot serialize frontmatter property "payload": expansion exceeds 10000 values; reduce nested collections or YAML aliases.'
     );
   });
 
@@ -810,15 +877,6 @@ describe("writer and validator", () => {
     expect(semanticIssues).toEqual([
       {
         severity: "warning",
-        code: "missing_wikilink_fragment",
-        message:
-          'Missing fragment in Obsidian reference "../home.md#absent-heading" from notes/source.mdx to index.md.',
-        path: "notes/source.mdx",
-        rawTarget: "../home.md#absent-heading",
-        candidates: ["index.md"]
-      },
-      {
-        severity: "warning",
         code: "unresolved_wikilink",
         message: 'Unresolved Obsidian reference "Missing <script>" in notes/source.mdx.',
         path: "notes/source.mdx",
@@ -834,7 +892,7 @@ describe("writer and validator", () => {
         candidates: ["one/Setup.md", "two/Setup.md"]
       }
     ]);
-    expect(report.warningCount).toBe(3);
+    expect(report.warningCount).toBe(2);
     expect(report.issues.filter((item) => item.code === "broken_internal_link")).toEqual([]);
   });
 
@@ -856,21 +914,21 @@ describe("writer and validator", () => {
         })
       )
     ];
-    resolveVaultDocuments(documents);
+    expect(resolveVaultDocuments(documents)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "missing_wikilink_fragment",
+          rawTarget: "target#^code-only"
+        })
+      ])
+    );
     await writeOkfBundle(documents, {
       outDir,
       timestamp: "2026-06-14T00:00:00.000Z"
     });
 
     const report = await validateBundle(outDir);
-    expect(report.issues).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          code: "missing_wikilink_fragment",
-          rawTarget: "./target.md#code-only"
-        })
-      ])
-    );
+    expect(report.issues.filter((item) => item.code === "missing_wikilink_fragment")).toEqual([]);
   });
 
   it("resolves absolute bundle-relative links from bundle root", async () => {

@@ -1,6 +1,8 @@
 import path from "node:path";
 import GithubSlugger from "github-slugger";
+import { needsGeneratedTitle, slugGeneratedTitle } from "./markdown-title.js";
 import type { DocumentDiagnostic, NormalizedDocument, SemanticLink } from "./types.js";
+import { isVaultDiagnosticCode } from "./vault-diagnostics.js";
 
 type VaultEntry = {
   document: NormalizedDocument;
@@ -8,7 +10,6 @@ type VaultEntry = {
   identityPaths: Array<{
     key: string;
     stem: string;
-    basename: string;
     kind: "source" | "output";
   }>;
   names: string[];
@@ -36,12 +37,6 @@ type VaultIndex = {
   names: CandidateMap;
   foldedNames: CandidateMap;
 };
-
-const VAULT_DIAGNOSTIC_CODES = new Set([
-  "unresolved_wikilink",
-  "ambiguous_wikilink",
-  "missing_wikilink_fragment"
-]);
 
 function compareText(first: string, second: string): number {
   return first < second ? -1 : first > second ? 1 : 0;
@@ -193,13 +188,14 @@ function resolveTarget(
   const sourceRelative = normalizeVaultPath(path.posix.join(path.posix.dirname(sourceKey), target));
   const pathKind = options.pathKind ?? "source";
 
-  for (const candidates of [
-    exactPath(index, sourceRelative, pathKind),
-    exactPath(index, target, pathKind),
-    suffixOrBasename(index, target, pathKind),
-    ...(options.includeNames === false ? [] : [titleOrAlias(index, target)])
-  ]) {
-    const result = resultFor(candidates);
+  let result = resultFor(exactPath(index, sourceRelative, pathKind));
+  if (result) return result;
+  result = resultFor(exactPath(index, target, pathKind));
+  if (result) return result;
+  result = resultFor(suffixOrBasename(index, target, pathKind));
+  if (result) return result;
+  if (options.includeNames !== false) {
+    result = resultFor(titleOrAlias(index, target));
     if (result) return result;
   }
 
@@ -276,11 +272,11 @@ function indexedHeadings(document: NormalizedDocument): Set<string> {
     ])
   );
   // Keep fragment resolution aligned with the H1 that writer.withTitle will prepend.
-  if (!document.markdown.trim().match(/^#\s+/)) {
+  if (needsGeneratedTitle(document.markdown.trimStart())) {
     const generatedTitle = document.title.trim().normalize("NFC");
     if (generatedTitle) {
       headings.add(generatedTitle);
-      headings.add(new GithubSlugger().slug(generatedTitle));
+      headings.add(slugGeneratedTitle(new GithubSlugger(), generatedTitle));
     }
   }
   return headings;
@@ -312,14 +308,7 @@ function resolveLink(
     ) {
       return undefined;
     }
-    return {
-      severity: "warning",
-      code: "missing_wikilink_fragment",
-      message: `Missing fragment in Obsidian reference ${JSON.stringify(link.target)} from ${entry.sourceKey} to ${resolution.entry.sourceKey}.`,
-      sourcePath: entry.sourceKey,
-      rawTarget: link.target,
-      candidates: [resolution.entry.sourceKey]
-    };
+    return fragmentDiagnostic(entry.sourceKey, link, resolution.entry.sourceKey);
   }
   if (link.kind !== "wikilink" && link.kind !== "note_embed") return undefined;
 
@@ -361,7 +350,7 @@ function entryFor(document: NormalizedDocument): VaultEntry | undefined {
       ...(outputKey ? [{ key: outputKey, kind: "output" as const }] : [])
     ].map(({ key, kind }) => {
       const stem = stripMarkdownExtension(key);
-      return { key, stem, basename: path.posix.basename(stem), kind };
+      return { key, stem, kind };
     }),
     names: [...new Set(names)].sort(compareText),
     headings: indexedHeadings(document),
@@ -391,7 +380,7 @@ export function resolveVaultDocuments(
 
   for (const entry of entries) {
     const documentDiagnostics = (entry.document.diagnostics ?? []).filter(
-      (diagnostic) => !VAULT_DIAGNOSTIC_CODES.has(diagnostic.code)
+      (diagnostic) => !isVaultDiagnosticCode(diagnostic.code)
     );
     for (const link of entry.document.semanticLinks ?? []) {
       const diagnostic = resolveLink(entry, link, index, Boolean(options.includeMarkdownFragments));
@@ -407,7 +396,7 @@ export function resolveVaultDocuments(
     if (indexedDocuments.has(document)) continue;
     diagnostics.push(
       ...(document.diagnostics ?? []).filter(
-        (diagnostic) => !VAULT_DIAGNOSTIC_CODES.has(diagnostic.code)
+        (diagnostic) => !isVaultDiagnosticCode(diagnostic.code)
       )
     );
   }
