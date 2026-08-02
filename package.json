@@ -1,6 +1,6 @@
 {
   "name": "okfy-ai",
-  "version": "0.3.1",
+  "version": "0.3.3",
   "description": "Convert docs into Open Knowledge Format bundles and serve them to MCP agents.",
   "type": "module",
   "main": "./dist/index.js",
@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./mcp": {
+      "types": "./dist/public/mcp.d.ts",
+      "import": "./dist/public/mcp.js"
     },
     "./setup": {
       "types": "./dist/setup-artifacts.d.ts",
@@ -28,6 +32,7 @@
     "assets/logo-light.png",
     "assets/demo.gif",
     "docs/mcp-clients.md",
+    "skills",
     "examples"
   ],
   "keywords": [
@@ -44,7 +49,8 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsup src/cli.ts src/index.ts src/setup-artifacts.ts --format esm --dts --clean",
+    "build": "tsup src/cli.ts src/index.ts src/public/mcp.ts src/setup-artifacts.ts --format esm --dts --clean",
+    "pretest": "pnpm build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
@@ -52,7 +58,8 @@
     "okfy": "node dist/cli.js",
     "demo": "node dist/cli.js demo",
     "publish:npm": "node scripts/publish-npm-readme.mjs",
-    "prepublishOnly": "pnpm build && pnpm test && pnpm typecheck"
+    "prepack": "pnpm build",
+    "prepublishOnly": "pnpm test && pnpm typecheck"
   },
   "dependencies": {
     "@flowershow/remark-wiki-link": "3.3.1",

@@ -1566,7 +1566,6 @@ describe("MCP source runtime", () => {
     expect(runtime.lastRefreshError?.message).toBeTruthy();
     expect(runtime.inFlightRefresh).toBeUndefined();
   });
-
   it("does not call freshness hooks when a registered source has a load error", async () => {
     let freshnessCalls = 0;
     const runtime = await createSourceRuntime({
@@ -1583,16 +1582,31 @@ describe("MCP source runtime", () => {
     expect(await getSourceFreshness(runtime)).toMatchObject({ freshnessStatus: "failed" });
     expect(freshnessCalls).toBe(0);
   });
+
+  it("keeps refresh disabled by default for an unregistered bundle", async () => {
+    let refreshCount = 0;
+    const server = await createMcpServer({
+      bundleDir,
+      refresh: {
+        getFreshness: () => ({ freshnessStatus: "stale" }),
+        refreshIfNeeded: () => {
+          refreshCount += 1;
+        }
+      }
+    });
+    const callTool = handler(server, "tools/call");
+    await callTool({
+      method: "tools/call",
+      params: { name: "search_concepts", arguments: { query: "MCP" } }
+    });
+    expect(refreshCount).toBe(0);
+  });
 });
 
 describe("CLI smoke", () => {
-  it("runs dist validate when build output is present", async () => {
+  it("runs dist validate from the current build output", async () => {
     const cli = path.resolve("dist/cli.js");
-    try {
-      await fs.access(cli);
-    } catch {
-      return;
-    }
+    await fs.access(cli);
 
     const { stdout, stderr } = await execFileAsync(process.execPath, [
       cli,

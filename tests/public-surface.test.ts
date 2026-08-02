@@ -3,46 +3,31 @@ import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import type { InspectorReadinessSource } from "../src/index.js";
 
 const execFileAsync = promisify(execFile);
 
 describe("public surface", () => {
-  it("keeps the pre-validationIssues Inspector source shape assignable", () => {
-    const legacySource: InspectorReadinessSource = {
-      sourceName: "legacy",
-      name: "legacy",
-      label: "Legacy",
-      kind: "website",
-      seedUrl: "https://docs.example.com",
-      bundleDir: "/tmp/legacy",
-      availabilityStatus: "available",
-      validationStatus: "valid",
-      conceptCount: 1,
-      warningCount: 0,
-      brokenLinkCount: 0,
-      orphanConcepts: [],
-      freshnessStatus: "fresh",
-      refreshInProgress: false,
-      lastSuccessfulRefreshAt: null,
-      nextRefreshAllowedAt: null,
-      lastRefreshError: null
-    };
+  let demoOutput: string;
+  let versionOutput: string;
+  let serveError: string;
+  let transportError: string;
+  let maxCharsError: string;
+  let readme: string;
+  let parsedPackage: { dependencies?: Record<string, string>; version?: string };
+  let parsedManifest: Record<string, string>;
 
-    expect(legacySource.sourceName).toBe("legacy");
-  });
-
-  it("README points at public product assets and current demo output", async () => {
+  beforeAll(async () => {
     const cli = path.resolve("dist/cli.js");
     await fs.access(cli);
     const [
-      { stdout: demoOutput },
-      { stdout: versionOutput },
-      { stderr: serveError },
-      { stderr: transportError },
-      { stderr: maxCharsError },
-      readme,
+      demoResult,
+      versionResult,
+      serveResult,
+      transportResult,
+      maxCharsResult,
+      readmeContents,
       packageJson,
       manifest
     ] = await Promise.all([
@@ -75,12 +60,44 @@ describe("public surface", () => {
       fs.readFile("package.json", "utf8"),
       fs.readFile(".release-please-manifest.json", "utf8")
     ]);
-    const parsedPackage = JSON.parse(packageJson) as {
+    demoOutput = demoResult.stdout;
+    versionOutput = versionResult.stdout;
+    serveError = serveResult.stderr;
+    transportError = transportResult.stderr;
+    maxCharsError = maxCharsResult.stderr;
+    readme = readmeContents;
+    parsedPackage = JSON.parse(packageJson) as {
       dependencies?: Record<string, string>;
       version?: string;
     };
-    const parsedManifest = JSON.parse(manifest) as Record<string, string>;
+    parsedManifest = JSON.parse(manifest) as Record<string, string>;
+  });
 
+  it("keeps the pre-validationIssues Inspector source shape assignable", () => {
+    const legacySource: InspectorReadinessSource = {
+      sourceName: "legacy",
+      name: "legacy",
+      label: "Legacy",
+      kind: "website",
+      seedUrl: "https://docs.example.com",
+      bundleDir: "/tmp/legacy",
+      availabilityStatus: "available",
+      validationStatus: "valid",
+      conceptCount: 1,
+      warningCount: 0,
+      brokenLinkCount: 0,
+      orphanConcepts: [],
+      freshnessStatus: "fresh",
+      refreshInProgress: false,
+      lastSuccessfulRefreshAt: null,
+      nextRefreshAllowedAt: null,
+      lastRefreshError: null
+    };
+
+    expect(legacySource.sourceName).toBe("legacy");
+  });
+
+  it("keeps CLI demo and validation errors on the public contract", () => {
     for (const expected of [
       "Offline bundle: examples/bundles/okfy-docs",
       "OKF bundle valid",
@@ -90,16 +107,21 @@ describe("public surface", () => {
     ]) {
       expect(demoOutput).toContain(expected);
     }
-    expect(parsedPackage.version).not.toBe("0.3.0");
-    expect(parsedPackage.dependencies).not.toHaveProperty("gray-matter");
-    expect(parsedPackage.dependencies?.["js-yaml"]).toMatch(/^\^4\./);
     expect(versionOutput.trim()).toBe(parsedPackage.version);
-    expect(parsedManifest["."]).toBe(parsedPackage.version);
     expect(serveError).toContain("Only MCP server mode is supported.");
     expect(transportError).toContain("Only stdio transport is supported.");
     expect(maxCharsError).toContain("Expected max-result-chars to be an integer >= 1");
     expect(`${serveError}\n${transportError}\n${maxCharsError}`).not.toContain("v0.1");
+  });
 
+  it("keeps package and release versions aligned", () => {
+    expect(parsedPackage.version).not.toBe("0.3.0");
+    expect(parsedPackage.dependencies).not.toHaveProperty("gray-matter");
+    expect(parsedPackage.dependencies?.["js-yaml"]).toMatch(/^\^4\./);
+    expect(parsedManifest["."]).toBe(parsedPackage.version);
+  });
+
+  it("README points at public product assets and documents current workflows", () => {
     expect(readme).toContain("![okfy terminal demo](assets/demo.gif)");
     expect(readme).toContain(
       '<source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.png">'
@@ -118,16 +140,14 @@ describe("public surface", () => {
     expect(readme).toContain("node-20%2B");
     expect(readme).not.toContain("Node.js >=20");
     expect(readme).toContain("[docs/mcp-clients.md](docs/mcp-clients.md)");
-    expect(readme.indexOf("## Use With Agents")).toBeGreaterThan(-1);
-    expect(readme.indexOf("## Use With Agents")).toBeLessThan(
-      readme.indexOf("## Activation Packet")
-    );
-    expect(readme.indexOf("## Activation Packet")).toBeLessThan(
-      readme.indexOf("## Preview The Inspector")
-    );
-    expect(readme.indexOf("## Preview The Inspector")).toBeLessThan(
-      readme.indexOf("## Project Stack Workspaces")
-    );
+    expect(readme).toContain("Give coding agents searchable, source-linked documentation—locally.");
+    expect(readme).toContain("## Quickstart");
+    expect(readme).toContain("## Why OKFy");
+    expect(readme).toContain("## Connect Your Agent");
+    expect(readme).toContain("## Project Stack Workspaces");
+    expect(readme).toContain("## Inspect And Share A Bundle");
+    expect(readme).toContain("answer with original source references");
+    expect(readme).toContain("No embedding service or LLM API key is required.");
     expect(readme).toContain(
       "npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client codex"
     );
@@ -144,18 +164,19 @@ describe("public surface", () => {
     expect(readme).toContain("npx -y okfy-ai doctor stripe clerk --client codex");
     expect(readme).toContain("npx -y okfy-ai serve stripe clerk --mcp --auto-refresh");
     expect(readme).toContain(
-      'npx -y okfy-ai import ./docs/api --out ./okf/api-docs --source-name "API docs" --force'
+      'npx -y okfy-ai import ./docs/api --out ./okf/api-docs --source-name "API docs"'
     );
     expect(readme).toContain(
-      'npx -y okfy-ai import ./docs/product --out ./okf/product-docs --source-name "Product docs" --force'
+      'npx -y okfy-ai import ./docs/product --out ./okf/product-docs --source-name "Product docs"'
     );
+    expect(readme).not.toContain('--source-name "API docs" --force');
+    expect(readme).not.toContain('--source-name "Product docs" --force');
     expect(readme).toContain("npx -y okfy-ai serve ./okf/api-docs ./okf/product-docs --mcp");
-    expect(readme).toContain("[mcp_servers.stripe_clerk_okf]");
     expect(readme).toContain('"source": "stripe"');
-    expect(readme).toContain("Start workspace sessions with `bundle_summary`");
+    expect(readme).toContain("Use `bundle_summary` at the start of a workspace session");
     expect(readme).toContain("claude mcp add --transport stdio stripe-okf");
-    expect(readme).toContain(".cursor/mcp.json");
     expect(readme).toContain("[mcp_servers.stripe_okf]");
+    expect(readme).toContain("[skills/okfy/SKILL.md](skills/okfy/SKILL.md)");
   });
 
   it("ships public README assets", async () => {
@@ -193,13 +214,20 @@ describe("public surface", () => {
   });
 
   it("keeps npm package contents public and self-contained", async () => {
-    const { stdout } = await execFileAsync("npm", ["pack", "--dry-run", "--json"]);
+    const { stdout } = await execFileAsync("npm", [
+      "pack",
+      "--ignore-scripts",
+      "--dry-run",
+      "--json"
+    ]);
     const pack = JSON.parse(stdout) as Array<{ files: Array<{ path: string }> }>;
     const files = pack[0]?.files.map((file) => file.path).sort() ?? [];
 
     expect(files).toContain("README.md");
     expect(files).toContain("dist/setup-artifacts.js");
     expect(files).toContain("dist/setup-artifacts.d.ts");
+    expect(files).toContain("dist/public/mcp.js");
+    expect(files).toContain("dist/public/mcp.d.ts");
     expect(files).toContain("assets/logo-dark.png");
     expect(files).toContain("assets/logo-light.png");
     expect(files).not.toContain("assets/logo.png");
@@ -207,6 +235,8 @@ describe("public surface", () => {
     expect(files).toContain("assets/demo.gif");
     expect(files).toContain("docs/mcp-clients.md");
     expect(files).toContain("examples/bundles/okfy-docs/index.md");
+    expect(files).toContain("skills/okfy/SKILL.md");
+    expect(files).toContain("skills/okfy/agents/openai.yaml");
     expect(files.some((file) => file.startsWith("launch/"))).toBe(false);
     expect(files.some((file) => file.startsWith("docs/plans/"))).toBe(false);
     expect(files.some((file) => file.startsWith("docs/brainstorms/"))).toBe(false);
@@ -215,11 +245,46 @@ describe("public surface", () => {
     expect(files).not.toContain("docs/okfy-mcp-prd.md");
   });
 
+  it("ships an official OKFy agent skill", async () => {
+    const [skill, openaiYaml] = await Promise.all([
+      fs.readFile("skills/okfy/SKILL.md", "utf8"),
+      fs.readFile("skills/okfy/agents/openai.yaml", "utf8")
+    ]);
+
+    expect(skill).toMatch(/^---\nname: okfy\ndescription: Use when /);
+    expect(skill).toContain("# OKFy");
+    expect(skill).toContain("npx -y okfy-ai init <name> <url> --client codex");
+    expect(skill).toContain(
+      'npx -y okfy-ai import ./docs --out ./docs-okf --source-name "Project docs"'
+    );
+    expect(skill).not.toContain(
+      'npx -y okfy-ai import ./docs --out ./docs-okf --source-name "Project docs" --force'
+    );
+    expect(skill).toContain("Only add `--force` after the user explicitly approves overwriting");
+    expect(skill).toContain("npx -y okfy-ai activate <name-or-bundle>");
+    expect(skill).toContain("npx -y okfy-ai doctor <name>");
+    expect(skill).toContain("npx -y okfy-ai map <name-or-bundle>");
+    expect(skill).toContain("npx -y okfy-ai serve <name-or-bundle> --mcp --auto-refresh");
+    expect(skill).toContain("bundle_summary");
+    expect(skill).toContain("search_concepts");
+    expect(skill).toContain("read_concept");
+    expect(skill).toContain("get_neighbors");
+    expect(skill).toContain("Use `source` filters");
+    expect(skill).toContain("MCP tools are read-only");
+    expect(skill).not.toContain("npx okfy ");
+    expect(openaiYaml).toContain('display_name: "OKFy"');
+    expect(openaiYaml).toContain("short_description:");
+    expect(openaiYaml).toContain("default_prompt:");
+    expect(openaiYaml).toContain("okfy");
+    expect(openaiYaml).toContain("MCP");
+  });
+
   it("imports only declared package API from a clean npm install", async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "okfy-package-"));
     try {
       const { stdout } = await execFileAsync("npm", [
         "pack",
+        "--ignore-scripts",
         "--json",
         "--pack-destination",
         tempRoot
@@ -237,49 +302,65 @@ describe("public surface", () => {
       );
 
       const script = String.raw`
-        const requiredRootKeys = [
+        const expectedRootKeys = [
           "BundleSearch",
           "MCP_TOOL_NAMES",
           "WorkspaceError",
           "WorkspaceSearch",
+          "assertSafeForceOutDir",
           "assertUniqueWorkspaceRecordNames",
           "buildActivationPacket",
           "buildBundleInspectorReport",
+          "buildGraph",
           "buildWorkspaceInspectorReport",
           "bundleSourceName",
+          "crawlWebsite",
           "createMcpServer",
           "createWorkspaceMcpServer",
-          "crawlWebsite",
+          "descriptionFromMarkdown",
+          "evaluateFreshness",
           "extractHeadings",
+          "extractInternalLinks",
           "extractMarkdownLinks",
+          "hashBundleContents",
           "importLocal",
+          "inferTags",
+          "inferType",
           "inspectBundle",
+          "isRegisteredWorkspaceRecord",
+          "listSources",
           "localBundleRecord",
           "normalizeDocument",
           "okfyUserAgent",
           "packageMetadata",
           "packageVersion",
+          "parseDurationSeconds",
+          "protectedActivationInputPaths",
           "readBundle",
           "readConceptFile",
+          "readRefreshState",
+          "readSourceManifest",
+          "readSourceRecord",
+          "readWorkspaceProfile",
+          "refreshSource",
+          "removeSource",
           "renderActivationSetupMarkdown",
+          "resolveBundleDir",
+          "resolveOkfyHome",
+          "resolveSourceDir",
+          "resolveWorkspaceSources",
+          "runtimePackageRoot",
           "serveMcpStdio",
           "serveWorkspaceMcpStdio",
           "validateBundle",
+          "validateSourceName",
           "withActivationMetadata",
+          "workspaceProfilePath",
           "writeActivationPacketFiles",
-          "writeOkfBundle"
-        ].sort();
-        const legacyRootKeys = [
-          "evaluateFreshness",
-          "hashBundleContents",
-          "listSources",
-          "parseDurationSeconds",
-          "readRefreshState",
-          "readSourceManifest",
-          "refreshSource",
-          "resolveOkfyHome",
+          "writeOkfBundle",
           "writeRefreshState",
-          "writeSourceManifest"
+          "writeSourceManifest",
+          "writeWorkspaceProfile"
         ].sort();
         const expectedSetupKeys = [
           "codexMcpServerName",
@@ -292,18 +373,25 @@ describe("public surface", () => {
           "serveCommand",
           "serveCommandArgs"
         ].sort();
+        const expectedMcpKeys = [
+          "MCP_TOOL_NAMES",
+          "createMcpServer",
+          "createWorkspaceMcpServer",
+          "serveMcpStdio",
+          "serveWorkspaceMcpStdio"
+        ].sort();
         const root = await import("okfy-ai");
+        const mcp = await import("okfy-ai/mcp");
         const setup = await import("okfy-ai/setup");
         const actualRootKeys = Object.keys(root).sort();
-        for (const key of requiredRootKeys) {
-          if (!(key in root)) throw new Error("Missing root export: " + key);
-        }
-        for (const key of legacyRootKeys) {
-          if (typeof root[key] !== "function") {
-            throw new Error("Missing legacy root export: " + key);
-          }
+        if (JSON.stringify(actualRootKeys) !== JSON.stringify(expectedRootKeys)) {
+          throw new Error("Unexpected root exports: " + actualRootKeys.join(", "));
         }
         const actualSetupKeys = Object.keys(setup).sort();
+        const actualMcpKeys = Object.keys(mcp).sort();
+        if (JSON.stringify(actualMcpKeys) !== JSON.stringify(expectedMcpKeys)) {
+          throw new Error("Unexpected MCP exports: " + actualMcpKeys.join(", "));
+        }
         if (JSON.stringify(actualSetupKeys) !== JSON.stringify(expectedSetupKeys)) {
           throw new Error("Unexpected setup exports: " + actualSetupKeys.join(", "));
         }
@@ -367,6 +455,8 @@ describe("public surface", () => {
         await expectBlocked("okfy-ai/src/source-store.js");
         await expectBlocked("okfy-ai/dist/index.js");
         await expectBlocked("okfy-ai/dist/markdown-ast.js");
+        await expectBlocked("okfy-ai/bundles");
+        await expectBlocked("okfy-ai/sources");
         console.log("ok");
       `;
       await expect(
@@ -422,6 +512,10 @@ describe("public surface", () => {
       types: "./dist/setup-artifacts.d.ts",
       import: "./dist/setup-artifacts.js"
     });
+    expect(parsed.exports?.["./mcp"]).toEqual({
+      types: "./dist/public/mcp.d.ts",
+      import: "./dist/public/mcp.js"
+    });
     await expect(
       execFileAsync(process.execPath, [
         "--input-type=module",
@@ -435,6 +529,7 @@ describe("public surface", () => {
     expect(readme).toContain("You do not need global install for MCP configs.");
     expect(readme).toContain("MCP clients start it as a subprocess");
     expect(readme).toContain("Programmatic imports remain compatible");
+    expect(readme).toContain('from "okfy-ai/mcp"');
     expect(readme).toContain("New setup-only code can import");
     expect(readme).toContain("Preflight DNS-resolved private targets");
     expect(readme).toContain("The MCP server exposes read-only tools.");
@@ -450,6 +545,7 @@ describe("public surface", () => {
       "`okfy-ai` is the npm package name. `okfy` is the installed CLI command."
     );
     expect(npmReadme).toContain("Programmatic imports remain compatible");
+    expect(npmReadme).toContain('from "okfy-ai/mcp"');
     expect(npmReadme).toContain("New setup-only code can import");
     expect(npmReadme).toContain("Preflight DNS-resolved private targets");
     expect(npmReadme).toContain(
@@ -462,8 +558,9 @@ describe("public surface", () => {
       expect(documentation).toContain("unresolved_wikilink");
     }
     expect(npmReadme).toContain(
-      "Turn docs into agent-readable Open Knowledge Format v0.1-conformant bundles, then serve them to Claude, Codex, Cursor"
+      "Give coding agents searchable, source-linked documentation—locally."
     );
+    expect(npmReadme).toContain("no hosted index, embedding service, or LLM API key");
     expect(npmReadme).toContain("Preview what your agent will know");
     expect(npmReadme).toContain(
       "npx -y okfy-ai activate stripe --client codex --out okfy-activation"
@@ -471,18 +568,11 @@ describe("public surface", () => {
     expect(npmReadme).toContain("okfy-proof.json");
     expect(npmReadme).toContain("npx -y okfy-ai map stripe --out okfy-inspector.html");
     expect(npmReadme).toContain("local static HTML Inspector");
-    expect(npmReadme.indexOf("## Use With Agents")).toBeLessThan(
-      npmReadme.indexOf("## Optional CLI Install")
-    );
-    expect(npmReadme.indexOf("## Use With Agents")).toBeLessThan(
-      npmReadme.indexOf("## Activation Packet")
-    );
-    expect(npmReadme.indexOf("## Activation Packet")).toBeLessThan(
-      npmReadme.indexOf("## Preview The Inspector")
-    );
-    expect(npmReadme.indexOf("## Preview The Inspector")).toBeLessThan(
-      npmReadme.indexOf("## Multi-Source Workspaces")
-    );
+    expect(npmReadme).toContain("## Quickstart");
+    expect(npmReadme).toContain("## Why OKFy");
+    expect(npmReadme).toContain("## Connect An MCP Client");
+    expect(npmReadme).toContain("## Multi-Source Workspaces");
+    expect(npmReadme).toContain("## Inspect And Share");
     expect(npmReadme).toContain(
       "npx -y okfy-ai init stripe https://docs.stripe.com/checkout --client generic"
     );
@@ -490,16 +580,15 @@ describe("public surface", () => {
     expect(npmReadme).toContain("npx -y okfy-ai doctor stripe clerk --client codex");
     expect(npmReadme).toContain("npx -y okfy-ai serve stripe clerk --mcp --auto-refresh");
     expect(npmReadme).toContain(
-      'npx -y okfy-ai import ./docs/api --out ./okf/api-docs --source-name "API docs" --force'
+      'npx -y okfy-ai import ./docs/api --out ./okf/api-docs --source-name "API docs"'
     );
     expect(npmReadme).toContain(
-      'npx -y okfy-ai import ./docs/product --out ./okf/product-docs --source-name "Product docs" --force'
+      'npx -y okfy-ai import ./docs/product --out ./okf/product-docs --source-name "Product docs"'
     );
+    expect(npmReadme).not.toContain('--source-name "API docs" --force');
+    expect(npmReadme).not.toContain('--source-name "Product docs" --force');
     expect(npmReadme).toContain("npx -y okfy-ai serve ./okf/api-docs ./okf/product-docs --mcp");
-    expect(npmReadme).toContain("[mcp_servers.stripe_clerk_okf]");
-    expect(npmReadme).toContain("Search and list tools accept a `source` filter");
-    expect(npmReadme).toContain("okfy init <name> <url>");
-    expect(npmReadme).toContain("okfy doctor <name> [more-names...]");
+    expect(npmReadme).toContain("Search and read tools accept a `source` filter");
     expect(npmReadme).toContain("claude mcp add --transport stdio stripe-okf");
     expect(npmReadme).toContain("[mcp_servers.stripe_okf]");
     expect(npmReadme).not.toContain("assets/logo.svg");

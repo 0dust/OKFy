@@ -1,35 +1,21 @@
 # Releasing
 
-okfy uses release-please to prepare releases and a GitHub Actions release workflow to publish the npm package.
+okfy publishes `okfy-ai` to npm manually. Do not use or add GitHub Actions release automation for npm publishing unless the project explicitly adopts that later.
+
+For the step-by-step npm release procedure, use [Manual npm Publishing](./npm-publishing.md).
 
 ## Normal Flow
 
 1. Merge changes to `main` using Conventional Commit prefixes such as `fix:`, `feat:`, and `docs:`.
-2. Release Please opens or updates a release PR.
-3. Review and merge the release PR when ready.
-4. Release Please creates the `vX.Y.Z` tag and GitHub Release.
-5. The `Release` workflow verifies, packs, and publishes `okfy-ai` to npm.
-
-## Required Secret
-
-Add this repository secret:
-
-```text
-NPM_TOKEN
-```
-
-The token must have publish access for `okfy-ai`.
-
-## Manual Dry Run
-
-Run the `Release` workflow manually with `dry_run=true`. It builds, tests, and packs, but does not publish.
-
-## Manual Publish
-
-Manual publish is available only through the `Release` workflow with `dry_run=false`. Prefer the normal release-please path.
+2. Bump the release surfaces on the release branch before publishing:
+   - `package.json`
+   - `.release-please-manifest.json`
+   - `scripts/npm-readme.md` when npm-facing docs changed
+3. Publish manually with `pnpm publish:npm` from a clean checkout of latest `main`.
+4. Verify the registry and fresh `npx` installs.
 
 ## Publish Helper
 
-The workflow and local `pnpm publish:npm` script both call `scripts/publish-npm-readme.mjs`. That helper rebuilds, tests, typechecks, temporarily swaps in the npm README, and restores the GitHub README on exit.
+The local `pnpm publish:npm` script calls `scripts/publish-npm-readme.mjs`. That helper rebuilds, tests, typechecks, temporarily swaps in the npm README, publishes, and restores the GitHub README on exit.
 
-Use the script for local package-shape checks or emergency maintainer publishing only. The supported release path remains Release Please plus the `Release` workflow.
+The npm package page renders `scripts/npm-readme.md`, not the GitHub README.

@@ -113,7 +113,6 @@ export function startSourceRefresh(
 ): Promise<void> | undefined {
   if (!runtime.refresh?.refreshIfNeeded) return undefined;
   if (runtime.inFlightRefresh) return runtime.inFlightRefresh;
-
   const refreshPromise = Promise.resolve().then(async () => {
     try {
       const result = await runtime.refresh?.refreshIfNeeded?.({
@@ -177,7 +176,6 @@ export function sourceFreshnessFields(runtime: SourceRuntime): SourceFreshnessFi
     nextRefreshAllowedAt: normalized.nextRefreshAllowedAt
   };
 }
-
 export function errorDetails(error: unknown): RefreshErrorDetails {
   if (error instanceof Error) return { message: error.message };
   if (typeof error === "string") return { message: error };
