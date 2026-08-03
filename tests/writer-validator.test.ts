@@ -2,12 +2,15 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildGraph } from "../src/graph.js";
+import { buildGraph, extractInternalLinks } from "../src/graph.js";
+import { importLocal } from "../src/importer.js";
+import { parseMarkdown } from "../src/markdown-ast.js";
 import { normalizeDocument } from "../src/normalize.js";
 import { readBundle } from "../src/reader.js";
 import { validateBundle } from "../src/validate.js";
+import { resolveVaultDocuments } from "../src/vault-index.js";
 import { assertSafeForceOutDir, writeOkfBundle } from "../src/writer.js";
-import type { NormalizedDocument, RawDocument } from "../src/types.js";
+import type { Concept, NormalizedDocument, RawDocument } from "../src/types.js";
 
 const fixtureRoot = path.resolve("test-fixtures");
 const tempDirs: string[] = [];
@@ -29,6 +32,208 @@ function raw(
 }
 
 describe("writer and validator", () => {
+  it("preserves opening brackets in portable wikilink labels", async () => {
+    const outDir = await tempOut();
+    const documents = [
+      normalizeDocument(
+        raw({
+          sourceId: "source.md",
+          filePath: "source.md",
+          raw: "# Source\n\n[[Target|A [ bracket]]"
+        })
+      ),
+      normalizeDocument(raw({ sourceId: "Target.md", filePath: "Target.md", raw: "# Target" }))
+    ];
+
+    expect(resolveVaultDocuments(documents)).toEqual([]);
+    await writeOkfBundle(documents, { outDir, timestamp: "2026-06-14T00:00:00.000Z" });
+
+    const source = await fs.readFile(path.join(outDir, "source.md"), "utf8");
+    const parsed = parseMarkdown(source);
+    expect(source).toContain("[A \\[ bracket](./target.md)");
+    expect(parsed.markdownLinks).toEqual([{ href: "./target.md", text: "A [ bracket" }]);
+  });
+
+  it.each([
+    { label: "Markdown", contentType: "markdown" as const, extension: "md" },
+    { label: "MDX", contentType: "mdx" as const, extension: "mdx" }
+  ])("renders punctuation-heavy Obsidian aliases as literal $label link text", async (variant) => {
+    const outDir = await tempOut();
+    const aliases = ["*stars*", "_under_", "`tick`", "~~strike~~", "&copy;", "<x>"];
+    const embedAlias = "*embedded*";
+    const sourcePath = `source.${variant.extension}`;
+    const source = normalizeDocument({
+      ...raw({
+        sourceId: sourcePath,
+        filePath: sourcePath,
+        raw: `# Source\n\n${aliases
+          .map((alias) => `[[Target|${alias}]]`)
+          .join(" ")} ![[Target|${embedAlias}]]`
+      }),
+      contentType: variant.contentType
+    });
+    const target = normalizeDocument(
+      raw({ sourceId: "Target.md", filePath: "Target.md", raw: "# Target" })
+    );
+
+    expect(source.semanticLinks?.map((link) => [link.kind, link.text])).toEqual([
+      ...aliases.map((alias) => ["wikilink", alias]),
+      ["note_embed", embedAlias]
+    ]);
+    expect(resolveVaultDocuments([source, target])).toEqual([]);
+    await writeOkfBundle([source, target], {
+      outDir,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+
+    const concepts = await readBundle(outDir);
+    const renderedSource = concepts.get("source")!;
+    const parsed = parseMarkdown(renderedSource.body, { mdx: variant.contentType === "mdx" });
+    expect(parsed.markdownLinks.map((link) => link.text)).toEqual([...aliases, embedAlias]);
+    expect(parsed.semanticLinks).toHaveLength(aliases.length + 1);
+    expect(buildGraph(concepts).outbound.get("source")).toEqual(["target"]);
+    await expect(validateBundle(outDir)).resolves.toMatchObject({ valid: true, warningCount: 0 });
+  });
+
+  it.each([
+    { label: "Markdown", contentType: "markdown" as const, extension: "md" },
+    { label: "MDX", contentType: "mdx" as const, extension: "mdx" }
+  ])("escapes a generated $label title as literal heading text", async (variant) => {
+    const outDir = await tempOut();
+    const sourcePath = `source.${variant.extension}`;
+    const title = "<x> { [[Missing]] *stars* _under_ `tick` ~~strike~~ &copy;";
+    const document = normalizeDocument({
+      ...raw({
+        sourceId: sourcePath,
+        filePath: sourcePath,
+        raw: [
+          "---",
+          `title: ${JSON.stringify(title)}`,
+          "---",
+          "",
+          "Body without a leading H1."
+        ].join("\n")
+      }),
+      contentType: variant.contentType
+    });
+    expect(document.title).toBe(title);
+
+    await writeOkfBundle([document], {
+      outDir,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+
+    const concepts = await readBundle(outDir);
+    const renderedSource = concepts.get("source")!;
+    const parsed = parseMarkdown(renderedSource.body, { mdx: variant.contentType === "mdx" });
+    expect(renderedSource.title).toBe(title);
+    expect(parsed.headings[0]?.text).toBe(title);
+    expect(parsed.semanticLinks).toEqual([]);
+    expect(buildGraph(concepts).outbound.get("source")).toEqual([]);
+    await expect(validateBundle(outDir)).resolves.toMatchObject({ valid: true, warningCount: 0 });
+  });
+
+  it("keeps leading indented Markdown code inert when adding a title", async () => {
+    const outDir = await tempOut();
+    const sourcePath = "source.md";
+    const code = "    [[Missing]] #hidden ^block";
+    const document = normalizeDocument(
+      raw({ sourceId: sourcePath, filePath: sourcePath, raw: code })
+    );
+    document.title = "Source";
+
+    expect(document.markdown).toBe(code);
+    expect(document.semanticLinks).toBeUndefined();
+    expect(document.inlineTags).toBeUndefined();
+    expect(document.blockIds).toBeUndefined();
+    await writeOkfBundle([document], {
+      outDir,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+
+    const concepts = await readBundle(outDir);
+    const renderedSource = concepts.get("source")!;
+    expect(renderedSource.body).toBe(`# Source\n\n${code}`);
+    const parsed = parseMarkdown(renderedSource.body);
+    expect(parsed.semanticLinks).toEqual([]);
+    expect(parsed.inlineTags).toEqual([]);
+    expect(parsed.blockIds).toEqual([]);
+    expect(buildGraph(concepts).outbound.get("source")).toEqual([]);
+    await expect(validateBundle(outDir)).resolves.toMatchObject({ valid: true, warningCount: 0 });
+  });
+
+  it("reports source wikilink fragments without relabeling portable Markdown output", async () => {
+    const root = await tempOut();
+    const input = path.join(root, "vault");
+    const outDir = path.join(root, "bundle");
+    await fs.mkdir(input);
+    await fs.writeFile(
+      path.join(input, "Source.md"),
+      "# Source\n\n[[Target#Target]] [[Target#Absent]]\n",
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(input, "Target.md"),
+      "---\ntitle: Target\n---\n\nBody without a leading H1.\n",
+      "utf8"
+    );
+
+    const imported = await importLocal({
+      inputPath: input,
+      outDir,
+      force: true,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+    const importedFragments = imported.diagnostics.filter(
+      (diagnostic) => diagnostic.code === "missing_wikilink_fragment"
+    );
+
+    expect(importedFragments).toEqual([
+      {
+        severity: "warning",
+        code: "missing_wikilink_fragment",
+        message:
+          'Missing fragment in Obsidian reference "Target#Absent" from Source.md to Target.md.',
+        sourcePath: "Source.md",
+        rawTarget: "Target#Absent",
+        candidates: ["Target.md"]
+      }
+    ]);
+    await expect(fs.readFile(path.join(outDir, "target.md"), "utf8")).resolves.toContain(
+      "# Target\n\nBody without a leading H1."
+    );
+
+    const report = await validateBundle(outDir);
+    expect(report.issues.filter((item) => item.code === "missing_wikilink_fragment")).toEqual([]);
+  });
+
+  it("keeps links to source headings correct when a generated H1 has the same title", async () => {
+    const outDir = await tempOut();
+    const source = normalizeDocument(
+      raw({ sourceId: "Source.md", filePath: "Source.md", raw: "# Source\n\n[[Target#Setup]]" })
+    );
+    const target = normalizeDocument(
+      raw({
+        sourceId: "Target.md",
+        filePath: "Target.md",
+        raw: ["---", "title: Setup", "---", "", "## Setup", "", "Detailed steps."].join("\n")
+      })
+    );
+
+    expect(resolveVaultDocuments([source, target])).toEqual([]);
+    await writeOkfBundle([source, target], {
+      outDir,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+
+    await expect(fs.readFile(path.join(outDir, "source.md"), "utf8")).resolves.toContain(
+      "[Setup](./target.md#setup-1)"
+    );
+    await expect(fs.readFile(path.join(outDir, "target.md"), "utf8")).resolves.toContain(
+      "# Setup\n\n## Setup"
+    );
+  });
+
   it("writes valid OKF bundles with index and rewritten internal source links", async () => {
     const outDir = await tempOut();
     const docs: NormalizedDocument[] = [
@@ -75,6 +280,30 @@ describe("writer and validator", () => {
     expect(report.valid).toBe(true);
     expect(report.conceptCount).toBe(2);
     expect(report.issues.filter((issue) => issue.severity === "error")).toEqual([]);
+  });
+
+  it("renders hostile frontmatter titles as literal text in generated indexes", async () => {
+    const outDir = await tempOut();
+    const title = "[Click](https://evil.example) <img src=x onerror=alert(1)> [[Missing]]";
+    const document = normalizeDocument(
+      raw({
+        sourceId: "notes/hostile.md",
+        filePath: "notes/hostile.md",
+        raw: ["---", `title: ${JSON.stringify(title)}`, "---", "", "Safe body."].join("\n")
+      })
+    );
+
+    await writeOkfBundle([document], {
+      outDir,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+
+    const rootIndex = await fs.readFile(path.join(outDir, "index.md"), "utf8");
+    const parsed = parseMarkdown(rootIndex);
+    expect(parsed.markdownLinks).toEqual([{ href: "notes/hostile.md", text: title }]);
+    expect(parsed.semanticLinks).toHaveLength(1);
+    expect(rootIndex).not.toMatch(/(?<!\\)<img/);
+    expect(rootIndex).not.toContain("](https://evil.example)");
   });
 
   it("does not write root or folder index source pages as concept documents", async () => {
@@ -152,6 +381,332 @@ describe("writer and validator", () => {
     await expect(fs.readFile(path.join(firstOutDir, "page-2.md"), "utf8")).resolves.toBe(
       await fs.readFile(path.join(secondOutDir, "page-2.md"), "utf8")
     );
+  });
+
+  it("merges source properties into one canonical deterministic frontmatter block", async () => {
+    const outDir = await tempOut();
+    const doc = normalizeDocument(
+      raw({
+        sourceId: "notes/canonical.md",
+        filePath: "notes/canonical.md",
+        raw: [
+          "---",
+          "timestamp: 1999-01-01",
+          "zeta: last",
+          "resource: https://malicious.example/override",
+          "description: Source-authored description",
+          "aliases: [Canonical, Stable Note]",
+          "tags: [Explicit, shared]",
+          "title: Canonical Title",
+          "type: Runbook",
+          "alpha:",
+          "  owner: docs",
+          "  flags: [stable, reviewed]",
+          "---",
+          "",
+          "# Inferred Title",
+          "",
+          "Untouched body with #Shared and #InlineTag."
+        ].join("\n")
+      })
+    );
+
+    await writeOkfBundle([doc], {
+      outDir,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+
+    const rendered = await fs.readFile(path.join(outDir, "notes/canonical.md"), "utf8");
+    const concept = (await readBundle(outDir)).get("notes/canonical");
+    const orderedKeys = [...rendered.matchAll(/^([a-z][a-z0-9_-]*):/gm)].map((match) => match[1]);
+
+    expect(orderedKeys).toEqual([
+      "type",
+      "title",
+      "description",
+      "resource",
+      "tags",
+      "aliases",
+      "timestamp",
+      "alpha",
+      "zeta"
+    ]);
+    expect(rendered.match(/^---$/gm)).toHaveLength(2);
+    expect(rendered).not.toContain("https://malicious.example/override");
+    expect(rendered).not.toContain("timestamp: 1999-01-01");
+    expect(concept).toMatchObject({
+      type: "Runbook",
+      title: "Canonical Title",
+      description: "Source-authored description",
+      resource: "notes/canonical.md",
+      aliases: ["Canonical", "Stable Note"],
+      frontmatter: {
+        alpha: { owner: "docs", flags: ["stable", "reviewed"] },
+        zeta: "last"
+      },
+      body: "# Inferred Title\n\nUntouched body with #Shared and #InlineTag."
+    });
+    expect(concept?.tags.slice(0, 3)).toEqual(["explicit", "shared", "inlinetag"]);
+  });
+
+  it("rejects cyclic and excessively deep frontmatter values with useful errors", async () => {
+    const importedOutDir = await tempOut();
+    const imported = normalizeDocument(
+      raw({
+        sourceId: "notes/cyclic.md",
+        filePath: "notes/cyclic.md",
+        raw: ["---", "payload: &payload [*payload]", "---", "", "# Cyclic"].join("\n")
+      })
+    );
+
+    await expect(
+      writeOkfBundle([imported], {
+        outDir: importedOutDir,
+        timestamp: "2026-06-14T00:00:00.000Z"
+      })
+    ).rejects.toThrow(
+      'Cannot serialize frontmatter property "payload": cyclic value at payload[0].'
+    );
+
+    const programmedCycleOutDir = await tempOut();
+    const programmedCycle = normalizeDocument(
+      raw({
+        sourceId: "notes/programmed-cycle.md",
+        filePath: "notes/programmed-cycle.md",
+        raw: "# Programmed cycle"
+      })
+    );
+    const cyclicValue: unknown[] = [];
+    cyclicValue.push(cyclicValue);
+    programmedCycle.properties = {
+      data: { payload: cyclicValue },
+      range: { start: 0, end: 0 },
+      aliases: [],
+      tags: []
+    };
+
+    await expect(
+      writeOkfBundle([programmedCycle], {
+        outDir: programmedCycleOutDir,
+        timestamp: "2026-06-14T00:00:00.000Z"
+      })
+    ).rejects.toThrow(
+      'Cannot serialize frontmatter property "payload": cyclic value at payload[0].'
+    );
+
+    const programmedOutDir = await tempOut();
+    const programmed = normalizeDocument(
+      raw({
+        sourceId: "notes/deep.md",
+        filePath: "notes/deep.md",
+        raw: "# Deep"
+      })
+    );
+    let deepValue: Record<string, unknown> = {};
+    programmed.properties = {
+      data: { payload: deepValue },
+      range: { start: 0, end: 0 },
+      aliases: [],
+      tags: []
+    };
+    for (let depth = 0; depth < 101; depth += 1) {
+      const child: Record<string, unknown> = {};
+      deepValue.child = child;
+      deepValue = child;
+    }
+
+    await expect(
+      writeOkfBundle([programmed], {
+        outDir: programmedOutDir,
+        timestamp: "2026-06-14T00:00:00.000Z"
+      })
+    ).rejects.toThrow(
+      'Cannot serialize frontmatter property "payload": nesting exceeds 100 levels.'
+    );
+  });
+
+  it("rejects frontmatter alias expansion that exceeds the serialization budget", async () => {
+    const outDir = await tempOut();
+    const layers = ["  seed: &seed [leaf]"];
+    for (let depth = 1; depth <= 14; depth += 1) {
+      const previous = depth === 1 ? "seed" : `layer${depth - 1}`;
+      layers.push(`  layer${depth}: &layer${depth} [*${previous}, *${previous}]`);
+    }
+    layers.push("  value: [*layer14, *layer14]");
+    const document = normalizeDocument(
+      raw({
+        sourceId: "notes/alias-expansion.md",
+        filePath: "notes/alias-expansion.md",
+        raw: ["---", "payload:", ...layers, "---", "", "# Alias expansion"].join("\n")
+      })
+    );
+
+    await expect(
+      writeOkfBundle([document], {
+        outDir,
+        timestamp: "2026-06-14T00:00:00.000Z"
+      })
+    ).rejects.toThrow(
+      'Cannot serialize frontmatter property "payload": expansion exceeds 10000 values; reduce nested collections or YAML aliases.'
+    );
+  });
+
+  it("renders resolved semantic links after reserved-name and collision-safe path assignment", async () => {
+    const outDir = await tempOut();
+    const documents = [
+      normalizeDocument(
+        raw({
+          sourceId: "source.md",
+          filePath: "source.md",
+          raw: [
+            "# Source",
+            "",
+            "Keep  two spaces, *emphasis*, and punctuation exactly.",
+            "",
+            "Use [[index#Install Guide|installation steps]], [[index#Missing Heading]], and [[log#^step]].",
+            "Read [ordinary][shared] twice via [the same target][shared].",
+            "Keep an inline label that matches its destination: [./index.md](./index.md).",
+            "Embed ![[Context]] but keep ![[diagram.png|600]] readable.",
+            "",
+            '[shared]: ./index.md "Shared title"',
+            '[shared]: ./log.md "Ignored duplicate"',
+            "",
+            "`[[index]]` and `[not an edge](./ghost.md)` stay literal."
+          ].join("\n")
+        })
+      ),
+      normalizeDocument(
+        raw({
+          sourceId: "home.md",
+          filePath: "home.md",
+          raw: "# Existing Home\n\nOccupies home.md."
+        })
+      ),
+      normalizeDocument(
+        raw({
+          sourceId: "index.md",
+          filePath: "index.md",
+          raw: "# Index Target\n\n## Install Guide\n\nInstall here."
+        })
+      ),
+      normalizeDocument(
+        raw({
+          sourceId: "change-log.md",
+          filePath: "change-log.md",
+          raw: "# Existing Change Log\n\nOccupies change-log.md."
+        })
+      ),
+      normalizeDocument(
+        raw({
+          sourceId: "log.md",
+          filePath: "log.md",
+          raw: "# Log Target\n\nStable block. ^step"
+        })
+      ),
+      normalizeDocument(
+        raw({
+          sourceId: "Context.md",
+          filePath: "Context.md",
+          raw: "# Context\n\nShared context only."
+        })
+      )
+    ];
+    resolveVaultDocuments(documents);
+
+    await writeOkfBundle(documents, {
+      outDir,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+
+    const source = await fs.readFile(path.join(outDir, "source.md"), "utf8");
+    expect(source).toContain("Keep  two spaces, *emphasis*, and punctuation exactly.");
+    expect(source).toContain(
+      "Use [installation steps](./home-2.md#install-guide), [Missing Heading](./home-2.md#missing-heading), and [step](./change-log-2.md#step)."
+    );
+    expect(source).toContain("Read [ordinary][shared] twice via [the same target][shared].");
+    expect(source).toContain('[shared]: ./home-2.md "Shared title"');
+    expect(source).toContain('[shared]: ./log.md "Ignored duplicate"');
+    expect(source).toContain(
+      "Keep an inline label that matches its destination: [./index.md](./home-2.md)."
+    );
+    expect(source).toContain(
+      "Embed [Context](./context.md) but keep ![[diagram.png|600]] readable."
+    );
+    expect(source).toContain("`[[index]]` and `[not an edge](./ghost.md)` stay literal.");
+    await expect(fs.readFile(path.join(outDir, "change-log-2.md"), "utf8")).resolves.toContain(
+      'Stable block. <a id="step"></a>'
+    );
+
+    const concepts = await readBundle(outDir);
+    const graph = buildGraph(concepts);
+    expect(graph.outbound.get("source")).toEqual(["change-log-2", "context", "home-2"]);
+    expect(graph.backlinks.get("context")).toEqual(["source"]);
+    expect(graph.backlinks.get("home-2")).toEqual(["source"]);
+    expect(graph.outbound.get("source")).not.toContain("ghost");
+  });
+
+  it("preserves escaped and entity-decoded semantic lookalikes around a real rewritten link", async () => {
+    const outDir = await tempOut();
+    const escapedLine = String.raw`Emoji 🧭 escaped \!\[\[Target\]\], \#escaped, and \^escaped-block beside [[Target]].`;
+    const entityLine =
+      "Entities &#33;&#91;&#91;Entity&#93;&#93;, &#35;entity, and &#94;entity-block.";
+    const documents = [
+      normalizeDocument(
+        raw({
+          sourceId: "source.md",
+          filePath: "source.md",
+          raw: ["# Source", "", escapedLine, entityLine].join("\n")
+        })
+      ),
+      normalizeDocument(
+        raw({
+          sourceId: "Target.md",
+          filePath: "Target.md",
+          raw: "# Target"
+        })
+      )
+    ];
+    const sourceDocument = documents[0]!;
+
+    expect(sourceDocument.semanticLinks?.map((link) => [link.kind, link.target])).toEqual([
+      ["wikilink", "Target"]
+    ]);
+    expect(sourceDocument.inlineTags).toBeUndefined();
+    expect(sourceDocument.blockIds).toBeUndefined();
+    expect(resolveVaultDocuments(documents)).toEqual([]);
+
+    await writeOkfBundle(documents, {
+      outDir,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+
+    const rendered = await fs.readFile(path.join(outDir, "source.md"), "utf8");
+    const expectedBody = [
+      "# Source",
+      "",
+      escapedLine.replace("[[Target]]", "[Target](./target.md)"),
+      entityLine
+    ].join("\n");
+    expect(rendered).toContain(expectedBody);
+
+    const concepts = await readBundle(outDir);
+    expect(concepts.get("source")?.body).toBe(expectedBody);
+    const graph = buildGraph(concepts);
+    expect(graph.outbound.get("source")).toEqual(["target"]);
+  });
+
+  it("keeps links inside MDX expressions out of graph edges", () => {
+    const concept: Concept = {
+      id: "source",
+      path: "source.md",
+      frontmatter: {},
+      type: "Concept",
+      resource: "notes/source.mdx",
+      tags: [],
+      body: '{"[expression](./ghost.md)"}\n\n[real](./target.md)'
+    };
+
+    expect(extractInternalLinks(concept)).toEqual(["target"]);
   });
 
   it.skipIf(process.platform === "win32")(
@@ -272,6 +827,108 @@ describe("writer and validator", () => {
         })
       ])
     );
+  });
+
+  it("reproduces deterministic Obsidian semantic warnings from a generated bundle", async () => {
+    const outDir = await tempOut();
+    const documents = [
+      normalizeDocument({
+        ...raw({
+          sourceId: "notes/source.mdx",
+          filePath: "notes/source.mdx",
+          raw: [
+            "# Source",
+            "",
+            "[[Missing <script>]] [[Setup]] [[index#Home]] [[index#^step]] [[index#Absent Heading]]",
+            "",
+            "`[[Code Only]]`",
+            "",
+            "<span>[[HTML Only]]</span>",
+            "",
+            "![[diagram.png|600]]"
+          ].join("\n")
+        }),
+        contentType: "mdx"
+      }),
+      normalizeDocument(
+        raw({ sourceId: "one/Setup.md", filePath: "one/Setup.md", raw: "# Setup One" })
+      ),
+      normalizeDocument(
+        raw({ sourceId: "two/Setup.md", filePath: "two/Setup.md", raw: "# Setup Two" })
+      ),
+      normalizeDocument(
+        raw({
+          sourceId: "index.md",
+          filePath: "index.md",
+          raw: "# Home\n\nStable block. ^step"
+        })
+      )
+    ];
+    resolveVaultDocuments(documents);
+    await writeOkfBundle(documents, {
+      outDir,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+
+    const report = await validateBundle(outDir);
+    const semanticIssues = report.issues.filter((item) => item.code.includes("wikilink"));
+
+    expect(report.valid).toBe(true);
+    expect(semanticIssues).toEqual([
+      {
+        severity: "warning",
+        code: "unresolved_wikilink",
+        message: 'Unresolved Obsidian reference "Missing <script>" in notes/source.mdx.',
+        path: "notes/source.mdx",
+        rawTarget: "Missing <script>"
+      },
+      {
+        severity: "warning",
+        code: "ambiguous_wikilink",
+        message:
+          'Ambiguous Obsidian reference "Setup" in notes/source.mdx: one/Setup.md, two/Setup.md.',
+        path: "notes/source.mdx",
+        rawTarget: "Setup",
+        candidates: ["one/Setup.md", "two/Setup.md"]
+      }
+    ]);
+    expect(report.warningCount).toBe(2);
+    expect(report.issues.filter((item) => item.code === "broken_internal_link")).toEqual([]);
+  });
+
+  it("does not accept block anchors written inside code literals", async () => {
+    const outDir = await tempOut();
+    const documents = [
+      normalizeDocument(
+        raw({
+          sourceId: "source.md",
+          filePath: "source.md",
+          raw: "# Source\n\n[[target#^code-only]]"
+        })
+      ),
+      normalizeDocument(
+        raw({
+          sourceId: "target.md",
+          filePath: "target.md",
+          raw: '# Target\n\n`<a id="code-only"></a>`'
+        })
+      )
+    ];
+    expect(resolveVaultDocuments(documents)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "missing_wikilink_fragment",
+          rawTarget: "target#^code-only"
+        })
+      ])
+    );
+    await writeOkfBundle(documents, {
+      outDir,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+
+    const report = await validateBundle(outDir);
+    expect(report.issues.filter((item) => item.code === "missing_wikilink_fragment")).toEqual([]);
   });
 
   it("resolves absolute bundle-relative links from bundle root", async () => {

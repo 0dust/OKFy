@@ -62,16 +62,24 @@
     "prepublishOnly": "pnpm test && pnpm typecheck"
   },
   "dependencies": {
+    "@flowershow/remark-wiki-link": "3.3.1",
     "@modelcontextprotocol/sdk": "^1.13.3",
     "cheerio": "^1.0.0",
     "commander": "^12.1.0",
+    "github-slugger": "^2.0.0",
     "js-yaml": "^4.2.0",
+    "mdast-util-to-string": "^4.0.0",
     "minimatch": "^10.0.1",
     "minisearch": "^7.1.2",
     "p-limit": "^6.2.0",
     "picocolors": "^1.1.1",
+    "remark-frontmatter": "^5.0.0",
+    "remark-gfm": "^4.0.1",
+    "remark-mdx": "^3.1.1",
+    "remark-parse": "^11.0.0",
     "robots-parser": "^3.0.1",
     "turndown": "^7.2.0",
+    "unified": "^11.0.5",
     "zod": "^3.25.64"
   },
   "devDependencies": {

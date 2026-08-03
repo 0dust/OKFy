@@ -1,4 +1,8 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { parseMarkdown } from "../src/markdown-ast.js";
 import {
   descriptionFromMarkdown,
   extractHeadings,
@@ -8,6 +12,14 @@ import {
 } from "../src/normalize.js";
 
 const discoveredAt = "2026-06-14T00:00:00.000Z";
+const fixtureDirectory = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "fixtures/obsidian-vault"
+);
+
+function fixture(name: string): string {
+  return fs.readFileSync(path.join(fixtureDirectory, name), "utf8");
+}
 
 describe("normalization", () => {
   it("extracts main HTML content and removes chrome/noise", () => {
@@ -42,7 +54,8 @@ describe("normalization", () => {
   });
 
   it("normalizes Markdown and text documents deterministically", () => {
-    const markdown = "# API Reference\r\n\r\nUse `search_concepts`.\r\n\r\n## Tools\r\n[Quickstart](./quickstart.md)";
+    const markdown =
+      "# API Reference\r\n\r\nUse `search_concepts`.\r\n\r\n## Tools\r\n[Quickstart](./quickstart.md)";
     const doc = normalizeDocument({
       sourceId: "reference/api.md",
       filePath: "reference/api.md",
@@ -67,13 +80,411 @@ describe("normalization", () => {
     expect(textDoc.markdown).toBe("# Notes\n\n```text\nplain notes\n```");
   });
 
+  it("uses only a root-level H1 as the Markdown title fallback", () => {
+    const quoted = normalizeDocument({
+      sourceId: "plain-quote.md",
+      filePath: "plain-quote.md",
+      contentType: "markdown",
+      discoveredAt,
+      raw: "> # Quoted Title\n\n## Root Section"
+    });
+    expect(quoted.title).toBe("Plain Quote");
+    expect(quoted.headings.map((heading) => heading.text)).toEqual([
+      "Quoted Title",
+      "Root Section"
+    ]);
+
+    const listed = normalizeDocument({
+      sourceId: "plain-list.md",
+      filePath: "plain-list.md",
+      contentType: "markdown",
+      discoveredAt,
+      raw: "- # Listed Title\n\n  Listed body"
+    });
+    expect(listed.title).toBe("Plain List");
+    expect(listed.headings.map((heading) => heading.text)).toEqual(["Listed Title"]);
+
+    const rooted = normalizeDocument({
+      sourceId: "filename-title.md",
+      filePath: "filename-title.md",
+      contentType: "markdown",
+      discoveredAt,
+      raw: "> # Quoted Title\n\n# Root Title"
+    });
+    expect(rooted.title).toBe("Root Title");
+    expect(rooted.headings.map((heading) => heading.text)).toEqual(["Quoted Title", "Root Title"]);
+  });
+
+  it("rejects malformed YAML frontmatter as a document-level error", () => {
+    const raw = [
+      "---",
+      "title: [unterminated",
+      "---",
+      "# Recovered Title",
+      "",
+      "The document still imports."
+    ].join("\n");
+    expect(() =>
+      normalizeDocument({
+        sourceId: "malformed.md",
+        filePath: "malformed.md",
+        contentType: "markdown",
+        discoveredAt,
+        raw
+      })
+    ).toThrow();
+  });
+
+  it("rejects an unterminated frontmatter opener without treating later rules as frontmatter", () => {
+    expect(() =>
+      normalizeDocument({
+        sourceId: "unterminated.md",
+        filePath: "unterminated.md",
+        contentType: "markdown",
+        discoveredAt,
+        raw: "---\ntitle: Unterminated\n# Body"
+      })
+    ).toThrow("Malformed YAML frontmatter.");
+
+    const empty = normalizeDocument({
+      sourceId: "empty.md",
+      filePath: "empty.md",
+      contentType: "markdown",
+      discoveredAt,
+      raw: "---\n---\n# Empty Frontmatter"
+    });
+    expect(empty.markdown).toBe("# Empty Frontmatter");
+    expect(empty.properties?.data).toEqual({});
+
+    const thematicBreak = normalizeDocument({
+      sourceId: "thematic-break.md",
+      filePath: "thematic-break.md",
+      contentType: "markdown",
+      discoveredAt,
+      raw: "# Before\n\n---\n\nAfter"
+    });
+    expect(thematicBreak.markdown).toBe("# Before\n\n---\n\nAfter");
+    expect(thematicBreak.properties).toBeUndefined();
+  });
+
+  it("warns for incompatible recognized frontmatter properties and preserves fallbacks", () => {
+    const doc = normalizeDocument({
+      sourceId: "guides/quickstart.md",
+      filePath: "guides/quickstart.md",
+      contentType: "markdown",
+      discoveredAt,
+      raw: [
+        "---",
+        "title: [Wrong shape]",
+        "description:",
+        "  nested: Wrong shape",
+        "type: 42",
+        "aliases: [Useful Alias, 7]",
+        "tags: ''",
+        "---",
+        "# Quickstart Guide",
+        "",
+        "Fallback description. #Inline"
+      ].join("\n")
+    });
+
+    expect(doc.title).toBe("Quickstart Guide");
+    expect(doc.type).toBe("Guide");
+    expect(doc.properties).toMatchObject({
+      title: undefined,
+      description: undefined,
+      type: undefined,
+      aliases: [],
+      tags: []
+    });
+    expect(doc.aliases).toBeUndefined();
+    expect(doc.tags).toEqual(expect.arrayContaining(["inline", "quickstart"]));
+    expect(doc.diagnostics).toEqual([
+      expect.objectContaining({
+        code: "invalid_frontmatter_property",
+        sourcePath: "guides/quickstart.md",
+        rawTarget: "aliases",
+        property: "aliases"
+      }),
+      expect.objectContaining({
+        code: "invalid_frontmatter_property",
+        sourcePath: "guides/quickstart.md",
+        rawTarget: "description",
+        property: "description"
+      }),
+      expect.objectContaining({
+        code: "invalid_frontmatter_property",
+        sourcePath: "guides/quickstart.md",
+        rawTarget: "tags",
+        property: "tags"
+      }),
+      expect.objectContaining({
+        code: "invalid_frontmatter_property",
+        sourcePath: "guides/quickstart.md",
+        rawTarget: "title",
+        property: "title"
+      }),
+      expect.objectContaining({
+        code: "invalid_frontmatter_property",
+        sourcePath: "guides/quickstart.md",
+        rawTarget: "type",
+        property: "type"
+      })
+    ]);
+  });
+
+  it.each([
+    ["title", "title: ''"],
+    ["description", "description: null"],
+    ["type", "type: []"],
+    ["aliases", "aliases: [Valid, '']"],
+    ["tags", "tags: [valid, false]"]
+  ])("warns when recognized %s frontmatter contains an invalid value", (property, yaml) => {
+    const doc = normalizeDocument({
+      sourceId: `${property}.md`,
+      filePath: `${property}.md`,
+      contentType: "markdown",
+      discoveredAt,
+      raw: `---\n${yaml}\n---\n# Fallback Guide\n\nBody #fallback`
+    });
+
+    expect(doc.diagnostics).toEqual([
+      expect.objectContaining({
+        code: "invalid_frontmatter_property",
+        sourcePath: `${property}.md`,
+        rawTarget: property,
+        property
+      })
+    ]);
+  });
+
   it("supports standalone extraction helpers", () => {
     expect(extractHeadings("# One\n\n### Two").map((heading) => heading.depth)).toEqual([1, 3]);
-    expect(extractMarkdownLinks("[A](./a.md \"title\") [B](https://example.com)")).toEqual([
+    expect(extractMarkdownLinks('[A](./a.md "title") [B](https://example.com)')).toEqual([
       { text: "A", href: "./a.md" },
       { text: "B", href: "https://example.com" }
     ]);
     expect(inferType("Readme", "README.md", "")).toBe("README");
-    expect(descriptionFromMarkdown("# Title\n\nUse [okfy](./okfy.md) for docs.")).toBe("Use okfy for docs.");
+    expect(descriptionFromMarkdown("# Title\n\nUse [okfy](./okfy.md) for docs.")).toBe(
+      "Use okfy for docs."
+    );
+  });
+
+  it("uses Markdown structure for headings and ordinary links", () => {
+    const markdown = [
+      "# Repeat",
+      "",
+      "Repeat",
+      "------",
+      "",
+      "[inline](./inline.md) and [reference][guide]",
+      "",
+      '[guide]: ./guide.md "Guide title"',
+      "",
+      "```md",
+      "# Not a heading",
+      "[not a link](./nope.md)",
+      "```",
+      "",
+      "`[also not](./nope.md)`"
+    ].join("\n");
+
+    expect(extractHeadings(markdown)).toEqual([
+      { depth: 1, text: "Repeat", slug: "repeat" },
+      { depth: 2, text: "Repeat", slug: "repeat-1" }
+    ]);
+    expect(extractMarkdownLinks(markdown)).toEqual([
+      { text: "inline", href: "./inline.md" },
+      { text: "reference", href: "./guide.md" }
+    ]);
+  });
+
+  it("models repeated reference links as uses of one shared destination range", () => {
+    const markdown = [
+      "# References",
+      "",
+      "Use [the first guide][shared] and [the second guide][shared].",
+      "",
+      '[shared]: ./guides/start.md "Start here"'
+    ].join("\n");
+    const parsed = parseMarkdown(markdown);
+    const links = parsed.semanticLinks.filter((link) => link.kind === "markdown");
+
+    expect(links.map((link) => [link.text, link.target])).toEqual([
+      ["the first guide", "./guides/start.md"],
+      ["the second guide", "./guides/start.md"]
+    ]);
+    expect(links[0]?.destinationRange).toEqual(links[1]?.destinationRange);
+    expect(
+      parsed.content.slice(links[0]!.destinationRange!.start, links[0]!.destinationRange!.end)
+    ).toBe("./guides/start.md");
+
+    const repeatedLabel = parseMarkdown("[./guides/start.md](./guides/start.md)").semanticLinks[0]!;
+    expect(
+      repeatedLabel.destinationRange &&
+        "[./guides/start.md](./guides/start.md)".slice(
+          repeatedLabel.destinationRange.start,
+          repeatedLabel.destinationRange.end
+        )
+    ).toBe("./guides/start.md");
+    expect(repeatedLabel.destinationRange?.start).toBeGreaterThan(
+      "[./guides/start.md](./guides/start.md)".indexOf("](")
+    );
+  });
+
+  it("uses the first CommonMark definition when a reference label is duplicated", () => {
+    const markdown = [
+      "Read [the guide][shared].",
+      "",
+      "[shared]: ./first.md",
+      "[shared]: ./second.md"
+    ].join("\n");
+    const parsed = parseMarkdown(markdown);
+    const link = parsed.semanticLinks.find((candidate) => candidate.kind === "markdown");
+
+    expect(parsed.markdownLinks).toEqual([{ text: "the guide", href: "./first.md" }]);
+    expect(link?.target).toBe("./first.md");
+    expect(
+      link?.destinationRange &&
+        parsed.content.slice(link.destinationRange.start, link.destinationRange.end)
+    ).toBe("./first.md");
+  });
+
+  it("extracts Obsidian properties and semantic tokens with byte-exact body ranges", () => {
+    const raw = fixture("semantic-note.md");
+    const parsed = parseMarkdown(raw);
+    const doc = normalizeDocument({
+      sourceId: "semantic-note.md",
+      filePath: "semantic-note.md",
+      contentType: "markdown",
+      discoveredAt,
+      raw
+    });
+
+    expect(doc.markdown.startsWith("# Repeat")).toBe(true);
+    expect(doc.markdown).not.toContain("title: Canonical Setup");
+    expect(doc.title).toBe("Canonical Setup");
+    expect(doc.type).toBe("Runbook");
+    expect(doc.aliases).toEqual(["Setup", "Install Guide"]);
+    expect(doc.tags.slice(0, 3)).toEqual(["product", "agents", "deep/work"]);
+    expect(doc.tags).not.toContain("123");
+    expect(doc.properties?.description).toBe("Source description");
+    expect(doc.properties?.data).toMatchObject({
+      resource: "https://malicious.example/override",
+      timestamp: new Date("1999-01-01T00:00:00.000Z"),
+      nested: { owner: "docs", flags: ["stable", "reviewed"] }
+    });
+    expect(doc.resource).toBeUndefined();
+    expect(doc.headings.map(({ depth, text, slug }) => ({ depth, text, slug }))).toEqual([
+      { depth: 1, text: "Repeat", slug: "repeat" },
+      { depth: 2, text: "Repeat", slug: "repeat-1" }
+    ]);
+    expect(doc.links).toEqual([
+      { text: "inline", href: "./inline.md" },
+      { text: "reference", href: "./guide.md" }
+    ]);
+    expect(doc.semanticLinks?.map((link) => [link.kind, link.target, link.text])).toEqual([
+      ["markdown", "./inline.md", "inline"],
+      ["markdown", "./guide.md", "reference"],
+      ["wikilink", "Guides/Setup", "installation steps"],
+      ["wikilink", "Blocks", "install-step"],
+      ["note_embed", "Shared Context", "Overview"],
+      ["attachment_embed", "diagram.png", "600"]
+    ]);
+    expect(doc.semanticLinks?.[2]).toMatchObject({ heading: "Install" });
+    expect(doc.semanticLinks?.[3]).toMatchObject({ blockId: "install-step" });
+    expect(doc.semanticLinks?.[4]).toMatchObject({ heading: "Overview" });
+    expect(doc.blockIds).toEqual([
+      {
+        id: "install-step",
+        raw: "^install-step",
+        range: expect.objectContaining({ start: expect.any(Number), end: expect.any(Number) })
+      }
+    ]);
+
+    expect(raw.slice(parsed.properties!.range.start, parsed.properties!.range.end)).toContain(
+      "title: Canonical Setup"
+    );
+    for (const heading of parsed.headings) {
+      expect(parsed.content.slice(heading.range.start, heading.range.end)).toContain(heading.text);
+    }
+
+    for (const semantic of [
+      ...(doc.semanticLinks ?? []),
+      ...(doc.blockIds ?? []),
+      ...(doc.inlineTags ?? [])
+    ]) {
+      expect(doc.markdown.slice(semantic.range.start, semantic.range.end)).toBe(semantic.raw);
+    }
+  });
+
+  it("keeps Markdown-like syntax inert in literal HTML and MDX expression nodes", () => {
+    const doc = normalizeDocument({
+      sourceId: "literal-regions.mdx",
+      filePath: "literal-regions.mdx",
+      contentType: "mdx",
+      discoveredAt,
+      raw: fixture("literal-regions.mdx")
+    });
+
+    expect(doc.headings.map((heading) => heading.text)).toEqual(["Visible"]);
+    expect(doc.links).toEqual([{ text: "real", href: "./real.md" }]);
+    expect(doc.semanticLinks?.map((link) => [link.kind, link.target])).toEqual([
+      ["wikilink", "Real Note"],
+      ["note_embed", "Real Embed"],
+      ["markdown", "./real.md"]
+    ]);
+    expect(doc.inlineTags?.map((tag) => tag.tag)).toEqual(["real-tag"]);
+  });
+
+  it("derives semantic token values and ranges from exact source text", () => {
+    const markdown = [
+      "# Source",
+      "",
+      String.raw`Emoji 🧭 escaped \!\[\[Target\]\], \#escaped, and \^escaped-block beside [[Target]].`,
+      "Entities &#33;&#91;&#91;Entity&#93;&#93;, &#35;entity, and &#94;entity-block.",
+      "Real #real and a block ^real-block"
+    ].join("\n");
+    const parsed = parseMarkdown(markdown);
+
+    expect(parsed.semanticLinks.map((link) => [link.kind, link.target])).toEqual([
+      ["wikilink", "Target"]
+    ]);
+    expect(parsed.inlineTags.map((tag) => tag.tag)).toEqual(["real"]);
+    expect(parsed.blockIds.map((block) => block.id)).toEqual(["real-block"]);
+    for (const token of [...parsed.semanticLinks, ...parsed.inlineTags, ...parsed.blockIds]) {
+      expect(parsed.content.slice(token.range.start, token.range.end)).toBe(token.raw);
+    }
+  });
+
+  it("handles deeply nested Markdown while keeping literal content inert", () => {
+    const markdown = `${"> ".repeat(5_000)}\`[[Code Hidden]] #code-hidden\` [linked #link-hidden](./hidden.md) [[Visible]] #visible`;
+    const parsed = parseMarkdown(markdown);
+
+    expect(parsed.semanticLinks.map((link) => [link.kind, link.target])).toEqual([
+      ["markdown", "./hidden.md"],
+      ["wikilink", "Visible"]
+    ]);
+    expect(parsed.inlineTags.map((tag) => tag.tag)).toEqual(["visible"]);
+  });
+
+  it("normalizes BOM and CRLF before assigning stable semantic ranges", () => {
+    const doc = normalizeDocument({
+      sourceId: "windows.md",
+      filePath: "windows.md",
+      contentType: "markdown",
+      discoveredAt,
+      raw: "\uFEFF---\r\ntitle: Windows Note\r\naliases: Win\r\n---\r\nWindows\r\n=======\r\n\r\n[[Target]] #Win\r\n"
+    });
+
+    expect(doc.markdown).toBe("Windows\n=======\n\n[[Target]] #Win");
+    expect(doc.title).toBe("Windows Note");
+    expect(doc.aliases).toEqual(["Win"]);
+    expect(doc.headings.map((heading) => heading.slug)).toEqual(["windows"]);
+    expect(doc.semanticLinks?.[0]?.raw).toBe("[[Target]]");
+    expect(doc.inlineTags?.[0]?.raw).toBe("#Win");
+    expect(
+      doc.markdown.slice(doc.semanticLinks![0].range.start, doc.semanticLinks![0].range.end)
+    ).toBe("[[Target]]");
   });
 });

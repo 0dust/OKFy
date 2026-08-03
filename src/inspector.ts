@@ -1,6 +1,6 @@
 import path from "node:path";
 import { BundleSearch } from "./search.js";
-import { inspectBundle, validateBundle } from "./validate.js";
+import { analyzeBundle, inspectBundle } from "./validate.js";
 import type { Concept, ValidationIssue } from "./types.js";
 import type { RefreshState } from "./source-store.js";
 import { localBundleRecord, type WorkspaceSourceRecord } from "./workspace.js";
@@ -33,6 +33,7 @@ export interface InspectorReadinessSource {
   conceptCount: number;
   warningCount: number;
   brokenLinkCount: number;
+  validationIssues?: ValidationIssue[];
   orphanConcepts: string[];
   freshnessStatus?: string;
   refreshInProgress: boolean;
@@ -226,9 +227,9 @@ async function sourceReport(
     };
   }
 
-  let search: BundleSearch;
+  let analysis: Awaited<ReturnType<typeof analyzeBundle>>;
   try {
-    search = await BundleSearch.fromBundle(record.bundleDir);
+    analysis = await analyzeBundle(record.bundleDir);
   } catch (error) {
     return {
       source: unavailableSource(baseSource, error, record.state),
@@ -237,10 +238,32 @@ async function sourceReport(
     };
   }
 
-  const [validation, stats] = await Promise.all([
-    validateBundle(record.bundleDir),
-    inspectBundle(record.bundleDir)
-  ]);
+  let search: BundleSearch;
+  let stats: Awaited<ReturnType<typeof inspectBundle>>;
+  try {
+    const malformedConceptPaths = new Set(
+      analysis.validation.issues
+        .filter((item) => item.code === "malformed_markdown")
+        .map((item) => item.path)
+        .filter((item): item is string => Boolean(item))
+    );
+    const safeConcepts = new Map(
+      [...analysis.conceptsByAnyKey.entries()].map(([key, concept]) => [
+        key,
+        malformedConceptPaths.has(concept.path) ? { ...concept, body: "" } : concept
+      ])
+    );
+    search = new BundleSearch(safeConcepts, analysis.graph);
+    stats = await inspectBundle(record.bundleDir, { analysis });
+  } catch (error) {
+    return {
+      source: unavailableSource(baseSource, error, record.state),
+      concepts: [],
+      edges: []
+    };
+  }
+
+  const validation = analysis.validation;
   const refFor = (id: string): string => (options.prefixRefs ? `${record.name}:${id}` : id);
   const concepts = [...search.graph.concepts.values()]
     .sort((first, second) => first.id.localeCompare(second.id))
@@ -253,6 +276,7 @@ async function sourceReport(
       conceptCount: stats.conceptCount,
       warningCount: validation.warningCount,
       brokenLinkCount: brokenLinkCount(validation.issues),
+      validationIssues: validation.issues,
       orphanConcepts: stats.orphanConcepts.map(refFor),
       freshnessStatus: record.state?.status ?? "fresh",
       refreshInProgress: Boolean(record.state?.refreshInProgress),
@@ -347,6 +371,7 @@ function sourceBase(
   | "conceptCount"
   | "warningCount"
   | "brokenLinkCount"
+  | "validationIssues"
   | "orphanConcepts"
   | "freshnessStatus"
   | "refreshInProgress"
@@ -376,6 +401,7 @@ function unavailableSource(
     conceptCount: state?.bundle?.conceptCount ?? 0,
     warningCount: state?.bundle?.warningCount ?? 0,
     brokenLinkCount: 0,
+    validationIssues: [],
     orphanConcepts: [],
     freshnessStatus: state?.status ?? "failed",
     refreshInProgress: Boolean(state?.refreshInProgress),

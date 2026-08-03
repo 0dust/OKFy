@@ -150,6 +150,32 @@ export async function prepareSourceRuntime(
   if (refresh && awaitRefresh) await refresh;
 }
 
+export type SourceFreshnessFields = {
+  freshnessStatus: FreshnessStatus;
+  lastSuccessfulRefreshAt: string | null;
+  refreshInProgress: boolean;
+  lastRefreshError: RefreshErrorDetails | null;
+  nextRefreshAllowedAt: string | null;
+};
+
+export function sourceFreshnessFields(runtime: SourceRuntime): SourceFreshnessFields {
+  const normalized = normalizeFreshness(runtime.observedFreshness);
+  const lastRefreshError = runtime.lastRefreshError ?? normalized.lastRefreshError;
+  const refreshInProgress = Boolean(runtime.inFlightRefresh) || normalized.refreshInProgress;
+  const freshnessStatus = refreshInProgress
+    ? "refreshing"
+    : lastRefreshError
+      ? "failed"
+      : (normalized.freshnessStatus ?? (runtime.search ? "fresh" : "missing"));
+
+  return {
+    freshnessStatus,
+    lastSuccessfulRefreshAt: normalized.lastSuccessfulRefreshAt,
+    refreshInProgress,
+    lastRefreshError,
+    nextRefreshAllowedAt: normalized.nextRefreshAllowedAt
+  };
+}
 export function errorDetails(error: unknown): RefreshErrorDetails {
   if (error instanceof Error) return { message: error.message };
   if (typeof error === "string") return { message: error };

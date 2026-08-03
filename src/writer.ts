@@ -1,6 +1,9 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import GithubSlugger from "github-slugger";
+import { dump } from "js-yaml";
+import { needsGeneratedTitle, slugGeneratedTitle } from "./markdown-title.js";
 import { isReservedOkfPath } from "./okf.js";
 import { canonicalizeUrl } from "./util/url.js";
 import {
@@ -11,7 +14,8 @@ import {
 } from "./util/path.js";
 import { descriptionFromMarkdown } from "./normalize.js";
 import { resolveOkfyHome } from "./okfy-home.js";
-import type { NormalizedDocument } from "./types.js";
+import { isRecord } from "./util/object.js";
+import type { NormalizedDocument, SemanticLink, SourceRange } from "./types.js";
 
 export type WriteBundleOptions = {
   outDir: string;
@@ -33,26 +37,111 @@ function yamlScalar(value: string): string {
   return JSON.stringify(value);
 }
 
+const OWNED_FRONTMATTER_KEYS = new Set([
+  "type",
+  "title",
+  "description",
+  "resource",
+  "tags",
+  "aliases",
+  "timestamp"
+]);
+
+const UNSAFE_PROPERTY_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const MAX_FRONTMATTER_VALUE_DEPTH = 100;
+const MAX_FRONTMATTER_EXPANDED_VALUES = 10_000;
+
+function stableYamlValue(value: unknown, propertyKey: string): unknown {
+  const ancestors = new WeakSet<object>();
+  let visited = 0;
+
+  const visit = (current: unknown, currentPath: string, depth: number): unknown => {
+    visited += 1;
+    if (visited > MAX_FRONTMATTER_EXPANDED_VALUES) {
+      throw new Error(
+        `Cannot serialize frontmatter property ${JSON.stringify(propertyKey)}: expansion exceeds ${MAX_FRONTMATTER_EXPANDED_VALUES} values; reduce nested collections or YAML aliases.`
+      );
+    }
+    if (current instanceof Date) return new Date(current.getTime());
+    const isArray = Array.isArray(current);
+    if (!isArray && !isRecord(current)) return current;
+    if (depth >= MAX_FRONTMATTER_VALUE_DEPTH) {
+      throw new Error(
+        `Cannot serialize frontmatter property ${JSON.stringify(propertyKey)}: nesting exceeds ${MAX_FRONTMATTER_VALUE_DEPTH} levels.`
+      );
+    }
+    if (ancestors.has(current)) {
+      throw new Error(
+        `Cannot serialize frontmatter property ${JSON.stringify(propertyKey)}: cyclic value at ${currentPath}.`
+      );
+    }
+
+    ancestors.add(current);
+    try {
+      if (isArray) {
+        return current.map((item, index) => visit(item, `${currentPath}[${index}]`, depth + 1));
+      }
+
+      const sorted: Record<string, unknown> = {};
+      for (const key of Object.keys(current).sort()) {
+        if (UNSAFE_PROPERTY_KEYS.has(key)) continue;
+        sorted[key] = visit(current[key], `${currentPath}.${key}`, depth + 1);
+      }
+      return sorted;
+    } finally {
+      ancestors.delete(current);
+    }
+  };
+
+  return visit(value, propertyKey, 0);
+}
+
+function yamlProperty(key: string, value: unknown): string {
+  return dump(
+    { [key]: stableYamlValue(value, key) },
+    {
+      forceQuotes: true,
+      lineWidth: -1,
+      noRefs: true,
+      quotingType: '"',
+      sortKeys: false
+    }
+  ).trimEnd();
+}
+
 function frontmatter(doc: NormalizedDocument, timestamp: string): string {
-  const lines = [
+  const description = doc.properties?.description ?? descriptionFromMarkdown(doc.markdown);
+  const lines: string[] = [
     "---",
     `type: ${yamlScalar(doc.type)}`,
     `title: ${yamlScalar(doc.title)}`,
-    `description: ${yamlScalar(descriptionFromMarkdown(doc.markdown))}`,
+    `description: ${yamlScalar(description)}`,
     `resource: ${yamlScalar(doc.resource ?? doc.sourcePath ?? doc.sourceId)}`,
     "tags:",
     ...(doc.tags.length ? doc.tags.map((tag) => `  - ${yamlScalar(tag)}`) : ["  []"]),
-    `timestamp: ${yamlScalar(timestamp)}`,
-    "---",
-    ""
+    ...(doc.aliases?.length
+      ? ["aliases:", ...doc.aliases.map((alias) => `  - ${yamlScalar(alias)}`)]
+      : []),
+    `timestamp: ${yamlScalar(timestamp)}`
   ];
+
+  for (const key of Object.keys(doc.properties?.data ?? {}).sort()) {
+    if (OWNED_FRONTMATTER_KEYS.has(key) || UNSAFE_PROPERTY_KEYS.has(key)) continue;
+    lines.push(yamlProperty(key, doc.properties!.data[key]));
+  }
+
+  lines.push("---", "");
   return lines.join("\n");
 }
 
+function markdownPlainText(value: string): string {
+  return value.replace(/[\x21-\x2C\x2E-\x2F\x3A-\x40\x5B-\x60\x7B-\x7E]/g, "\\$&");
+}
+
 function withTitle(title: string, markdown: string): string {
-  const trimmed = markdown.trim();
-  if (trimmed.match(/^#\s+/)) return trimmed;
-  return `# ${title}\n\n${trimmed}`;
+  const trimmed = markdown.trimEnd();
+  if (!needsGeneratedTitle(trimmed)) return trimmed;
+  return `# ${markdownPlainText(title)}\n\n${trimmed}`;
 }
 
 function sourceKey(doc: NormalizedDocument): string {
@@ -91,43 +180,144 @@ function safeConceptOutputPath(candidate: string): string {
   return path.posix.join(parsed.dir, `${safeName}.md`);
 }
 
-function rewriteLinks(doc: NormalizedDocument, sourceToOutput: Map<string, string>): string {
-  return doc.markdown.replace(/\[([^\]]*)\]\(([^)\s]+)([^)]*)\)/g, (full, text, href, suffix) => {
-    if (/^(https?:)?\/\//.test(href)) {
-      try {
-        const key = canonicalizeUrl(href);
-        const target = sourceToOutput.get(key);
-        if (target && doc.outputPath) {
-          return `[${text}](${relativeMarkdownLink(doc.outputPath, target)}${suffix})`;
-        }
-      } catch {
-        return full;
-      }
-    }
+type TextEdit = SourceRange & { replacement: string };
 
-    if (!href.startsWith("#") && doc.resource) {
-      try {
-        const key = canonicalizeUrl(href, doc.resource);
-        const target = sourceToOutput.get(key);
-        if (target && doc.outputPath)
-          return `[${text}](${relativeMarkdownLink(doc.outputPath, target)}${suffix})`;
-        return `[${text}](${key}${suffix})`;
-      } catch {
-        return full;
-      }
-    }
+function addEdit(edits: Map<string, TextEdit>, edit: TextEdit): void {
+  const key = `${edit.start}:${edit.end}`;
+  const existing = edits.get(key);
+  if (existing && existing.replacement !== edit.replacement) {
+    throw new Error(`Conflicting Markdown edits at ${key}.`);
+  }
+  edits.set(key, edit);
+}
 
-    if (!href.startsWith("#") && doc.sourcePath) {
-      const abs = toPosixPath(
-        path.posix.normalize(path.posix.join(path.posix.dirname(doc.sourcePath), href))
+function applyEdits(markdown: string, editMap: Map<string, TextEdit>): string {
+  const edits = [...editMap.values()].sort(
+    (first, second) => first.start - second.start || first.end - second.end
+  );
+  for (let index = 1; index < edits.length; index += 1) {
+    const previous = edits[index - 1]!;
+    const current = edits[index]!;
+    if (current.start < previous.end) {
+      throw new Error(
+        `Overlapping Markdown edits at ${previous.start}:${previous.end} and ${current.start}:${current.end}.`
       );
-      const noHash = abs.split("#")[0] ?? abs;
-      const target = sourceToOutput.get(noHash);
-      if (target && doc.outputPath)
-        return `[${text}](${relativeMarkdownLink(doc.outputPath, target)}${suffix})`;
     }
-    return full;
-  });
+  }
+
+  const rendered: string[] = [];
+  let cursor = 0;
+  for (const edit of edits) {
+    rendered.push(markdown.slice(cursor, edit.start), edit.replacement);
+    cursor = edit.end;
+  }
+  rendered.push(markdown.slice(cursor));
+  return rendered.join("");
+}
+
+function rewriteMarkdownDestination(
+  doc: NormalizedDocument,
+  href: string,
+  sourceToOutput: Map<string, string>
+): string | undefined {
+  if (/^(https?:)?\/\//.test(href)) {
+    try {
+      const target = sourceToOutput.get(canonicalizeUrl(href));
+      if (target && doc.outputPath) return relativeMarkdownLink(doc.outputPath, target);
+    } catch {
+      return undefined;
+    }
+    return undefined;
+  }
+
+  if (!href.startsWith("#") && doc.resource) {
+    try {
+      const key = canonicalizeUrl(href, doc.resource);
+      const target = sourceToOutput.get(key);
+      if (target && doc.outputPath) return relativeMarkdownLink(doc.outputPath, target);
+      return key;
+    } catch {
+      return undefined;
+    }
+  }
+
+  if (!href.startsWith("#") && doc.sourcePath) {
+    const absolute = toPosixPath(
+      path.posix.normalize(path.posix.join(path.posix.dirname(doc.sourcePath), href))
+    );
+    const target = sourceToOutput.get(absolute.split("#")[0] ?? absolute);
+    if (target && doc.outputPath) return relativeMarkdownLink(doc.outputPath, target);
+  }
+  return undefined;
+}
+
+type HeadingFragments = Map<string, string>;
+
+function emittedHeadingFragments(document: NormalizedDocument): HeadingFragments {
+  const fragments = new Map<string, string>();
+  const slugger = new GithubSlugger();
+  if (needsGeneratedTitle(document.markdown)) slugGeneratedTitle(slugger, document.title);
+  for (const heading of document.headings) {
+    const fragment = slugger.slug(heading.text);
+    for (const key of [heading.text.normalize("NFC"), heading.slug.normalize("NFC")]) {
+      if (!fragments.has(key)) fragments.set(key, fragment);
+    }
+  }
+  return fragments;
+}
+
+function headingFragment(link: SemanticLink, target: HeadingFragments | undefined): string {
+  if (link.blockId) return link.blockId.normalize("NFC");
+  const requested = link.heading?.trim().normalize("NFC");
+  if (!requested) return "";
+  return target?.get(requested) ?? new GithubSlugger().slug(requested);
+}
+
+function rewriteLinks(
+  doc: NormalizedDocument,
+  sourceToOutput: Map<string, string>,
+  sourceToHeadingFragments: Map<string, HeadingFragments>
+): string {
+  const edits = new Map<string, TextEdit>();
+
+  for (const block of doc.blockIds ?? []) {
+    addEdit(edits, {
+      ...block.range,
+      replacement: `<a id="${block.id}"></a>`
+    });
+  }
+
+  for (const link of doc.semanticLinks ?? []) {
+    if (link.kind === "markdown") {
+      if (!link.destinationRange) continue;
+      const replacement = rewriteMarkdownDestination(doc, link.target, sourceToOutput);
+      if (replacement === undefined || replacement === link.target) continue;
+      addEdit(edits, { ...link.destinationRange, replacement });
+      continue;
+    }
+
+    if (
+      (link.kind !== "wikilink" && link.kind !== "note_embed") ||
+      link.resolution !== "resolved" ||
+      !link.resolvedSourceKey ||
+      !doc.outputPath
+    ) {
+      continue;
+    }
+
+    const targetOutput = sourceToOutput.get(link.resolvedSourceKey);
+    if (!targetOutput) continue;
+    const fragment = headingFragment(link, sourceToHeadingFragments.get(link.resolvedSourceKey));
+    const destination = `${relativeMarkdownLink(doc.outputPath, targetOutput)}${
+      fragment ? `#${fragment}` : ""
+    }`;
+    addEdit(edits, {
+      ...link.range,
+      replacement: `[${markdownPlainText(link.text)}](${destination})`
+    });
+  }
+
+  return applyEdits(doc.markdown, edits);
 }
 
 async function pathExists(target: string): Promise<boolean> {
@@ -292,7 +482,7 @@ async function writePlainIndex(
     "",
     ...entries.map(
       (concept) =>
-        `* [${concept.title}](${markdownLink(dir, concept.relPath)}) - ${concept.description}`
+        `* [${markdownPlainText(concept.title)}](${markdownLink(dir, concept.relPath)}) - ${concept.description}`
     )
   ];
   await fs.mkdir(path.dirname(path.join(outDir, indexPath)), { recursive: true });
@@ -311,6 +501,9 @@ export async function writeOkfBundle(
     .slice()
     .sort((first, second) => sourceKey(first).localeCompare(sourceKey(second)));
   const sourceToOutput = assignOutputPaths(orderedDocs);
+  const sourceToHeadingFragments = new Map(
+    orderedDocs.map((doc) => [sourceKey(doc), emittedHeadingFragments(doc)])
+  );
   const written: string[] = [];
   const concepts: WrittenConcept[] = [];
 
@@ -318,7 +511,7 @@ export async function writeOkfBundle(
     const relPath = doc.outputPath ?? "index.md";
     const absolute = path.join(options.outDir, relPath);
     await fs.mkdir(path.dirname(absolute), { recursive: true });
-    const body = withTitle(doc.title, rewriteLinks(doc, sourceToOutput));
+    const body = withTitle(doc.title, rewriteLinks(doc, sourceToOutput, sourceToHeadingFragments));
     await fs.writeFile(absolute, `${frontmatter(doc, timestamp)}${body}\n`, "utf8");
     written.push(relPath);
     concepts.push({

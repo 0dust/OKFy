@@ -58,6 +58,15 @@ function reportFixture(): InspectorReport {
         conceptCount: 2,
         warningCount: 1,
         brokenLinkCount: 0,
+        validationIssues: [
+          {
+            severity: "warning",
+            code: "unresolved_wikilink",
+            message: 'Unresolved Obsidian reference "Missing <script>" in vault/source.md.',
+            path: "vault/source.md",
+            rawTarget: "Missing <script>"
+          }
+        ],
         orphanConcepts: [],
         refreshInProgress: false,
         lastSuccessfulRefreshAt: "2026-06-23T00:00:00.000Z",
@@ -374,6 +383,10 @@ describe("renderInspectorHtml", () => {
     expect(html).toContain("Broken links");
     expect(html).toContain("Orphan concepts");
     expect(html).toContain("Source freshness");
+    expect(html).toContain("Semantic warnings");
+    expect(html).toContain("unresolved_wikilink");
+    expect(html).toContain("Missing &lt;script&gt;");
+    expect(html).not.toContain("Missing <script>");
     expect(html).toContain("Quickstart");
     expect(html).toContain("API Reference");
     expect(html).toContain("bundle_summary");
@@ -423,6 +436,32 @@ describe("renderInspectorHtml", () => {
     expect(html).toContain("&lt;script&gt;alert(&#39;refresh&#39;)&lt;/script&gt;");
     expect(html).not.toContain("<img src=x onerror=alert(1)>");
     expect(html).not.toContain("<svg/onload=alert(2)>");
+  });
+
+  it("renders escaped semantic warning provenance and ambiguity candidates", () => {
+    const fixture = reportFixture();
+    const html = renderInspectorHtml({
+      ...fixture,
+      sources: fixture.sources.map((source) => ({
+        ...source,
+        validationIssues: [
+          {
+            severity: "warning",
+            code: "ambiguous_wikilink",
+            message: "Ambiguous reference.",
+            path: "vault/<source>.md",
+            rawTarget: "Shared <Alias>",
+            candidates: ["one/<Alias>.md", "two/&Alias.md"]
+          }
+        ]
+      }))
+    });
+
+    expect(html).toContain("Source: vault/&lt;source&gt;.md");
+    expect(html).toContain("Target: Shared &lt;Alias&gt;");
+    expect(html).toContain("Candidates: one/&lt;Alias&gt;.md, two/&amp;Alias.md");
+    expect(html).not.toContain("vault/<source>.md");
+    expect(html).not.toContain("one/<Alias>.md");
   });
 
   it("renders byte-identical HTML for the same report", () => {

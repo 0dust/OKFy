@@ -1,12 +1,22 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { hasFrontmatter, parseFrontmatter, type ParsedFrontmatter } from "./frontmatter.js";
-import { buildGraph, extractInternalLinks } from "./graph.js";
+import { buildGraph, buildGraphFromSemantics } from "./graph.js";
+import { internalLinksFromSemantics } from "./internal-links.js";
+import { parseMarkdown } from "./markdown-ast.js";
 import { isConceptMarkdownPath, isReservedOkfPath } from "./okf.js";
-import { readBundle } from "./reader.js";
+import { conceptFromParsed, readBundle } from "./reader.js";
+import { resolveVaultDocuments } from "./vault-index.js";
 import { listMarkdownFiles } from "./util/markdown-files.js";
 import { toPosixPath } from "./util/path.js";
-import type { BundleStats, ValidationIssue, ValidationReport } from "./types.js";
+import type {
+  BundleStats,
+  Concept,
+  KnowledgeGraph,
+  NormalizedDocument,
+  ValidationIssue,
+  ValidationReport
+} from "./types.js";
 
 function issue(
   severity: "error" | "warning",
@@ -118,18 +128,105 @@ function validateReservedFile(raw: string, rel: string, issues: ValidationIssue[
   if (name === "log.md") validateLogFile(raw, rel, issues);
 }
 
-export async function validateBundle(bundleDir: string): Promise<ValidationReport> {
+function conceptSourcePath(concept: Concept): string {
+  const resourcePath = concept.resource?.split(/[?#]/, 1)[0] ?? "";
+  if (resourcePath && !/^[a-z][a-z0-9+.-]*:/i.test(resourcePath)) return resourcePath;
+  return concept.path;
+}
+
+function semanticDocument(concept: Concept): NormalizedDocument {
+  const sourcePath = conceptSourcePath(concept);
+  const parsed = parseMarkdown(concept.body, { mdx: /\.mdx$/i.test(sourcePath) });
+  return {
+    sourceId: sourcePath,
+    sourcePath,
+    outputPath: concept.path,
+    title: concept.title ?? path.posix.basename(concept.path, path.posix.extname(concept.path)),
+    markdown: parsed.content,
+    resource: concept.resource,
+    headings: parsed.headings.map(({ depth, text, slug }) => ({ depth, text, slug })),
+    links: parsed.markdownLinks,
+    tags: concept.tags,
+    type: concept.type,
+    aliases: concept.aliases,
+    semanticLinks: parsed.semanticLinks,
+    blockIds: [...parsed.blockIds, ...parsed.htmlAnchors]
+  };
+}
+
+function semanticValidation(concepts: Concept[]): {
+  documentsByConceptId: Map<string, NormalizedDocument>;
+  issues: ValidationIssue[];
+} {
+  const documentsByConceptId = new Map<string, NormalizedDocument>();
+  const issues: ValidationIssue[] = [];
+  for (const concept of concepts) {
+    try {
+      documentsByConceptId.set(concept.id, semanticDocument(concept));
+    } catch (error: any) {
+      const sourcePath = conceptSourcePath(concept);
+      issues.push(
+        issue(
+          "error",
+          "malformed_markdown",
+          `Malformed Markdown in ${sourcePath}: ${error?.message ?? "Unable to parse document."}`,
+          concept.path
+        )
+      );
+    }
+  }
+  const diagnostics = resolveVaultDocuments([...documentsByConceptId.values()]);
+  return {
+    documentsByConceptId,
+    issues: [
+      ...issues,
+      ...diagnostics.map((diagnostic) => ({
+        severity: diagnostic.severity,
+        code: diagnostic.code,
+        message: diagnostic.message,
+        path: diagnostic.sourcePath,
+        rawTarget: diagnostic.rawTarget,
+        ...(diagnostic.candidates ? { candidates: diagnostic.candidates } : {})
+      }))
+    ]
+  };
+}
+
+export type BundleAnalysis = {
+  validation: ValidationReport;
+  conceptsByAnyKey: Map<string, Concept>;
+  graph: KnowledgeGraph;
+  inspectionError?: unknown;
+};
+
+function reportFor(issues: ValidationIssue[], conceptCount: number, reservedFileCount: number) {
+  return {
+    valid: !issues.some((item) => item.severity === "error"),
+    issues,
+    conceptCount,
+    reservedFileCount,
+    warningCount: issues.filter((item) => item.severity === "warning").length
+  } satisfies ValidationReport;
+}
+
+export async function analyzeBundle(bundleDir: string): Promise<BundleAnalysis> {
   const issues: ValidationIssue[] = [];
   let files: string[] = [];
   try {
     files = await listMarkdownFiles(bundleDir);
   } catch (error: any) {
-    return {
+    const validation: ValidationReport = {
       valid: false,
       issues: [issue("error", "bundle_unreadable", error?.message ?? "Bundle cannot be read.")],
       conceptCount: 0,
       reservedFileCount: 0,
       warningCount: 0
+    };
+    return {
+      validation,
+      conceptsByAnyKey: new Map(),
+      graph: buildGraph(new Map()),
+      inspectionError: error
     };
   }
 
@@ -139,6 +236,8 @@ export async function validateBundle(bundleDir: string): Promise<ValidationRepor
   const reservedFiles = files.filter((file) =>
     isReservedOkfPath(toPosixPath(path.relative(bundleDir, file)))
   );
+  const parsedConcepts = new Map<string, ParsedFrontmatter>();
+  let inspectionError: unknown;
 
   for (const file of reservedFiles) {
     const rel = toPosixPath(path.relative(bundleDir, file));
@@ -153,16 +252,11 @@ export async function validateBundle(bundleDir: string): Promise<ValidationRepor
       issues.push(issue("error", "unsafe_path", "Concept path is unsafe.", rel));
     }
     const raw = await fs.readFile(file, "utf8");
-    if (!hasFrontmatter(raw)) {
-      issues.push(
-        issue("error", "missing_frontmatter", "Concept file must start with YAML frontmatter.", rel)
-      );
-      continue;
-    }
     let parsed: ParsedFrontmatter;
     try {
       parsed = parseFrontmatter(raw);
     } catch (error: any) {
+      inspectionError ??= error;
       issues.push(
         issue(
           "error",
@@ -170,6 +264,13 @@ export async function validateBundle(bundleDir: string): Promise<ValidationRepor
           error?.message ?? "Malformed YAML frontmatter.",
           rel
         )
+      );
+      continue;
+    }
+    parsedConcepts.set(file, parsed);
+    if (!hasFrontmatter(raw)) {
+      issues.push(
+        issue("error", "missing_frontmatter", "Concept file must start with YAML frontmatter.", rel)
       );
       continue;
     }
@@ -196,12 +297,25 @@ export async function validateBundle(bundleDir: string): Promise<ValidationRepor
     }
   }
 
-  const concepts = await readBundle(bundleDir).catch(() => new Map());
-  const canonicalIds = new Set([...concepts.values()].map((concept) => concept.id));
-  for (const concept of new Map(
-    [...concepts.values()].map((concept) => [concept.id, concept])
-  ).values()) {
-    for (const target of extractInternalLinks(concept)) {
+  const concepts = new Map<string, Concept>();
+  if (inspectionError === undefined) {
+    for (const file of conceptFiles) {
+      const concept = conceptFromParsed(bundleDir, file, parsedConcepts.get(file)!);
+      concepts.set(concept.id, concept);
+      concepts.set(concept.path, concept);
+    }
+  }
+  const canonicalConcepts = [
+    ...new Map([...concepts.values()].map((concept) => [concept.id, concept])).values()
+  ].sort((first, second) => first.id.localeCompare(second.id));
+  const semantic = semanticValidation(canonicalConcepts);
+  issues.push(...semantic.issues);
+  const canonicalIds = new Set(canonicalConcepts.map((concept) => concept.id));
+  for (const concept of canonicalConcepts) {
+    for (const target of internalLinksFromSemantics(
+      concept.path,
+      semantic.documentsByConceptId.get(concept.id)?.semanticLinks ?? []
+    )) {
       if (!canonicalIds.has(target)) {
         issues.push(
           issue(
@@ -230,18 +344,37 @@ export async function validateBundle(bundleDir: string): Promise<ValidationRepor
     }
   }
 
+  const semanticLinksByConceptId = new Map(
+    canonicalConcepts.map((concept) => [
+      concept.id,
+      semantic.documentsByConceptId.get(concept.id)?.semanticLinks ?? []
+    ])
+  );
   return {
-    valid: !issues.some((item) => item.severity === "error"),
-    issues,
-    conceptCount: conceptFiles.length,
-    reservedFileCount: reservedFiles.length,
-    warningCount: issues.filter((item) => item.severity === "warning").length
+    validation: reportFor(issues, conceptFiles.length, reservedFiles.length),
+    conceptsByAnyKey: concepts,
+    graph: buildGraphFromSemantics(concepts, semanticLinksByConceptId),
+    ...(inspectionError === undefined ? {} : { inspectionError })
   };
 }
 
-export async function inspectBundle(bundleDir: string): Promise<BundleStats> {
-  const conceptsByAnyKey = await readBundle(bundleDir);
-  const graph = buildGraph(conceptsByAnyKey);
+export async function validateBundle(bundleDir: string): Promise<ValidationReport> {
+  return (await analyzeBundle(bundleDir)).validation;
+}
+
+export async function inspectBundle(
+  bundleDir: string,
+  options: {
+    analysis?: BundleAnalysis;
+    validation?: ValidationReport;
+    graph?: KnowledgeGraph;
+  } = {}
+): Promise<BundleStats> {
+  const analysis =
+    options.analysis ??
+    (options.validation || options.graph ? undefined : await analyzeBundle(bundleDir));
+  if (analysis?.inspectionError) throw analysis.inspectionError;
+  const graph = options.graph ?? analysis?.graph ?? buildGraph(await readBundle(bundleDir));
   const concepts = [...graph.concepts.values()];
   const typeDistribution: Record<string, number> = {};
   const tagDistribution: Record<string, number> = {};
@@ -263,7 +396,8 @@ export async function inspectBundle(bundleDir: string): Promise<BundleStats> {
     .sort((a, b) => b.count - a.count || a.id.localeCompare(b.id))
     .slice(0, 10);
   const linkCount = [...graph.outbound.values()].reduce((sum, links) => sum + links.length, 0);
-  const validation = await validateBundle(bundleDir);
+  const validation =
+    options.validation ?? analysis?.validation ?? (await validateBundle(bundleDir));
   return {
     title: path.basename(bundleDir),
     conceptCount: concepts.length,

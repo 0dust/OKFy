@@ -1,7 +1,7 @@
 import * as cheerio from "cheerio";
 import TurndownService from "turndown";
-import { safeSegment } from "./util/path.js";
-import type { NormalizedDocument, RawDocument } from "./types.js";
+import { parseMarkdown } from "./markdown-ast.js";
+import type { DocumentDiagnostic, NormalizedDocument, RawDocument } from "./types.js";
 
 const turndown = new TurndownService({
   codeBlockStyle: "fenced",
@@ -11,31 +11,31 @@ const turndown = new TurndownService({
 
 turndown.keep(["table"]);
 
-export function extractHeadings(markdown: string): Array<{ depth: number; text: string; slug: string }> {
-  return [...markdown.matchAll(/^(#{1,6})\s+(.+)$/gm)].map((match) => ({
-    depth: match[1]?.length ?? 1,
-    text: (match[2] ?? "").trim(),
-    slug: safeSegment(match[2] ?? "")
-  }));
+export function extractHeadings(
+  markdown: string
+): Array<{ depth: number; text: string; slug: string }> {
+  return parseMarkdown(markdown).headings.map(({ depth, text, slug }) => ({ depth, text, slug }));
 }
 
 export function extractMarkdownLinks(markdown: string): Array<{ href: string; text: string }> {
-  return [...markdown.matchAll(/\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)].map((match) => ({
-    text: match[1] ?? "",
-    href: match[2] ?? ""
-  }));
+  return parseMarkdown(markdown).markdownLinks;
 }
 
 export function inferType(title: string, sourceId: string, markdown: string): string {
   const haystack = `${title} ${sourceId} ${markdown.slice(0, 2000)}`.toLowerCase();
   if (/\breadme\b/.test(haystack)) return "README";
-  if (/\b(api|reference|sdk|endpoint|parameter|request|response)\b/.test(haystack)) return "API Reference";
+  if (/\b(api|reference|sdk|endpoint|parameter|request|response)\b/.test(haystack))
+    return "API Reference";
   if (/\b(quickstart|guide|tutorial|walkthrough|get started)\b/.test(haystack)) return "Guide";
   if (/\bdocs?\b/.test(haystack)) return "Documentation Page";
   return "Concept";
 }
 
-export function inferTags(title: string, sourceId: string, headings: Array<{ text: string }>): string[] {
+export function inferTags(
+  title: string,
+  sourceId: string,
+  headings: Array<{ text: string }>
+): string[] {
   const raw = `${sourceId} ${title} ${headings
     .slice(0, 3)
     .map((h) => h.text)
@@ -49,9 +49,8 @@ export function inferTags(title: string, sourceId: string, headings: Array<{ tex
   return [...new Set(words)].slice(0, 6);
 }
 
-function titleFromMarkdown(markdown: string, fallback: string): string {
-  const heading = markdown.match(/^#\s+(.+)$/m)?.[1]?.trim();
-  if (heading) return plainTitle(heading);
+function titleFromMarkdown(rootHeadingTitle: string | undefined, fallback: string): string {
+  if (rootHeadingTitle) return plainTitle(rootHeadingTitle);
   return fallback;
 }
 
@@ -73,6 +72,33 @@ function fallbackTitle(sourceId: string): string {
     .join(" ");
 }
 
+function deduplicateTags(tags: string[]): string[] {
+  const seen = new Set<string>();
+  return tags.filter((tag) => {
+    const key = tag.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function invalidFrontmatterDiagnostic(
+  sourcePath: string,
+  property: "title" | "description" | "type" | "aliases" | "tags"
+): DocumentDiagnostic {
+  const expected = ["aliases", "tags"].includes(property)
+    ? "a non-empty string or an array of non-empty strings"
+    : "a non-empty string";
+  return {
+    severity: "warning",
+    code: "invalid_frontmatter_property",
+    message: `Invalid frontmatter property ${JSON.stringify(property)} in ${sourcePath}; expected ${expected}.`,
+    sourcePath,
+    rawTarget: property,
+    property
+  };
+}
+
 export function normalizeDocument(raw: RawDocument): NormalizedDocument {
   let markdown = raw.raw;
   let title = fallbackTitle(raw.url ?? raw.filePath ?? raw.sourceId);
@@ -88,11 +114,21 @@ export function normalizeDocument(raw: RawDocument): NormalizedDocument {
     markdown = `# ${title}\n\n\`\`\`text\n${raw.raw.trim()}\n\`\`\``;
   }
 
-  markdown = markdown.replace(/\r\n/g, "\n").trim();
-  title = titleFromMarkdown(markdown, plainTitle(title)).replace(/\s+/g, " ").trim();
-  const headings = extractHeadings(markdown);
-  const links = extractMarkdownLinks(markdown);
+  markdown = markdown.replace(/\r\n/g, "\n");
   const sourceId = raw.url ?? raw.filePath ?? raw.sourceId;
+  const parsed = parseMarkdown(markdown, { mdx: raw.contentType === "mdx" });
+  markdown = parsed.content;
+  title = (parsed.properties?.title ?? titleFromMarkdown(parsed.rootHeadingTitle, plainTitle(title)))
+    .replace(/\s+/g, " ")
+    .trim();
+  const headings = parsed.headings.map(({ depth, text, slug }) => ({ depth, text, slug }));
+  const links = parsed.markdownLinks;
+  const inferredTags = inferTags(title, sourceId, headings);
+  const tags = deduplicateTags([
+    ...(parsed.properties?.tags ?? []),
+    ...parsed.inlineTags.map((inlineTag) => inlineTag.tag),
+    ...inferredTags
+  ]);
 
   return {
     sourceId,
@@ -102,8 +138,20 @@ export function normalizeDocument(raw: RawDocument): NormalizedDocument {
     sourcePath: raw.filePath,
     headings,
     links,
-    tags: inferTags(title, sourceId, headings),
-    type: inferType(title, sourceId, markdown)
+    tags,
+    type: parsed.properties?.type ?? inferType(title, sourceId, markdown),
+    ...(parsed.properties ? { properties: parsed.properties } : {}),
+    ...(parsed.properties?.aliases.length ? { aliases: parsed.properties.aliases } : {}),
+    ...(parsed.invalidFrontmatterProperties.length
+      ? {
+          diagnostics: [...parsed.invalidFrontmatterProperties]
+            .sort()
+            .map((property) => invalidFrontmatterDiagnostic(raw.filePath ?? sourceId, property))
+        }
+      : {}),
+    ...(parsed.semanticLinks.length ? { semanticLinks: parsed.semanticLinks } : {}),
+    ...(parsed.blockIds.length ? { blockIds: parsed.blockIds } : {}),
+    ...(parsed.inlineTags.length ? { inlineTags: parsed.inlineTags } : {})
   };
 }
 

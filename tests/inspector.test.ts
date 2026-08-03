@@ -2,10 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  buildBundleInspectorReport,
-  buildWorkspaceInspectorReport
-} from "../src/inspector.js";
+import { buildBundleInspectorReport, buildWorkspaceInspectorReport } from "../src/inspector.js";
 import {
   type RefreshState,
   type SourceManifest,
@@ -25,6 +22,29 @@ async function tempHome(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "okfy-inspector-test-"));
   tempDirs.push(dir);
   return dir;
+}
+
+async function writeWarningBundle(bundleDir: string, target = "Missing Note"): Promise<void> {
+  await fs.rm(bundleDir, { recursive: true, force: true });
+  await fs.mkdir(bundleDir, { recursive: true });
+  await fs.writeFile(path.join(bundleDir, "index.md"), "# Warning Bundle\n", "utf8");
+  await fs.writeFile(
+    path.join(bundleDir, "source.md"),
+    [
+      "---",
+      'type: "Note"',
+      'title: "Source"',
+      'resource: "vault/source.md"',
+      "tags: []",
+      'timestamp: "2026-06-14T00:00:00.000Z"',
+      "---",
+      "",
+      "# Source",
+      "",
+      `[[${target}]]`
+    ].join("\n"),
+    "utf8"
+  );
 }
 
 afterEach(async () => {
@@ -155,6 +175,38 @@ describe("InspectorReport bundle assembly", () => {
       warningCount: 1,
       brokenLinkCount: 1
     });
+  });
+
+  it("exposes semantic validation issues for bundle and workspace readiness sources", async () => {
+    const bundleDir = await tempHome();
+    await writeWarningBundle(bundleDir, "Source#Absent");
+
+    const bundleReport = await buildBundleInspectorReport(bundleDir);
+    expect(bundleReport.readiness.validationStatus).toBe("valid");
+    expect(bundleReport.sources[0]?.validationIssues).toEqual([
+      expect.objectContaining({
+        severity: "warning",
+        code: "missing_wikilink_fragment",
+        path: "vault/source.md",
+        rawTarget: "Source#Absent"
+      })
+    ]);
+
+    const okfyHome = await tempHome();
+    await registerFixtureSource(okfyHome, "warning");
+    await writeWarningBundle(path.join(okfyHome, "sources", "warning", "bundle"), "Source#Absent");
+    await registerFixtureSource(okfyHome, "clean");
+    const sourceSet = await resolveWorkspaceSources({ names: ["warning", "clean"] }, { okfyHome });
+    const workspaceReport = await buildWorkspaceInspectorReport(sourceSet.records);
+    const warningSource = workspaceReport.sources.find((source) => source.sourceName === "warning");
+    const cleanSource = workspaceReport.sources.find((source) => source.sourceName === "clean");
+
+    expect(workspaceReport.readiness.validationStatus).toBe("valid");
+    expect(warningSource?.validationIssues).toEqual([
+      expect.objectContaining({ code: "missing_wikilink_fragment", rawTarget: "Source#Absent" })
+    ]);
+    expect(cleanSource?.validationIssues).toEqual([]);
+    expect(workspaceReport.readiness.sources).toEqual(workspaceReport.sources);
   });
 
   it("exposes concept resource, tags, type, and citation identifiers", async () => {

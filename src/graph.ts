@@ -1,32 +1,26 @@
-import path from "node:path";
-import { stripMdExtension } from "./util/path.js";
-import type { Concept, KnowledgeGraph } from "./types.js";
+import { internalLinksFromSemantics } from "./internal-links.js";
+import { parseMarkdown } from "./markdown-ast.js";
+import type { Concept, KnowledgeGraph, SemanticLink } from "./types.js";
 
 export function extractInternalLinks(concept: Concept): string[] {
-  const links = new Set<string>();
-  for (const match of concept.body.matchAll(/\[[^\]]*]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)) {
-    const href = match[1] ?? "";
-    const noHash = href.split("#")[0] ?? href;
-    if (!noHash) continue;
-    if (/^(https?:)?\/\//i.test(noHash) || /^mailto:/i.test(noHash)) continue;
-    if (/^[a-z][a-z0-9+.-]*:/i.test(noHash)) continue;
-    const resolved = noHash.startsWith("/")
-      ? path.posix.normalize(noHash.slice(1))
-      : path.posix.normalize(path.posix.join(path.posix.dirname(concept.path), noHash));
-    if (!resolved || resolved === ".") continue;
-    links.add(stripMdExtension(resolved));
-  }
-  return [...links].sort();
+  const sourcePath = concept.resource?.split(/[?#]/, 1)[0] ?? "";
+  return internalLinksFromSemantics(
+    concept.path,
+    parseMarkdown(concept.body, { mdx: /\.mdx$/i.test(sourcePath) }).semanticLinks
+  );
 }
 
-export function buildGraph(conceptsByAnyKey: Map<string, Concept>): KnowledgeGraph {
+function graphFromTargets(
+  conceptsByAnyKey: Map<string, Concept>,
+  targetsFor: (concept: Concept) => string[]
+): KnowledgeGraph {
   const concepts = new Map<string, Concept>();
   for (const concept of conceptsByAnyKey.values()) concepts.set(concept.id, concept);
 
   const outbound = new Map<string, string[]>();
   const backlinks = new Map<string, string[]>();
   for (const concept of concepts.values()) {
-    const targets = extractInternalLinks(concept).filter((id) => concepts.has(id));
+    const targets = targetsFor(concept).filter((id) => concepts.has(id));
     outbound.set(concept.id, targets);
     for (const target of targets) {
       backlinks.set(target, [...(backlinks.get(target) ?? []), concept.id].sort());
@@ -37,4 +31,17 @@ export function buildGraph(conceptsByAnyKey: Map<string, Concept>): KnowledgeGra
     if (!outbound.has(concept.id)) outbound.set(concept.id, []);
   }
   return { concepts, outbound, backlinks };
+}
+
+export function buildGraph(conceptsByAnyKey: Map<string, Concept>): KnowledgeGraph {
+  return graphFromTargets(conceptsByAnyKey, extractInternalLinks);
+}
+
+export function buildGraphFromSemantics(
+  conceptsByAnyKey: Map<string, Concept>,
+  semanticLinksByConceptId: Map<string, SemanticLink[]>
+): KnowledgeGraph {
+  return graphFromTargets(conceptsByAnyKey, (concept) =>
+    internalLinksFromSemantics(concept.path, semanticLinksByConceptId.get(concept.id) ?? [])
+  );
 }

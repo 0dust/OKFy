@@ -41,6 +41,12 @@ export const neighborsSchema = z.object({
   depth: z.number().int().min(1).max(2).optional()
 });
 export const sourceFilterSchema = z.object({ source: z.string().optional() });
+export const validationPageSchema = z.object({
+  validation_offset: z.number().int().min(0).optional(),
+  validation_limit: z.number().int().positive().max(100).optional()
+});
+export type ValidationPaging = z.infer<typeof validationPageSchema>;
+export const bundleSummarySchema = sourceFilterSchema.extend(validationPageSchema.shape);
 export const workspaceSearchSchema = searchSchema.extend({ source: z.string().optional() });
 export const workspaceReadSchema = readSchema.extend({ source: z.string().optional() });
 export const workspaceNeighborsSchema = neighborsSchema.extend({ source: z.string().optional() });
@@ -57,6 +63,8 @@ const tagsInputProperty = { type: "array", items: { type: "string" } };
 const limitInputProperty = { type: "integer", minimum: 1, maximum: 50, default: 10 };
 const maxCharsInputProperty = { type: "integer", minimum: 1 };
 const depthInputProperty = { type: "integer", minimum: 1, maximum: 2, default: 1 };
+const validationOffsetInputProperty = { type: "integer", minimum: 0, default: 0 };
+const validationLimitInputProperty = { type: "integer", minimum: 1, maximum: 100, default: 50 };
 
 function withOptionalSourceInputSchema(
   schema: ToolInputSchema,
@@ -100,6 +108,16 @@ const sourceFilterInputSchema = {
   properties: { source: sourceInputProperty }
 } satisfies ToolInputSchema;
 
+const bundleSummaryInputSchema = {
+  type: "object",
+  properties: {
+    validation_offset: validationOffsetInputProperty,
+    validation_limit: validationLimitInputProperty
+  }
+} satisfies ToolInputSchema;
+
+const workspaceBundleSummaryInputSchema = withOptionalSourceInputSchema(bundleSummaryInputSchema);
+
 const workspaceSearchInputSchema = withOptionalSourceInputSchema(searchInputSchema, "afterQuery");
 const workspaceReadInputSchema = withOptionalSourceInputSchema(readInputSchema);
 const workspaceNeighborsInputSchema = withOptionalSourceInputSchema(neighborsInputSchema);
@@ -140,8 +158,8 @@ export function mcpToolDefinitions(mode: "bundle" | "workspace"): ToolDefinition
       },
       {
         name: BUNDLE_SUMMARY_TOOL,
-        description: "Return bundle stats and validation status.",
-        inputSchema: { type: "object", properties: {} }
+        description: "Return bundle stats and a pageable validation issue summary.",
+        inputSchema: bundleSummaryInputSchema
       }
     ];
   }
@@ -175,8 +193,8 @@ export function mcpToolDefinitions(mode: "bundle" | "workspace"): ToolDefinition
     },
     {
       name: BUNDLE_SUMMARY_TOOL,
-      description: "Return workspace stats, per-source validation, and freshness status.",
-      inputSchema: sourceFilterInputSchema
+      description: "Return workspace stats, pageable per-source validation, and freshness status.",
+      inputSchema: workspaceBundleSummaryInputSchema
     }
   ];
 }

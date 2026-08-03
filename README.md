@@ -229,6 +229,47 @@ Local Markdown:
 ```bash
 npx -y okfy-ai import ./docs --out ./docs-okf --source-name "Project docs"
 npx -y okfy-ai validate ./docs-okf
+```
+
+### Import Obsidian Vaults
+
+Obsidian knowledge semantics are recognized automatically by the existing local import path. Point `okfy import` at a vault or folder exactly as you would any Markdown source; there is no Obsidian flag, plugin, separate command, or requirement for the Obsidian app:
+
+```bash
+npx -y okfy-ai import ./my-vault --out ./vault-okf --source-name "Team vault" --force
+npx -y okfy-ai validate ./vault-okf
+```
+
+For Markdown and MDX notes, okfy preserves these knowledge-bearing conventions:
+
+- Source YAML `title`, `description`, and `type` override inferred values when they are non-empty strings. `aliases` and `tags` accept a string or string array; source and inline tags augment inferred tags and are deduplicated case-insensitively. Incompatible recognized values emit `invalid_frontmatter_property` and fall back instead of partially applying. Malformed YAML is a document-level import error. Other safe YAML properties are retained deterministically; okfy owns `resource` and `timestamp`.
+- The source YAML block is removed from the body and merged into the single generated OKF frontmatter block.
+- Inline Obsidian tags are collected from prose, including nested tags such as `#product/setup`. Tokens inside fenced code, inline code, HTML, or MDX expressions are left literal.
+- A uniquely resolved `[[note]]`, `[[note|label]]`, `[[note#Heading|label]]`, or `[[note#^block-id]]` becomes a relative Markdown link. Heading targets are slugged and block IDs become portable anchors, so graph links and backlinks work in the generated bundle.
+- A resolved note embed such as `![[Shared Context]]` becomes a relationship link; the target note's contents are not copied into the source note. Recognized image, audio, video, and PDF attachment embeds such as `![[diagram.png|600]]` remain readable Obsidian references and do not create concepts or warnings.
+
+Resolution is conservative. Missing or ambiguous references are not guessed: okfy leaves the original wikilink readable and reports `unresolved_wikilink` or `ambiguous_wikilink`. A link to a missing heading or block reports `missing_wikilink_fragment`. These diagnostics are warnings—the import still completes and a structurally valid bundle remains valid. The CLI prints a warning summary; validation, Inspector, and `bundle_summary` expose the detailed semantic warnings. Import-time results also include `invalid_frontmatter_property` warnings.
+
+The same behavior is available programmatically without an Obsidian option:
+
+```ts
+import { importLocal, type DocumentDiagnostic, type ImportResult } from "okfy-ai";
+
+const result: ImportResult = await importLocal({
+  inputPath: "./my-vault",
+  outDir: "./vault-okf",
+  sourceName: "Team vault",
+  force: true
+});
+
+const diagnostics: DocumentDiagnostic[] = result.diagnostics;
+```
+
+This support models note identity, classification, and relationships. It does not parse Canvas, Bases, PDFs, images, audio, video, callouts, highlights, comments, tasks, Dataview fields, or presentation-only embed dimensions; write back to the vault; expand embedded note contents; or add semantic/vector search.
+
+Serve an existing bundle path when you already manage the bundle yourself:
+
+```bash
 npx -y okfy-ai serve ./docs-okf --mcp
 ```
 
