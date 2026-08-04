@@ -14,7 +14,7 @@
   </p>
 
   <p>
-    <a href="https://www.npmjs.com/package/okfy-ai"><img alt="npm package okfy-ai 0.3.3" src="https://img.shields.io/badge/npm-okfy--ai%400.3.3-2f7d5b?logo=npm"></a>
+    <a href="https://www.npmjs.com/package/okfy-ai"><img alt="npm package okfy-ai 0.3.4" src="https://img.shields.io/badge/npm-okfy--ai%400.3.4-2f7d5b?logo=npm"></a>
     <a href="https://github.com/0dust/OKFy/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/0dust/OKFy/actions/workflows/ci.yml/badge.svg"></a>
     <a href="https://github.com/0dust/OKFy/blob/main/LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-3f3a36"></a>
     <img alt="Node 20 plus" src="https://img.shields.io/badge/node-20%2B-4b5563">
