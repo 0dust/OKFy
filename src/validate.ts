@@ -1,17 +1,32 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import GithubSlugger from "github-slugger";
 import { hasFrontmatter, parseFrontmatter, type ParsedFrontmatter } from "./frontmatter.js";
 import { buildGraph, buildGraphFromSemantics } from "./graph.js";
+import {
+  IMPORT_DIAGNOSTICS_FILE,
+  readImportDiagnostics,
+  type PersistedImportDiagnostic
+} from "./import-diagnostics.js";
 import { internalLinksFromSemantics } from "./internal-links.js";
 import { parseMarkdown } from "./markdown-ast.js";
 import { isConceptMarkdownPath, isReservedOkfPath } from "./okf.js";
 import { conceptFromParsed, readBundle } from "./reader.js";
+import {
+  compareVaultDiagnostics,
+  fragmentIndexContains,
+  indexDocumentFragments,
+  missingFragmentDiagnostic,
+  splitMarkdownFragmentTarget,
+  type DocumentFragmentIndex
+} from "./vault-diagnostics.js";
 import { resolveVaultDocuments } from "./vault-index.js";
 import { listMarkdownFiles } from "./util/markdown-files.js";
 import { toPosixPath } from "./util/path.js";
 import type {
   BundleStats,
   Concept,
+  DocumentDiagnostic,
   KnowledgeGraph,
   NormalizedDocument,
   ValidationIssue,
@@ -154,7 +169,144 @@ function semanticDocument(concept: Concept): NormalizedDocument {
   };
 }
 
-function semanticValidation(concepts: Concept[]): {
+function markdownDestination(
+  sourceConcept: string,
+  target: string
+): { targetConcept: string; fragment: string } | undefined {
+  const destination = splitMarkdownFragmentTarget(target);
+  if (!destination) return undefined;
+  const targetConcept = destination.targetPath.startsWith("/")
+    ? path.posix.normalize(destination.targetPath.slice(1))
+    : path.posix.normalize(
+        path.posix.join(path.posix.dirname(sourceConcept), destination.targetPath)
+      );
+  if (!targetConcept || targetConcept === ".." || targetConcept.startsWith("../")) return undefined;
+  return { targetConcept, fragment: destination.fragment.normalize("NFC") };
+}
+
+function persistedLinkKey(source: string, target: string, fragment: string): string {
+  return `${source}\0${target}\0${fragment}`;
+}
+
+function persistedLinkCounts(
+  conceptsByPath: Map<string, Concept>,
+  documentsByConceptId: Map<string, NormalizedDocument>,
+  relevantKeys: Set<string>,
+  sourceConceptPaths: Set<string>
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const sourceConceptPath of sourceConceptPaths) {
+    const concept = conceptsByPath.get(sourceConceptPath);
+    if (!concept) continue;
+    const document = documentsByConceptId.get(concept.id);
+    for (const link of document?.semanticLinks ?? []) {
+      if (link.kind !== "markdown") continue;
+      const destination = markdownDestination(concept.path, link.target);
+      if (!destination) continue;
+      const key = persistedLinkKey(concept.path, destination.targetConcept, destination.fragment);
+      if (!relevantKeys.has(key)) continue;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+
+function sourceFragment(
+  rawTarget: string
+): { kind: "heading" | "block"; emitted: string } | undefined {
+  const hash = rawTarget.indexOf("#");
+  if (hash < 0 || hash === rawTarget.length - 1) return undefined;
+  const requested = rawTarget
+    .slice(hash + 1)
+    .trim()
+    .normalize("NFC");
+  if (!requested) return undefined;
+  if (requested.startsWith("^")) {
+    const emitted = requested.slice(1);
+    return emitted ? { kind: "block", emitted } : undefined;
+  }
+  return { kind: "heading", emitted: new GithubSlugger().slug(requested) || requested };
+}
+
+function persistedImportDiagnostics(
+  concepts: Concept[],
+  documentsByConceptId: Map<string, NormalizedDocument>,
+  entries: PersistedImportDiagnostic[]
+): DocumentDiagnostic[] {
+  if (entries.length === 0) return [];
+  const conceptsByPath = new Map(concepts.map((concept) => [concept.path, concept]));
+  const groups = new Map<string, PersistedImportDiagnostic[]>();
+
+  for (const entry of entries) {
+    const fragment = sourceFragment(entry.rawTarget);
+    if (
+      !conceptsByPath.has(entry.sourceConceptPath) ||
+      !conceptsByPath.has(entry.targetConceptPath) ||
+      !fragment ||
+      fragment.kind !== entry.fragmentKind ||
+      fragment.emitted !== entry.emittedFragment
+    ) {
+      continue;
+    }
+    const key = persistedLinkKey(
+      entry.sourceConceptPath,
+      entry.targetConceptPath,
+      entry.emittedFragment
+    );
+    const group = groups.get(key);
+    if (group) group.push(entry);
+    else groups.set(key, [entry]);
+  }
+
+  const relevantKeys = new Set(groups.keys());
+  const sourceConceptPaths = new Set(
+    [...groups.values()].map((group) => group[0]!.sourceConceptPath)
+  );
+  const linkCounts = persistedLinkCounts(
+    conceptsByPath,
+    documentsByConceptId,
+    relevantKeys,
+    sourceConceptPaths
+  );
+  const targetFragmentIndexes = new Map<string, DocumentFragmentIndex>();
+  for (const targetConceptPath of new Set(
+    [...groups.values()].map((group) => group[0]!.targetConceptPath)
+  )) {
+    const target = conceptsByPath.get(targetConceptPath);
+    const targetDocument = target ? documentsByConceptId.get(target.id) : undefined;
+    if (targetDocument) {
+      targetFragmentIndexes.set(targetConceptPath, indexDocumentFragments(targetDocument));
+    }
+  }
+  const diagnostics: DocumentDiagnostic[] = [];
+
+  for (const [key, group] of groups) {
+    const linkCount = linkCounts.get(key) ?? 0;
+    const distinctRawTargets = new Set(group.map((entry) => entry.rawTarget)).size;
+    const replayCount =
+      linkCount < group.length && distinctRawTargets > 1 ? 0 : Math.min(linkCount, group.length);
+    for (const entry of group.slice(0, replayCount)) {
+      const targetFragments = targetFragmentIndexes.get(entry.targetConceptPath);
+      if (
+        !entry.targetFragmentPresent &&
+        targetFragments &&
+        fragmentIndexContains(targetFragments, entry.emittedFragment, entry.fragmentKind)
+      ) {
+        continue;
+      }
+      diagnostics.push(
+        missingFragmentDiagnostic(entry.sourcePath, entry.rawTarget, entry.targetPath)
+      );
+    }
+  }
+
+  return diagnostics;
+}
+
+function semanticValidation(
+  concepts: Concept[],
+  persistedDiagnostics: PersistedImportDiagnostic[] = []
+): {
   documentsByConceptId: Map<string, NormalizedDocument>;
   issues: ValidationIssue[];
 } {
@@ -176,6 +328,15 @@ function semanticValidation(concepts: Concept[]): {
     }
   }
   const diagnostics = resolveVaultDocuments([...documentsByConceptId.values()]);
+  const replayedDiagnostics = persistedImportDiagnostics(
+    concepts,
+    documentsByConceptId,
+    persistedDiagnostics
+  );
+  if (replayedDiagnostics.length > 0) {
+    diagnostics.push(...replayedDiagnostics);
+    diagnostics.sort(compareVaultDiagnostics);
+  }
   return {
     documentsByConceptId,
     issues: [
@@ -308,7 +469,18 @@ export async function analyzeBundle(bundleDir: string): Promise<BundleAnalysis> 
   const canonicalConcepts = [
     ...new Map([...concepts.values()].map((concept) => [concept.id, concept])).values()
   ].sort((first, second) => first.id.localeCompare(second.id));
-  const semantic = semanticValidation(canonicalConcepts);
+  const importDiagnostics = await readImportDiagnostics(bundleDir);
+  if (importDiagnostics.error) {
+    issues.push(
+      issue(
+        "warning",
+        "invalid_import_diagnostics",
+        importDiagnostics.error,
+        IMPORT_DIAGNOSTICS_FILE
+      )
+    );
+  }
+  const semantic = semanticValidation(canonicalConcepts, importDiagnostics.entries);
   issues.push(...semantic.issues);
   const canonicalIds = new Set(canonicalConcepts.map((concept) => concept.id));
   for (const concept of canonicalConcepts) {

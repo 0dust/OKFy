@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildBundleInspectorReport } from "../src/inspector.js";
+import { IMPORT_DIAGNOSTICS_FILE } from "../src/import-diagnostics.js";
 import { validateBundle } from "../src/validate.js";
 
 const tempDirs: string[] = [];
@@ -76,6 +77,56 @@ describe("bundle validation analysis", () => {
         })
       ])
     );
+  });
+
+  it.each([
+    {
+      name: "invalid JSON",
+      manifest: "{",
+      message: `${IMPORT_DIAGNOSTICS_FILE} is not valid JSON.`
+    },
+    {
+      name: "an unsupported schema",
+      manifest: JSON.stringify({ schemaVersion: 2, entries: [] }),
+      message: `${IMPORT_DIAGNOSTICS_FILE} has an unsupported schema.`
+    },
+    {
+      name: "an unsafe entry",
+      manifest: JSON.stringify({
+        schemaVersion: 1,
+        entries: [
+          {
+            code: "missing_wikilink_fragment",
+            sourceConceptPath: "../source.md",
+            sourcePath: "source.md",
+            rawTarget: "target#Missing",
+            targetConceptPath: "target.md",
+            targetPath: "target.md",
+            fragmentKind: "heading",
+            emittedFragment: "missing",
+            targetFragmentPresent: false
+          }
+        ]
+      }),
+      message: `${IMPORT_DIAGNOSTICS_FILE} contains an invalid entry.`
+    }
+  ])("keeps $name import provenance non-fatal", async ({ manifest, message }) => {
+    const bundleDir = await tempBundle();
+    await writeConcept(bundleDir, "source.md", { body: "# Source" });
+    await fs.writeFile(path.join(bundleDir, IMPORT_DIAGNOSTICS_FILE), manifest, "utf8");
+
+    const report = await validateBundle(bundleDir);
+
+    expect(report.valid).toBe(true);
+    expect(report.issues.filter((item) => item.code === "invalid_import_diagnostics")).toEqual([
+      {
+        severity: "warning",
+        code: "invalid_import_diagnostics",
+        message,
+        path: IMPORT_DIAGNOSTICS_FILE
+      }
+    ]);
+    expect(report.issues.filter((item) => item.code === "missing_wikilink_fragment")).toEqual([]);
   });
 
   it("reports malformed MDX per concept without aborting validation or Inspector", async () => {

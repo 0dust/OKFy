@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildGraph, extractInternalLinks } from "../src/graph.js";
 import { importLocal } from "../src/importer.js";
+import { IMPORT_DIAGNOSTICS_FILE } from "../src/import-diagnostics.js";
 import { parseMarkdown } from "../src/markdown-ast.js";
 import { normalizeDocument } from "../src/normalize.js";
 import { readBundle } from "../src/reader.js";
@@ -162,7 +163,7 @@ describe("writer and validator", () => {
     await expect(validateBundle(outDir)).resolves.toMatchObject({ valid: true, warningCount: 0 });
   });
 
-  it("reports source wikilink fragments without relabeling portable Markdown output", async () => {
+  it("persists source wikilink fragment warnings without relabeling portable Markdown", async () => {
     const root = await tempOut();
     const input = path.join(root, "vault");
     const outDir = path.join(root, "bundle");
@@ -202,9 +203,159 @@ describe("writer and validator", () => {
     await expect(fs.readFile(path.join(outDir, "target.md"), "utf8")).resolves.toContain(
       "# Target\n\nBody without a leading H1."
     );
+    const manifestPath = path.join(outDir, IMPORT_DIAGNOSTICS_FILE);
+    const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+    expect(manifest).toEqual({
+      schemaVersion: 1,
+      entries: [
+        {
+          code: "missing_wikilink_fragment",
+          sourceConceptPath: "source.md",
+          sourcePath: "Source.md",
+          rawTarget: "Target#Absent",
+          targetConceptPath: "target.md",
+          targetPath: "Target.md",
+          fragmentKind: "heading",
+          emittedFragment: "absent",
+          targetFragmentPresent: false
+        }
+      ]
+    });
 
     const report = await validateBundle(outDir);
-    expect(report.issues.filter((item) => item.code === "missing_wikilink_fragment")).toEqual([]);
+    expect(report.issues.filter((item) => item.code === "missing_wikilink_fragment")).toEqual(
+      importedFragments.map(({ sourcePath, ...diagnostic }) => ({
+        ...diagnostic,
+        path: sourcePath
+      }))
+    );
+
+    await fs.appendFile(
+      path.join(outDir, "source.md"),
+      "\nUnrelated generated-bundle note.\n",
+      "utf8"
+    );
+    const editedSourceReport = await validateBundle(outDir);
+    expect(
+      editedSourceReport.issues.filter((item) => item.code === "missing_wikilink_fragment")
+    ).toEqual(report.issues.filter((item) => item.code === "missing_wikilink_fragment"));
+
+    await fs.writeFile(
+      manifestPath,
+      `${JSON.stringify({ ...manifest, entries: [...manifest.entries, ...manifest.entries] }, null, 2)}\n`,
+      "utf8"
+    );
+    const duplicateReport = await validateBundle(outDir);
+    expect(
+      duplicateReport.issues.filter((item) => item.code === "missing_wikilink_fragment")
+    ).toHaveLength(1);
+
+    await fs.appendFile(path.join(outDir, "target.md"), "\n## Absent\n", "utf8");
+    const repairedReport = await validateBundle(outDir);
+    expect(
+      repairedReport.issues.filter((item) => item.code === "missing_wikilink_fragment")
+    ).toEqual([]);
+  });
+
+  it("replays encoded and generated-anchor fragment warnings with exact source paths", async () => {
+    const root = await tempOut();
+    const input = path.join(root, "vault");
+    const outDir = path.join(root, "bundle");
+    await fs.mkdir(input);
+    await fs.writeFile(
+      path.join(input, "Source#Part.md"),
+      [
+        "# Source",
+        "",
+        "[[Target#Café]] [[Target#^missing)block]] [[Target#!]] [[Target#setup-1]] [[Target#^html-only]]"
+      ].join("\n"),
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(input, "Target.md"),
+      ["---", "title: Setup", "---", "", "## Setup", "", '<a id="html-only"></a>'].join("\n"),
+      "utf8"
+    );
+
+    const imported = await importLocal({
+      inputPath: input,
+      outDir,
+      force: true,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+    const importedFragments = imported.diagnostics.filter(
+      (diagnostic) => diagnostic.code === "missing_wikilink_fragment"
+    );
+
+    expect(importedFragments).toHaveLength(5);
+    expect(importedFragments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sourcePath: "Source#Part.md", rawTarget: "Target#Café" }),
+        expect.objectContaining({
+          sourcePath: "Source#Part.md",
+          rawTarget: "Target#^missing)block"
+        }),
+        expect.objectContaining({ sourcePath: "Source#Part.md", rawTarget: "Target#!" }),
+        expect.objectContaining({ sourcePath: "Source#Part.md", rawTarget: "Target#setup-1" }),
+        expect.objectContaining({ sourcePath: "Source#Part.md", rawTarget: "Target#^html-only" })
+      ])
+    );
+
+    const source = await fs.readFile(path.join(outDir, "source-part.md"), "utf8");
+    expect(source).toContain("[Café](./target.md#caf%C3%A9)");
+    expect(source).toContain("[missing\\)block](./target.md#missing%29block)");
+    expect(source).toContain("[\\!](./target.md#%21)");
+
+    const report = await validateBundle(outDir);
+    expect(report.issues.filter((item) => item.code === "missing_wikilink_fragment")).toEqual(
+      importedFragments.map(({ sourcePath, ...diagnostic }) => ({
+        ...diagnostic,
+        path: sourcePath
+      }))
+    );
+  });
+
+  it("does not guess between warnings that collapse to the same Markdown destination", async () => {
+    const root = await tempOut();
+    const input = path.join(root, "vault");
+    const outDir = path.join(root, "bundle");
+    await fs.mkdir(input);
+    await fs.writeFile(
+      path.join(input, "Source.md"),
+      "# Source\n\n[[Target#Foo Bar|spaced]] [[Target#Foo-Bar|hyphenated]]\n",
+      "utf8"
+    );
+    await fs.writeFile(path.join(input, "Target.md"), "# Target\n", "utf8");
+
+    const imported = await importLocal({
+      inputPath: input,
+      outDir,
+      force: true,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+    const importedFragments = imported.diagnostics.filter(
+      (diagnostic) => diagnostic.code === "missing_wikilink_fragment"
+    );
+    expect(importedFragments).toHaveLength(2);
+
+    const sourcePath = path.join(outDir, "source.md");
+    const source = await fs.readFile(sourcePath, "utf8");
+    expect(source.match(/\.\/target\.md#foo-bar/g)).toHaveLength(2);
+    const fresh = await validateBundle(outDir);
+    expect(fresh.issues.filter((item) => item.code === "missing_wikilink_fragment")).toEqual(
+      importedFragments.map(({ sourcePath, ...diagnostic }) => ({
+        ...diagnostic,
+        path: sourcePath
+      }))
+    );
+
+    await fs.writeFile(
+      sourcePath,
+      source.replace(" [hyphenated](./target.md#foo-bar)", ""),
+      "utf8"
+    );
+    const edited = await validateBundle(outDir);
+    expect(edited.issues.filter((item) => item.code === "missing_wikilink_fragment")).toEqual([]);
   });
 
   it("keeps links to source headings correct when a generated H1 has the same title", async () => {
@@ -890,9 +1041,18 @@ describe("writer and validator", () => {
         path: "notes/source.mdx",
         rawTarget: "Setup",
         candidates: ["one/Setup.md", "two/Setup.md"]
+      },
+      {
+        severity: "warning",
+        code: "missing_wikilink_fragment",
+        message:
+          'Missing fragment in Obsidian reference "index#Absent Heading" from notes/source.mdx to index.md.',
+        path: "notes/source.mdx",
+        rawTarget: "index#Absent Heading",
+        candidates: ["index.md"]
       }
     ]);
-    expect(report.warningCount).toBe(2);
+    expect(report.warningCount).toBe(3);
     expect(report.issues.filter((item) => item.code === "broken_internal_link")).toEqual([]);
   });
 
@@ -903,7 +1063,7 @@ describe("writer and validator", () => {
         raw({
           sourceId: "source.md",
           filePath: "source.md",
-          raw: "# Source\n\n[[target#^code-only]]"
+          raw: "# Source\n\n![[target#^code-only]]"
         })
       ),
       normalizeDocument(
@@ -928,7 +1088,17 @@ describe("writer and validator", () => {
     });
 
     const report = await validateBundle(outDir);
-    expect(report.issues.filter((item) => item.code === "missing_wikilink_fragment")).toEqual([]);
+    expect(report.issues.filter((item) => item.code === "missing_wikilink_fragment")).toEqual([
+      {
+        severity: "warning",
+        code: "missing_wikilink_fragment",
+        message:
+          'Missing fragment in Obsidian reference "target#^code-only" from source.md to target.md.',
+        path: "source.md",
+        rawTarget: "target#^code-only",
+        candidates: ["target.md"]
+      }
+    ]);
   });
 
   it("resolves absolute bundle-relative links from bundle root", async () => {

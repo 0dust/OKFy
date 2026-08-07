@@ -66,6 +66,143 @@ afterEach(async () => {
 });
 
 describe("committed Obsidian vault behavioral proof", () => {
+  it("persists missing-fragment diagnostics through validation, Inspector, and MCP", async () => {
+    const root = await tempRoot();
+    const input = path.join(root, "vault");
+    const firstBundle = path.join(root, "first-bundle");
+    const secondBundle = path.join(root, "second-bundle");
+    await fs.mkdir(input);
+    await fs.writeFile(
+      path.join(input, "Source.md"),
+      [
+        "---",
+        "title: Source",
+        "description: Minimal missing-fragment warning persistence reproduction.",
+        "type: note",
+        "---",
+        "",
+        "# Source",
+        "",
+        "[[Target#Missing Heading]]",
+        "",
+        "[[Target#^missing-block]]",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(input, "Target.md"),
+      [
+        "---",
+        "title: Target",
+        "description: Target without the requested heading or block.",
+        "type: note",
+        "---",
+        "",
+        "# Target",
+        "",
+        "No matching fragment exists.",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const options = {
+      inputPath: input,
+      sourceName: "Missing fragment repro",
+      force: true,
+      timestamp: stableTimestamp
+    };
+    const first = await importLocal({ ...options, outDir: firstBundle });
+    const second = await importLocal({ ...options, outDir: secondBundle });
+    const expectedImportDiagnostics = [
+      {
+        severity: "warning" as const,
+        code: "missing_wikilink_fragment",
+        message:
+          'Missing fragment in Obsidian reference "Target#Missing Heading" from Source.md to Target.md.',
+        sourcePath: "Source.md",
+        rawTarget: "Target#Missing Heading",
+        candidates: ["Target.md"]
+      },
+      {
+        severity: "warning" as const,
+        code: "missing_wikilink_fragment",
+        message:
+          'Missing fragment in Obsidian reference "Target#^missing-block" from Source.md to Target.md.',
+        sourcePath: "Source.md",
+        rawTarget: "Target#^missing-block",
+        candidates: ["Target.md"]
+      }
+    ];
+
+    expect(first.diagnostics).toEqual(expectedImportDiagnostics);
+    expect(second.diagnostics).toEqual(expectedImportDiagnostics);
+    expect(second.documents).toEqual(first.documents);
+    expect(await readTree(secondBundle)).toEqual(await readTree(firstBundle));
+
+    const generatedSource = await fs.readFile(path.join(firstBundle, "source.md"), "utf8");
+    expect(generatedSource).toContain("[Missing Heading](./target.md#missing-heading)");
+    expect(generatedSource).toContain("[missing-block](./target.md#missing-block)");
+    expect(generatedSource).not.toContain("[[Target");
+
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await runImportCommand(input, {
+      out: firstBundle,
+      sourceName: options.sourceName,
+      force: true,
+      stableTimestamps: true
+    });
+    expect(warn).toHaveBeenCalledExactlyOnceWith("Warnings: 2 (missing_wikilink_fragment: 2)");
+    expect(log).toHaveBeenCalledWith("okfy import");
+    expect(await readTree(firstBundle)).toEqual(await readTree(secondBundle));
+
+    const expectedValidationIssues = expectedImportDiagnostics.map(
+      ({ sourcePath, ...diagnostic }) => ({ ...diagnostic, path: sourcePath })
+    );
+    const validation = await validateBundle(firstBundle);
+    expect(validation).toMatchObject({ valid: true, conceptCount: 2, warningCount: 2 });
+    expect(validation.issues).toEqual(expectedValidationIssues);
+
+    const inspector = await buildBundleInspectorReport(firstBundle);
+    expect(inspector.readiness).toMatchObject({
+      validationStatus: "valid",
+      conceptCount: 2,
+      warningCount: 2,
+      brokenLinkCount: 0
+    });
+    expect(inspector.sources[0]?.validationIssues).toEqual(expectedValidationIssues);
+
+    const html = renderInspectorHtml(inspector);
+    expect(html).toContain("Semantic warnings");
+    expect(html.match(/<li><code>missing_wikilink_fragment<\/code>/g)).toHaveLength(2);
+    expect(html).toContain("Target#Missing Heading");
+    expect(html).toContain("Target#^missing-block");
+
+    const server = await createMcpServer({ bundleDir: firstBundle, maxResultChars: 20_000 });
+    const callTool = mcpHandler(server, "tools/call");
+    const summaryCall = await callTool({
+      method: "tools/call",
+      params: { name: "bundle_summary", arguments: {} }
+    });
+    const summary = JSON.parse(summaryCall.content[0]?.text ?? "null") as {
+      conceptCount: number;
+      warningCount: number;
+      validationStatus: string;
+      validationIssues: Array<Record<string, unknown>>;
+    };
+
+    expect(summaryCall.isError).toBe(false);
+    expect(summaryCall.structuredContent).toEqual(summary);
+    expect(summary).toMatchObject({
+      conceptCount: 2,
+      warningCount: 2,
+      validationStatus: "valid"
+    });
+    expect(summary.validationIssues).toEqual(expectedValidationIssues);
+  });
+
   it("proves deterministic import semantics through validation, graph, CLI, Inspector, and MCP", async () => {
     const root = await tempRoot();
     const firstBundle = path.join(root, "first-bundle");
@@ -131,10 +268,8 @@ describe("committed Obsidian vault behavioral proof", () => {
     const semanticNote = search.getConcept("semantic-note");
     expect(semanticNote?.body).toContain("[inline](./inline.md)");
     expect(semanticNote?.body).toContain("[reference][guide]");
-    expect(semanticNote?.body).toContain("[guide]: ./guide.md \"Guide title\"");
-    expect(semanticNote?.body).toContain(
-      "[installation steps](./guides/setup.md#install)"
-    );
+    expect(semanticNote?.body).toContain('[guide]: ./guide.md "Guide title"');
+    expect(semanticNote?.body).toContain("[installation steps](./guides/setup.md#install)");
     expect(semanticNote?.body).toContain("[install-step](./blocks.md#install-step)");
     expect(semanticNote?.body).toContain("[Overview](./shared-context.md#overview)");
     expect(search.getConcept("blocks")?.body).toContain('<a id="install-step"></a>');
