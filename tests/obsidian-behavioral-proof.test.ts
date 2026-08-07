@@ -24,11 +24,31 @@ type McpTextResult = {
 
 type McpHandler = (request: unknown, extra?: unknown) => Promise<McpTextResult>;
 
+type BundleSummary = {
+  conceptCount: number;
+  warningCount: number;
+  validationStatus: string;
+  validationIssues: Array<Record<string, unknown>>;
+};
+
 function mcpHandler(server: unknown, method: string): McpHandler {
   const handlers = (server as { _requestHandlers: Map<string, McpHandler> })._requestHandlers;
   const found = handlers.get(method);
   if (!found) throw new Error(`Missing MCP handler: ${method}`);
   return found;
+}
+
+async function bundleSummary(
+  callTool: McpHandler
+): Promise<{ response: McpTextResult; summary: BundleSummary }> {
+  const response = await callTool({
+    method: "tools/call",
+    params: { name: "bundle_summary", arguments: {} }
+  });
+  return {
+    response,
+    summary: JSON.parse(response.content[0]?.text ?? "null") as BundleSummary
+  };
 }
 
 async function tempRoot(): Promise<string> {
@@ -182,16 +202,7 @@ describe("committed Obsidian vault behavioral proof", () => {
 
     const server = await createMcpServer({ bundleDir: firstBundle, maxResultChars: 20_000 });
     const callTool = mcpHandler(server, "tools/call");
-    const summaryCall = await callTool({
-      method: "tools/call",
-      params: { name: "bundle_summary", arguments: {} }
-    });
-    const summary = JSON.parse(summaryCall.content[0]?.text ?? "null") as {
-      conceptCount: number;
-      warningCount: number;
-      validationStatus: string;
-      validationIssues: Array<Record<string, unknown>>;
-    };
+    const { response: summaryCall, summary } = await bundleSummary(callTool);
 
     expect(summaryCall.isError).toBe(false);
     expect(summaryCall.structuredContent).toEqual(summary);
@@ -201,6 +212,43 @@ describe("committed Obsidian vault behavioral proof", () => {
       validationStatus: "valid"
     });
     expect(summary.validationIssues).toEqual(expectedValidationIssues);
+
+    const sourcePath = path.join(firstBundle, "source.md");
+    const sourceWithOrdinaryLink = `${generatedSource
+      .replace("[Missing Heading](./target.md#missing-heading)", "")
+      .trimEnd()}\n\n[ordinary](./target.md#missing-heading)\n`;
+    await fs.writeFile(sourcePath, sourceWithOrdinaryLink, "utf8");
+
+    const expectedEditedIssues = expectedValidationIssues.filter(
+      (item) => item.rawTarget === "Target#^missing-block"
+    );
+    const editedValidation = await validateBundle(firstBundle);
+    expect(editedValidation).toMatchObject({
+      valid: true,
+      conceptCount: 2,
+      warningCount: 1
+    });
+    expect(editedValidation.issues).toEqual(expectedEditedIssues);
+
+    const editedInspector = await buildBundleInspectorReport(firstBundle);
+    expect(editedInspector.readiness).toMatchObject({
+      validationStatus: "valid",
+      conceptCount: 2,
+      warningCount: 1,
+      brokenLinkCount: 0
+    });
+    expect(editedInspector.sources[0]?.validationIssues).toEqual(expectedEditedIssues);
+
+    const { response: editedSummaryCall, summary: editedSummary } = await bundleSummary(callTool);
+
+    expect(editedSummaryCall.isError).toBe(false);
+    expect(editedSummaryCall.structuredContent).toEqual(editedSummary);
+    expect(editedSummary).toMatchObject({
+      conceptCount: 2,
+      warningCount: 1,
+      validationStatus: "valid"
+    });
+    expect(editedSummary.validationIssues).toEqual(expectedEditedIssues);
   });
 
   it("proves deterministic import semantics through validation, graph, CLI, Inspector, and MCP", async () => {
@@ -309,16 +357,7 @@ describe("committed Obsidian vault behavioral proof", () => {
 
     const server = await createMcpServer({ bundleDir: firstBundle, maxResultChars: 20_000 });
     const callTool = mcpHandler(server, "tools/call");
-    const summaryCall = await callTool({
-      method: "tools/call",
-      params: { name: "bundle_summary", arguments: {} }
-    });
-    const summary = JSON.parse(summaryCall.content[0]?.text ?? "null") as {
-      conceptCount: number;
-      warningCount: number;
-      validationStatus: string;
-      validationIssues: Array<Record<string, unknown>>;
-    };
+    const { response: summaryCall, summary } = await bundleSummary(callTool);
 
     expect(summaryCall.isError).toBe(false);
     expect(summaryCall.structuredContent).toEqual(summary);

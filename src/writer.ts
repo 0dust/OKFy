@@ -264,7 +264,11 @@ function rewriteMarkdownDestination(
 }
 
 type HeadingFragments = Map<string, string>;
-type PendingImportDiagnostic = Omit<PersistedImportDiagnostic, "targetFragmentPresent">;
+type PendingImportDiagnostic = Omit<
+  PersistedImportDiagnostic,
+  "baselineLinkCount" | "targetFragmentPresent"
+>;
+type BaselineImportDiagnostic = Omit<PersistedImportDiagnostic, "targetFragmentPresent">;
 
 function emittedHeadingFragments(document: NormalizedDocument): HeadingFragments {
   const fragments = new Map<string, string>();
@@ -362,9 +366,10 @@ function rewriteLinks(
     const destination = `${relativeMarkdownLink(doc.outputPath, targetOutput)}${
       fragment ? `#${encodeMarkdownFragment(fragment)}` : ""
     }`;
+    const emittedLinkRaw = `[${markdownPlainText(link.text)}](${destination})`;
     addEdit(edits, {
       ...link.range,
-      replacement: `[${markdownPlainText(link.text)}](${destination})`
+      replacement: emittedLinkRaw
     });
     const rawTarget = vaultDiagnosticTarget(link);
     if (fragment && consumeMissingFragment(missingFragments, rawTarget, link.resolvedSourceKey)) {
@@ -376,7 +381,8 @@ function rewriteLinks(
         targetConceptPath: targetOutput,
         targetPath: link.resolvedSourceKey,
         fragmentKind: link.blockId ? "block" : "heading",
-        emittedFragment: fragment
+        emittedFragment: fragment,
+        emittedLinkRaw
       });
     }
   }
@@ -570,7 +576,7 @@ export async function writeOkfBundle(
   );
   const written: string[] = [];
   const concepts: WrittenConcept[] = [];
-  const pendingImportDiagnostics: PendingImportDiagnostic[] = [];
+  const pendingImportDiagnostics: BaselineImportDiagnostic[] = [];
   const diagnosticTargetOutputs = new Set<string>();
   for (const doc of orderedDocs) {
     for (const diagnostic of doc.diagnostics ?? []) {
@@ -589,17 +595,32 @@ export async function writeOkfBundle(
     await fs.mkdir(path.dirname(absolute), { recursive: true });
     const rewritten = rewriteLinks(doc, sourceToOutput, sourceToHeadingFragments);
     const body = withTitle(doc.title, rewritten.markdown);
-    pendingImportDiagnostics.push(...rewritten.diagnostics);
-    if (diagnosticTargetOutputs.has(relPath)) {
+    if (diagnosticTargetOutputs.has(relPath) || rewritten.diagnostics.length > 0) {
       const sourcePath = doc.resource?.split(/[?#]/, 1)[0] ?? doc.sourcePath ?? doc.sourceId;
-      const parsed = parseMarkdown(body, { mdx: /\.mdx$/i.test(sourcePath) });
-      fragmentIndexes.set(
-        relPath,
-        indexDocumentFragments({
-          headings: parsed.headings.map(({ depth, text, slug }) => ({ depth, text, slug })),
-          blockIds: [...parsed.blockIds, ...parsed.htmlAnchors]
-        })
-      );
+      const parsedBody = parseMarkdown(body, { mdx: /\.mdx$/i.test(sourcePath) });
+      if (diagnosticTargetOutputs.has(relPath)) {
+        fragmentIndexes.set(
+          relPath,
+          indexDocumentFragments({
+            headings: parsedBody.headings.map(({ depth, text, slug }) => ({ depth, text, slug })),
+            blockIds: [...parsedBody.blockIds, ...parsedBody.htmlAnchors]
+          })
+        );
+      }
+      if (rewritten.diagnostics.length > 0) {
+        const linkCounts = new Map<string, number>();
+        for (const link of parsedBody.semanticLinks) {
+          if (link.kind !== "markdown") continue;
+          linkCounts.set(link.raw, (linkCounts.get(link.raw) ?? 0) + 1);
+        }
+        for (const diagnostic of rewritten.diagnostics) {
+          const baselineLinkCount = linkCounts.get(diagnostic.emittedLinkRaw) ?? 0;
+          if (baselineLinkCount === 0) {
+            throw new Error(`Unable to persist import diagnostic for ${diagnostic.sourcePath}.`);
+          }
+          pendingImportDiagnostics.push({ ...diagnostic, baselineLinkCount });
+        }
+      }
     }
     await fs.writeFile(absolute, `${frontmatter(doc, timestamp)}${body}\n`, "utf8");
     written.push(relPath);

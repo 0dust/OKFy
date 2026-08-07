@@ -14,6 +14,8 @@ export type PersistedImportDiagnostic = {
   targetPath: string;
   fragmentKind: "heading" | "block";
   emittedFragment: string;
+  emittedLinkRaw: string;
+  baselineLinkCount: number;
   targetFragmentPresent: boolean;
 };
 
@@ -43,6 +45,8 @@ function compareEntries(
     compareText(first.targetPath, second.targetPath) ||
     compareText(first.fragmentKind, second.fragmentKind) ||
     compareText(first.emittedFragment, second.emittedFragment) ||
+    compareText(first.emittedLinkRaw, second.emittedLinkRaw) ||
+    first.baselineLinkCount - second.baselineLinkCount ||
     Number(first.targetFragmentPresent) - Number(second.targetFragmentPresent)
   );
 }
@@ -71,6 +75,10 @@ function parseEntry(value: unknown): PersistedImportDiagnostic | undefined {
     !safeText(value.targetPath) ||
     (value.fragmentKind !== "heading" && value.fragmentKind !== "block") ||
     !safeText(value.emittedFragment) ||
+    !safeText(value.emittedLinkRaw) ||
+    typeof value.baselineLinkCount !== "number" ||
+    !Number.isSafeInteger(value.baselineLinkCount) ||
+    value.baselineLinkCount <= 0 ||
     typeof value.targetFragmentPresent !== "boolean"
   ) {
     return undefined;
@@ -84,6 +92,8 @@ function parseEntry(value: unknown): PersistedImportDiagnostic | undefined {
     targetPath: value.targetPath,
     fragmentKind: value.fragmentKind,
     emittedFragment: value.emittedFragment,
+    emittedLinkRaw: value.emittedLinkRaw,
+    baselineLinkCount: value.baselineLinkCount,
     targetFragmentPresent: value.targetFragmentPresent
   };
 }

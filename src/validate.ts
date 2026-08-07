@@ -184,8 +184,14 @@ function markdownDestination(
   return { targetConcept, fragment: destination.fragment.normalize("NFC") };
 }
 
-function persistedLinkKey(source: string, target: string, fragment: string): string {
-  return `${source}\0${target}\0${fragment}`;
+function persistedLinkKey(
+  source: string,
+  target: string,
+  fragment: string,
+  fragmentKind: "heading" | "block",
+  emittedLinkRaw: string
+): string {
+  return `${source}\0${target}\0${fragment}\0${fragmentKind}\0${emittedLinkRaw}`;
 }
 
 function persistedLinkCounts(
@@ -203,9 +209,17 @@ function persistedLinkCounts(
       if (link.kind !== "markdown") continue;
       const destination = markdownDestination(concept.path, link.target);
       if (!destination) continue;
-      const key = persistedLinkKey(concept.path, destination.targetConcept, destination.fragment);
-      if (!relevantKeys.has(key)) continue;
-      counts.set(key, (counts.get(key) ?? 0) + 1);
+      for (const fragmentKind of ["heading", "block"] as const) {
+        const key = persistedLinkKey(
+          concept.path,
+          destination.targetConcept,
+          destination.fragment,
+          fragmentKind,
+          link.raw
+        );
+        if (!relevantKeys.has(key)) continue;
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
     }
   }
   return counts;
@@ -239,19 +253,22 @@ function persistedImportDiagnostics(
 
   for (const entry of entries) {
     const fragment = sourceFragment(entry.rawTarget);
+    const emittedFragment = entry.emittedFragment.normalize("NFC");
     if (
       !conceptsByPath.has(entry.sourceConceptPath) ||
       !conceptsByPath.has(entry.targetConceptPath) ||
       !fragment ||
       fragment.kind !== entry.fragmentKind ||
-      fragment.emitted !== entry.emittedFragment
+      fragment.emitted !== emittedFragment
     ) {
       continue;
     }
     const key = persistedLinkKey(
       entry.sourceConceptPath,
       entry.targetConceptPath,
-      entry.emittedFragment
+      emittedFragment,
+      entry.fragmentKind,
+      entry.emittedLinkRaw
     );
     const group = groups.get(key);
     if (group) group.push(entry);
@@ -282,9 +299,11 @@ function persistedImportDiagnostics(
 
   for (const [key, group] of groups) {
     const linkCount = linkCounts.get(key) ?? 0;
-    const distinctRawTargets = new Set(group.map((entry) => entry.rawTarget)).size;
-    const replayCount =
-      linkCount < group.length && distinctRawTargets > 1 ? 0 : Math.min(linkCount, group.length);
+    const baselines = new Set(group.map((entry) => entry.baselineLinkCount));
+    if (baselines.size !== 1) continue;
+    const baselineLinkCount = group[0]!.baselineLinkCount;
+    if (baselineLinkCount <= 0 || linkCount !== baselineLinkCount) continue;
+    const replayCount = Math.min(linkCount, group.length);
     for (const entry of group.slice(0, replayCount)) {
       const targetFragments = targetFragmentIndexes.get(entry.targetConceptPath);
       if (

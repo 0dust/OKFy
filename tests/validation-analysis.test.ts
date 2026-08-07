@@ -39,6 +39,27 @@ async function writeConcept(
   );
 }
 
+function importDiagnosticEntry(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    code: "missing_wikilink_fragment",
+    sourceConceptPath: "source.md",
+    sourcePath: "source.md",
+    rawTarget: "Target#Missing",
+    targetConceptPath: "target.md",
+    targetPath: "target.md",
+    fragmentKind: "heading",
+    emittedFragment: "missing",
+    emittedLinkRaw: "[Missing](./target.md#missing)",
+    baselineLinkCount: 1,
+    targetFragmentPresent: false,
+    ...overrides
+  };
+}
+
+function importDiagnosticsManifest(overrides: Record<string, unknown>): string {
+  return JSON.stringify({ schemaVersion: 1, entries: [importDiagnosticEntry(overrides)] });
+}
+
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
 });
@@ -92,27 +113,35 @@ describe("bundle validation analysis", () => {
     },
     {
       name: "an unsafe entry",
-      manifest: JSON.stringify({
-        schemaVersion: 1,
-        entries: [
-          {
-            code: "missing_wikilink_fragment",
-            sourceConceptPath: "../source.md",
-            sourcePath: "source.md",
-            rawTarget: "target#Missing",
-            targetConceptPath: "target.md",
-            targetPath: "target.md",
-            fragmentKind: "heading",
-            emittedFragment: "missing",
-            targetFragmentPresent: false
-          }
-        ]
-      }),
+      manifest: importDiagnosticsManifest({ sourceConceptPath: "../source.md" }),
       message: `${IMPORT_DIAGNOSTICS_FILE} contains an invalid entry.`
-    }
+    },
+    {
+      name: "a missing emittedLinkRaw",
+      manifest: importDiagnosticsManifest({ emittedLinkRaw: undefined }),
+      message: `${IMPORT_DIAGNOSTICS_FILE} contains an invalid entry.`
+    },
+    {
+      name: "an empty emittedLinkRaw",
+      manifest: importDiagnosticsManifest({ emittedLinkRaw: "" }),
+      message: `${IMPORT_DIAGNOSTICS_FILE} contains an invalid entry.`
+    },
+    {
+      name: "a NUL emittedLinkRaw",
+      manifest: importDiagnosticsManifest({ emittedLinkRaw: "[Missing]\0" }),
+      message: `${IMPORT_DIAGNOSTICS_FILE} contains an invalid entry.`
+    },
+    ...[0, -1, 1.5, "1", Number.MAX_SAFE_INTEGER + 1].map((baselineLinkCount) => ({
+      name: `an invalid baselineLinkCount (${String(baselineLinkCount)})`,
+      manifest: importDiagnosticsManifest({ baselineLinkCount }),
+      message: `${IMPORT_DIAGNOSTICS_FILE} contains an invalid entry.`
+    }))
   ])("keeps $name import provenance non-fatal", async ({ manifest, message }) => {
     const bundleDir = await tempBundle();
-    await writeConcept(bundleDir, "source.md", { body: "# Source" });
+    await writeConcept(bundleDir, "source.md", {
+      body: "# Source\n\n[Missing](./target.md#missing)"
+    });
+    await writeConcept(bundleDir, "target.md", { title: "Target", body: "# Target" });
     await fs.writeFile(path.join(bundleDir, IMPORT_DIAGNOSTICS_FILE), manifest, "utf8");
 
     const report = await validateBundle(bundleDir);

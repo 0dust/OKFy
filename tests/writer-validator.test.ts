@@ -217,6 +217,8 @@ describe("writer and validator", () => {
           targetPath: "Target.md",
           fragmentKind: "heading",
           emittedFragment: "absent",
+          emittedLinkRaw: "[Absent](./target.md#absent)",
+          baselineLinkCount: 1,
           targetFragmentPresent: false
         }
       ]
@@ -255,6 +257,109 @@ describe("writer and validator", () => {
     expect(
       repairedReport.issues.filter((item) => item.code === "missing_wikilink_fragment")
     ).toEqual([]);
+  });
+
+  it("does not let an ordinary Markdown link retain a removed converted-link warning", async () => {
+    const root = await tempOut();
+    const input = path.join(root, "vault");
+    const outDir = path.join(root, "bundle");
+    await fs.mkdir(input);
+    await fs.writeFile(
+      path.join(input, "Source.md"),
+      "# Source\n\n[[Target#Absent|converted]]\n",
+      "utf8"
+    );
+    await fs.writeFile(path.join(input, "Target.md"), "# Target\n", "utf8");
+
+    await importLocal({
+      inputPath: input,
+      outDir,
+      force: true,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+
+    const sourcePath = path.join(outDir, "source.md");
+    const convertedSource = await fs.readFile(sourcePath, "utf8");
+    const mixedSource = `${convertedSource.trimEnd()}\n\n[ordinary](./target.md#absent)\n`;
+    await fs.writeFile(sourcePath, mixedSource, "utf8");
+
+    const mixedReport = await validateBundle(outDir);
+    const mixedWarnings = mixedReport.issues.filter(
+      (item) => item.code === "missing_wikilink_fragment"
+    );
+    expect(mixedWarnings).toHaveLength(1);
+
+    await fs.writeFile(
+      sourcePath,
+      mixedSource.replace("\n\n[ordinary](./target.md#absent)\n", "\n"),
+      "utf8"
+    );
+    const ordinaryRemoved = await validateBundle(outDir);
+    expect(
+      ordinaryRemoved.issues.filter((item) => item.code === "missing_wikilink_fragment")
+    ).toEqual(mixedWarnings);
+
+    await fs.writeFile(
+      sourcePath,
+      mixedSource.replace("[converted](./target.md#absent)\n\n", ""),
+      "utf8"
+    );
+    const convertedRemoved = await validateBundle(outDir);
+    expect(
+      convertedRemoved.issues.filter((item) => item.code === "missing_wikilink_fragment")
+    ).toEqual([]);
+  });
+
+  it("suppresses exact-signature warnings when their baseline multiplicity changes", async () => {
+    const root = await tempOut();
+    const input = path.join(root, "vault");
+    const outDir = path.join(root, "bundle");
+    await fs.mkdir(input);
+    await fs.writeFile(
+      path.join(input, "Source.md"),
+      "# Source\n\n[[Target#Absent|same]] [[Target#Absent|same]]\n",
+      "utf8"
+    );
+    await fs.writeFile(path.join(input, "Target.md"), "# Target\n", "utf8");
+
+    await importLocal({
+      inputPath: input,
+      outDir,
+      force: true,
+      timestamp: "2026-06-14T00:00:00.000Z"
+    });
+
+    const manifest = JSON.parse(
+      await fs.readFile(path.join(outDir, IMPORT_DIAGNOSTICS_FILE), "utf8")
+    );
+    expect(manifest.entries).toHaveLength(2);
+    expect(manifest.entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          emittedLinkRaw: "[same](./target.md#absent)",
+          baselineLinkCount: 2
+        })
+      ])
+    );
+    expect(
+      manifest.entries.every(
+        (entry: { baselineLinkCount: number }) => entry.baselineLinkCount === 2
+      )
+    ).toBe(true);
+
+    const fresh = await validateBundle(outDir);
+    expect(fresh.issues.filter((item) => item.code === "missing_wikilink_fragment")).toHaveLength(
+      2
+    );
+
+    const sourcePath = path.join(outDir, "source.md");
+    const source = await fs.readFile(sourcePath, "utf8");
+    const emittedLinkRaw = "[same](./target.md#absent)";
+    expect(source.split(emittedLinkRaw)).toHaveLength(3);
+    await fs.writeFile(sourcePath, source.replace(`${emittedLinkRaw} `, ""), "utf8");
+
+    const edited = await validateBundle(outDir);
+    expect(edited.issues.filter((item) => item.code === "missing_wikilink_fragment")).toEqual([]);
   });
 
   it("replays encoded and generated-anchor fragment warnings with exact source paths", async () => {
@@ -355,7 +460,11 @@ describe("writer and validator", () => {
       "utf8"
     );
     const edited = await validateBundle(outDir);
-    expect(edited.issues.filter((item) => item.code === "missing_wikilink_fragment")).toEqual([]);
+    expect(edited.issues.filter((item) => item.code === "missing_wikilink_fragment")).toEqual(
+      importedFragments
+        .filter((diagnostic) => diagnostic.rawTarget === "Target#Foo Bar")
+        .map(({ sourcePath, ...diagnostic }) => ({ ...diagnostic, path: sourcePath }))
+    );
   });
 
   it("keeps links to source headings correct when a generated H1 has the same title", async () => {
