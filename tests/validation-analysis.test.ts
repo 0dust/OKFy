@@ -1,12 +1,15 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildBundleInspectorReport } from "../src/inspector.js";
 import { IMPORT_DIAGNOSTICS_FILE } from "../src/import-diagnostics.js";
 import { validateBundle } from "../src/validate.js";
 
 const tempDirs: string[] = [];
+const execFileAsync = promisify(execFile);
 
 async function tempBundle(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "okfy-validation-analysis-test-"));
@@ -156,6 +159,61 @@ describe("bundle validation analysis", () => {
       }
     ]);
     expect(report.issues.filter((item) => item.code === "missing_wikilink_fragment")).toEqual([]);
+  });
+
+  it("escapes terminal controls across plain and JSON validation output", async () => {
+    const bundleDir = await tempBundle();
+    await writeConcept(bundleDir, "source.md", {
+      body: "# Source\n\n[Missing](./target.md#missing)"
+    });
+    await writeConcept(bundleDir, "target.md", { title: "Target", body: "# Target" });
+    await fs.writeFile(
+      path.join(bundleDir, IMPORT_DIAGNOSTICS_FILE),
+      importDiagnosticsManifest({
+        sourcePath: "vault/\u001b]52;c;YQ==\u0007source.md",
+        targetPath: "vault/\u009b31mtarget.md"
+      }),
+      "utf8"
+    );
+
+    const cli = path.resolve("dist/cli.js");
+    const { stdout } = await execFileAsync(process.execPath, [cli, "validate", bundleDir]);
+
+    expect({
+      containsEscape: stdout.includes("\u001b"),
+      containsBell: stdout.includes("\u0007"),
+      containsC1: stdout.includes("\u009b")
+    }).toEqual({ containsEscape: false, containsBell: false, containsC1: false });
+    expect(stdout).toBe(
+      [
+        "OKF bundle valid",
+        "Concepts: 2",
+        'WARNING missing_wikilink_fragment vault/\\u001b]52;c;YQ==\\u0007source.md: Missing fragment in Obsidian reference "Target#Missing" from vault/\\u001b]52;c;YQ==\\u0007source.md to vault/\\u009b31mtarget.md.',
+        ""
+      ].join("\n")
+    );
+
+    const { stdout: jsonStdout } = await execFileAsync(process.execPath, [
+      cli,
+      "validate",
+      bundleDir,
+      "--json"
+    ]);
+    expect({
+      containsEscape: jsonStdout.includes("\u001b"),
+      containsBell: jsonStdout.includes("\u0007"),
+      containsC1: jsonStdout.includes("\u009b")
+    }).toEqual({ containsEscape: false, containsBell: false, containsC1: false });
+
+    const jsonReport = JSON.parse(jsonStdout) as {
+      issues: Array<{ code: string; message: string; path?: string; rawTarget?: string }>;
+    };
+    const replayed = jsonReport.issues.find((item) => item.code === "missing_wikilink_fragment");
+    expect(replayed).toMatchObject({
+      path: "vault/\u001b]52;c;YQ==\u0007source.md",
+      rawTarget: "Target#Missing"
+    });
+    expect(replayed?.message).toContain("vault/\u009b31mtarget.md");
   });
 
   it("reports malformed MDX per concept without aborting validation or Inspector", async () => {
