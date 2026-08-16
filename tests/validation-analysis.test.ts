@@ -1,11 +1,15 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildBundleInspectorReport } from "../src/inspector.js";
+import { IMPORT_DIAGNOSTICS_FILE } from "../src/import-diagnostics.js";
 import { validateBundle } from "../src/validate.js";
 
 const tempDirs: string[] = [];
+const execFileAsync = promisify(execFile);
 
 async function tempBundle(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "okfy-validation-analysis-test-"));
@@ -36,6 +40,27 @@ async function writeConcept(
     ].join("\n"),
     "utf8"
   );
+}
+
+function importDiagnosticEntry(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    code: "missing_wikilink_fragment",
+    sourceConceptPath: "source.md",
+    sourcePath: "source.md",
+    rawTarget: "Target#Missing",
+    targetConceptPath: "target.md",
+    targetPath: "target.md",
+    fragmentKind: "heading",
+    emittedFragment: "missing",
+    emittedLinkRaw: "[Missing](./target.md#missing)",
+    baselineLinkCount: 1,
+    targetFragmentPresent: false,
+    ...overrides
+  };
+}
+
+function importDiagnosticsManifest(overrides: Record<string, unknown>): string {
+  return JSON.stringify({ schemaVersion: 1, entries: [importDiagnosticEntry(overrides)] });
 }
 
 afterEach(async () => {
@@ -76,6 +101,119 @@ describe("bundle validation analysis", () => {
         })
       ])
     );
+  });
+
+  it.each([
+    {
+      name: "invalid JSON",
+      manifest: "{",
+      message: `${IMPORT_DIAGNOSTICS_FILE} is not valid JSON.`
+    },
+    {
+      name: "an unsupported schema",
+      manifest: JSON.stringify({ schemaVersion: 2, entries: [] }),
+      message: `${IMPORT_DIAGNOSTICS_FILE} has an unsupported schema.`
+    },
+    {
+      name: "an unsafe entry",
+      manifest: importDiagnosticsManifest({ sourceConceptPath: "../source.md" }),
+      message: `${IMPORT_DIAGNOSTICS_FILE} contains an invalid entry.`
+    },
+    {
+      name: "a missing emittedLinkRaw",
+      manifest: importDiagnosticsManifest({ emittedLinkRaw: undefined }),
+      message: `${IMPORT_DIAGNOSTICS_FILE} contains an invalid entry.`
+    },
+    {
+      name: "an empty emittedLinkRaw",
+      manifest: importDiagnosticsManifest({ emittedLinkRaw: "" }),
+      message: `${IMPORT_DIAGNOSTICS_FILE} contains an invalid entry.`
+    },
+    {
+      name: "a NUL emittedLinkRaw",
+      manifest: importDiagnosticsManifest({ emittedLinkRaw: "[Missing]\0" }),
+      message: `${IMPORT_DIAGNOSTICS_FILE} contains an invalid entry.`
+    },
+    ...[0, -1, 1.5, "1", Number.MAX_SAFE_INTEGER + 1].map((baselineLinkCount) => ({
+      name: `an invalid baselineLinkCount (${String(baselineLinkCount)})`,
+      manifest: importDiagnosticsManifest({ baselineLinkCount }),
+      message: `${IMPORT_DIAGNOSTICS_FILE} contains an invalid entry.`
+    }))
+  ])("keeps $name import provenance non-fatal", async ({ manifest, message }) => {
+    const bundleDir = await tempBundle();
+    await writeConcept(bundleDir, "source.md", {
+      body: "# Source\n\n[Missing](./target.md#missing)"
+    });
+    await writeConcept(bundleDir, "target.md", { title: "Target", body: "# Target" });
+    await fs.writeFile(path.join(bundleDir, IMPORT_DIAGNOSTICS_FILE), manifest, "utf8");
+
+    const report = await validateBundle(bundleDir);
+
+    expect(report.valid).toBe(true);
+    expect(report.issues.filter((item) => item.code === "invalid_import_diagnostics")).toEqual([
+      {
+        severity: "warning",
+        code: "invalid_import_diagnostics",
+        message,
+        path: IMPORT_DIAGNOSTICS_FILE
+      }
+    ]);
+    expect(report.issues.filter((item) => item.code === "missing_wikilink_fragment")).toEqual([]);
+  });
+
+  it("escapes terminal controls across plain and JSON validation output", async () => {
+    const bundleDir = await tempBundle();
+    await writeConcept(bundleDir, "source.md", {
+      body: "# Source\n\n[Missing](./target.md#missing)"
+    });
+    await writeConcept(bundleDir, "target.md", { title: "Target", body: "# Target" });
+    await fs.writeFile(
+      path.join(bundleDir, IMPORT_DIAGNOSTICS_FILE),
+      importDiagnosticsManifest({
+        sourcePath: "vault/\u001b]52;c;YQ==\u0007source.md",
+        targetPath: "vault/\u009b31mtarget.md"
+      }),
+      "utf8"
+    );
+
+    const cli = path.resolve("dist/cli.js");
+    const { stdout } = await execFileAsync(process.execPath, [cli, "validate", bundleDir]);
+
+    expect({
+      containsEscape: stdout.includes("\u001b"),
+      containsBell: stdout.includes("\u0007"),
+      containsC1: stdout.includes("\u009b")
+    }).toEqual({ containsEscape: false, containsBell: false, containsC1: false });
+    expect(stdout).toBe(
+      [
+        "OKF bundle valid",
+        "Concepts: 2",
+        'WARNING missing_wikilink_fragment vault/\\u001b]52;c;YQ==\\u0007source.md: Missing fragment in Obsidian reference "Target#Missing" from vault/\\u001b]52;c;YQ==\\u0007source.md to vault/\\u009b31mtarget.md.',
+        ""
+      ].join("\n")
+    );
+
+    const { stdout: jsonStdout } = await execFileAsync(process.execPath, [
+      cli,
+      "validate",
+      bundleDir,
+      "--json"
+    ]);
+    expect({
+      containsEscape: jsonStdout.includes("\u001b"),
+      containsBell: jsonStdout.includes("\u0007"),
+      containsC1: jsonStdout.includes("\u009b")
+    }).toEqual({ containsEscape: false, containsBell: false, containsC1: false });
+
+    const jsonReport = JSON.parse(jsonStdout) as {
+      issues: Array<{ code: string; message: string; path?: string; rawTarget?: string }>;
+    };
+    const replayed = jsonReport.issues.find((item) => item.code === "missing_wikilink_fragment");
+    expect(replayed).toMatchObject({
+      path: "vault/\u001b]52;c;YQ==\u0007source.md",
+      rawTarget: "Target#Missing"
+    });
+    expect(replayed?.message).toContain("vault/\u009b31mtarget.md");
   });
 
   it("reports malformed MDX per concept without aborting validation or Inspector", async () => {

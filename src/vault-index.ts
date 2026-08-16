@@ -2,7 +2,13 @@ import path from "node:path";
 import GithubSlugger from "github-slugger";
 import { needsGeneratedTitle, slugGeneratedTitle } from "./markdown-title.js";
 import type { DocumentDiagnostic, NormalizedDocument, SemanticLink } from "./types.js";
-import { isVaultDiagnosticCode } from "./vault-diagnostics.js";
+import {
+  compareVaultDiagnostics,
+  isVaultDiagnosticCode,
+  missingFragmentDiagnostic,
+  splitMarkdownFragmentTarget,
+  vaultDiagnosticTarget
+} from "./vault-diagnostics.js";
 
 type VaultEntry = {
   document: NormalizedDocument;
@@ -51,14 +57,6 @@ export function normalizeVaultPath(value: string): string {
 
 function stripMarkdownExtension(value: string): string {
   return value.replace(/\.(?:md|mdx)$/i, "");
-}
-
-function decodeFragment(value: string): string {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
 }
 
 function emptyPathIdentityIndex(): PathIdentityIndex {
@@ -208,14 +206,8 @@ function resolveTarget(
   );
 }
 
-function diagnosticTarget(link: SemanticLink): string {
-  if (link.heading) return `${link.target}#${link.heading}`;
-  if (link.blockId) return `${link.target}#^${link.blockId}`;
-  return link.target;
-}
-
 function unresolvedDiagnostic(sourcePath: string, link: SemanticLink): DocumentDiagnostic {
-  const rawTarget = diagnosticTarget(link);
+  const rawTarget = vaultDiagnosticTarget(link);
   return {
     severity: "warning",
     code: "unresolved_wikilink",
@@ -230,7 +222,7 @@ function ambiguousDiagnostic(
   link: SemanticLink,
   entries: VaultEntry[]
 ): DocumentDiagnostic {
-  const rawTarget = diagnosticTarget(link);
+  const rawTarget = vaultDiagnosticTarget(link);
   const candidates = entries.map((entry) => entry.sourceKey);
   return {
     severity: "warning",
@@ -239,22 +231,6 @@ function ambiguousDiagnostic(
     sourcePath,
     rawTarget,
     candidates
-  };
-}
-
-function fragmentDiagnostic(
-  sourcePath: string,
-  link: SemanticLink,
-  targetPath: string
-): DocumentDiagnostic {
-  const rawTarget = diagnosticTarget(link);
-  return {
-    severity: "warning",
-    code: "missing_wikilink_fragment",
-    message: `Missing fragment in Obsidian reference ${JSON.stringify(rawTarget)} from ${sourcePath} to ${targetPath}.`,
-    sourcePath,
-    rawTarget,
-    candidates: [targetPath]
   };
 }
 
@@ -290,25 +266,26 @@ function resolveLink(
 ): DocumentDiagnostic | undefined {
   if (link.kind === "markdown") {
     if (!includeMarkdownFragments) return undefined;
-    const hash = link.target.indexOf("#");
-    if (hash < 0) return undefined;
-    const target = link.target.slice(0, hash);
-    const fragment = link.target.slice(hash + 1);
-    if (!target || !fragment || /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(target)) return undefined;
+    const destination = splitMarkdownFragmentTarget(link.target);
+    if (!destination) return undefined;
     const outputSourceKey = normalizeVaultPath(entry.document.outputPath ?? entry.sourceKey);
-    const resolution = resolveTarget(index, outputSourceKey, target, {
+    const resolution = resolveTarget(index, outputSourceKey, destination.targetPath, {
       pathKind: "output",
       includeNames: false
     });
     if (resolution.status !== "resolved") return undefined;
-    const decodedFragment = decodeFragment(fragment).normalize("NFC");
+    const decodedFragment = destination.fragment.normalize("NFC");
     if (
       resolution.entry.headings.has(decodedFragment) ||
       resolution.entry.blockIds.has(decodedFragment.replace(/^\^/, ""))
     ) {
       return undefined;
     }
-    return fragmentDiagnostic(entry.sourceKey, link, resolution.entry.sourceKey);
+    return missingFragmentDiagnostic(
+      entry.sourceKey,
+      vaultDiagnosticTarget(link),
+      resolution.entry.sourceKey
+    );
   }
   if (link.kind !== "wikilink" && link.kind !== "note_embed") return undefined;
 
@@ -327,10 +304,18 @@ function resolveLink(
   link.resolution = "resolved";
   link.resolvedSourceKey = resolution.entry.sourceKey;
   if (link.heading && !hasHeading(resolution.entry, link.heading)) {
-    return fragmentDiagnostic(entry.sourceKey, link, resolution.entry.sourceKey);
+    return missingFragmentDiagnostic(
+      entry.sourceKey,
+      vaultDiagnosticTarget(link),
+      resolution.entry.sourceKey
+    );
   }
   if (link.blockId && !resolution.entry.blockIds.has(link.blockId.normalize("NFC"))) {
-    return fragmentDiagnostic(entry.sourceKey, link, resolution.entry.sourceKey);
+    return missingFragmentDiagnostic(
+      entry.sourceKey,
+      vaultDiagnosticTarget(link),
+      resolution.entry.sourceKey
+    );
   }
   return undefined;
 }
@@ -358,15 +343,6 @@ function entryFor(document: NormalizedDocument): VaultEntry | undefined {
   };
 }
 
-function compareDiagnostics(first: DocumentDiagnostic, second: DocumentDiagnostic): number {
-  return (
-    compareText(first.sourcePath, second.sourcePath) ||
-    compareText(first.rawTarget, second.rawTarget) ||
-    compareText(first.code, second.code) ||
-    compareText((first.candidates ?? []).join("\0"), (second.candidates ?? []).join("\0"))
-  );
-}
-
 export function resolveVaultDocuments(
   documents: NormalizedDocument[],
   options: { includeMarkdownFragments?: boolean } = {}
@@ -386,7 +362,7 @@ export function resolveVaultDocuments(
       const diagnostic = resolveLink(entry, link, index, Boolean(options.includeMarkdownFragments));
       if (diagnostic) documentDiagnostics.push(diagnostic);
     }
-    documentDiagnostics.sort(compareDiagnostics);
+    documentDiagnostics.sort(compareVaultDiagnostics);
     entry.document.diagnostics = documentDiagnostics;
     diagnostics.push(...documentDiagnostics);
   }
@@ -401,5 +377,5 @@ export function resolveVaultDocuments(
     );
   }
 
-  return diagnostics.sort(compareDiagnostics);
+  return diagnostics.sort(compareVaultDiagnostics);
 }

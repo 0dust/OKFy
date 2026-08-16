@@ -4,7 +4,19 @@ import path from "node:path";
 import GithubSlugger from "github-slugger";
 import { dump } from "js-yaml";
 import { needsGeneratedTitle, slugGeneratedTitle } from "./markdown-title.js";
+import {
+  IMPORT_DIAGNOSTICS_FILE,
+  serializeImportDiagnostics,
+  type PersistedImportDiagnostic
+} from "./import-diagnostics.js";
+import { parseMarkdown } from "./markdown-ast.js";
 import { isReservedOkfPath } from "./okf.js";
+import {
+  fragmentIndexContains,
+  indexDocumentFragments,
+  vaultDiagnosticTarget,
+  type DocumentFragmentIndex
+} from "./vault-diagnostics.js";
 import { canonicalizeUrl } from "./util/url.js";
 import {
   ensureMarkdownPath,
@@ -252,6 +264,11 @@ function rewriteMarkdownDestination(
 }
 
 type HeadingFragments = Map<string, string>;
+type PendingImportDiagnostic = Omit<
+  PersistedImportDiagnostic,
+  "baselineLinkCount" | "targetFragmentPresent"
+>;
+type BaselineImportDiagnostic = Omit<PersistedImportDiagnostic, "targetFragmentPresent">;
 
 function emittedHeadingFragments(document: NormalizedDocument): HeadingFragments {
   const fragments = new Map<string, string>();
@@ -270,15 +287,53 @@ function headingFragment(link: SemanticLink, target: HeadingFragments | undefine
   if (link.blockId) return link.blockId.normalize("NFC");
   const requested = link.heading?.trim().normalize("NFC");
   if (!requested) return "";
-  return target?.get(requested) ?? new GithubSlugger().slug(requested);
+  const emitted = target?.get(requested) ?? new GithubSlugger().slug(requested);
+  return emitted || requested;
+}
+
+function encodeMarkdownFragment(fragment: string): string {
+  return encodeURIComponent(fragment).replace(
+    /[!'()*]/g,
+    (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`
+  );
+}
+
+function missingFragmentCounts(doc: NormalizedDocument): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const diagnostic of doc.diagnostics ?? []) {
+    if (diagnostic.code !== "missing_wikilink_fragment") continue;
+    for (const candidate of diagnostic.candidates ?? []) {
+      const key = `${diagnostic.rawTarget}\0${candidate}`;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+
+function consumeMissingFragment(
+  counts: Map<string, number>,
+  rawTarget: string,
+  target: string
+): boolean {
+  const key = `${rawTarget}\0${target}`;
+  const count = counts.get(key) ?? 0;
+  if (count === 0) return false;
+  if (count === 1) counts.delete(key);
+  else counts.set(key, count - 1);
+  return true;
 }
 
 function rewriteLinks(
   doc: NormalizedDocument,
   sourceToOutput: Map<string, string>,
   sourceToHeadingFragments: Map<string, HeadingFragments>
-): string {
+): {
+  markdown: string;
+  diagnostics: PendingImportDiagnostic[];
+} {
   const edits = new Map<string, TextEdit>();
+  const diagnostics: PendingImportDiagnostic[] = [];
+  const missingFragments = missingFragmentCounts(doc);
 
   for (const block of doc.blockIds ?? []) {
     addEdit(edits, {
@@ -309,15 +364,30 @@ function rewriteLinks(
     if (!targetOutput) continue;
     const fragment = headingFragment(link, sourceToHeadingFragments.get(link.resolvedSourceKey));
     const destination = `${relativeMarkdownLink(doc.outputPath, targetOutput)}${
-      fragment ? `#${fragment}` : ""
+      fragment ? `#${encodeMarkdownFragment(fragment)}` : ""
     }`;
+    const emittedLinkRaw = `[${markdownPlainText(link.text)}](${destination})`;
     addEdit(edits, {
       ...link.range,
-      replacement: `[${markdownPlainText(link.text)}](${destination})`
+      replacement: emittedLinkRaw
     });
+    const rawTarget = vaultDiagnosticTarget(link);
+    if (fragment && consumeMissingFragment(missingFragments, rawTarget, link.resolvedSourceKey)) {
+      diagnostics.push({
+        code: "missing_wikilink_fragment",
+        sourceConceptPath: doc.outputPath,
+        sourcePath: doc.sourcePath ?? doc.sourceId,
+        rawTarget,
+        targetConceptPath: targetOutput,
+        targetPath: link.resolvedSourceKey,
+        fragmentKind: link.blockId ? "block" : "heading",
+        emittedFragment: fragment,
+        emittedLinkRaw
+      });
+    }
   }
 
-  return applyEdits(doc.markdown, edits);
+  return { markdown: applyEdits(doc.markdown, edits), diagnostics };
 }
 
 async function pathExists(target: string): Promise<boolean> {
@@ -506,12 +576,52 @@ export async function writeOkfBundle(
   );
   const written: string[] = [];
   const concepts: WrittenConcept[] = [];
+  const pendingImportDiagnostics: BaselineImportDiagnostic[] = [];
+  const diagnosticTargetOutputs = new Set<string>();
+  for (const doc of orderedDocs) {
+    for (const diagnostic of doc.diagnostics ?? []) {
+      if (diagnostic.code !== "missing_wikilink_fragment") continue;
+      for (const candidate of diagnostic.candidates ?? []) {
+        const targetOutput = sourceToOutput.get(candidate);
+        if (targetOutput) diagnosticTargetOutputs.add(targetOutput);
+      }
+    }
+  }
+  const fragmentIndexes = new Map<string, DocumentFragmentIndex>();
 
   for (const doc of orderedDocs) {
     const relPath = doc.outputPath ?? "index.md";
     const absolute = path.join(options.outDir, relPath);
     await fs.mkdir(path.dirname(absolute), { recursive: true });
-    const body = withTitle(doc.title, rewriteLinks(doc, sourceToOutput, sourceToHeadingFragments));
+    const rewritten = rewriteLinks(doc, sourceToOutput, sourceToHeadingFragments);
+    const body = withTitle(doc.title, rewritten.markdown);
+    if (diagnosticTargetOutputs.has(relPath) || rewritten.diagnostics.length > 0) {
+      const sourcePath = doc.resource?.split(/[?#]/, 1)[0] ?? doc.sourcePath ?? doc.sourceId;
+      const parsedBody = parseMarkdown(body, { mdx: /\.mdx$/i.test(sourcePath) });
+      if (diagnosticTargetOutputs.has(relPath)) {
+        fragmentIndexes.set(
+          relPath,
+          indexDocumentFragments({
+            headings: parsedBody.headings.map(({ depth, text, slug }) => ({ depth, text, slug })),
+            blockIds: [...parsedBody.blockIds, ...parsedBody.htmlAnchors]
+          })
+        );
+      }
+      if (rewritten.diagnostics.length > 0) {
+        const linkCounts = new Map<string, number>();
+        for (const link of parsedBody.semanticLinks) {
+          if (link.kind !== "markdown") continue;
+          linkCounts.set(link.raw, (linkCounts.get(link.raw) ?? 0) + 1);
+        }
+        for (const diagnostic of rewritten.diagnostics) {
+          const baselineLinkCount = linkCounts.get(diagnostic.emittedLinkRaw) ?? 0;
+          if (baselineLinkCount === 0) {
+            throw new Error(`Unable to persist import diagnostic for ${diagnostic.sourcePath}.`);
+          }
+          pendingImportDiagnostics.push({ ...diagnostic, baselineLinkCount });
+        }
+      }
+    }
     await fs.writeFile(absolute, `${frontmatter(doc, timestamp)}${body}\n`, "utf8");
     written.push(relPath);
     concepts.push({
@@ -519,6 +629,30 @@ export async function writeOkfBundle(
       title: titleForPath(relPath, doc.title),
       description: descriptionFromMarkdown(doc.markdown)
     });
+  }
+  const importDiagnostics: PersistedImportDiagnostic[] = pendingImportDiagnostics.map(
+    (diagnostic) => {
+      const targetFragments = fragmentIndexes.get(diagnostic.targetConceptPath);
+      return {
+        ...diagnostic,
+        targetFragmentPresent: targetFragments
+          ? fragmentIndexContains(
+              targetFragments,
+              diagnostic.emittedFragment,
+              diagnostic.fragmentKind
+            )
+          : false
+      };
+    }
+  );
+
+  if (importDiagnostics.length > 0) {
+    await fs.writeFile(
+      path.join(options.outDir, IMPORT_DIAGNOSTICS_FILE),
+      serializeImportDiagnostics(importDiagnostics),
+      "utf8"
+    );
+    written.push(IMPORT_DIAGNOSTICS_FILE);
   }
 
   written.push(await writePlainIndex(options.outDir, ".", concepts, options));

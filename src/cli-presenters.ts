@@ -7,8 +7,35 @@ import type { inspectBundle, validateBundle } from "./validate.js";
 
 const isTty = Boolean(process.stderr.isTTY);
 
+function unicodeEscape(codePoint: number): string {
+  return `\\u${codePoint.toString(16).padStart(4, "0")}`;
+}
+
+function escapeTerminalControls(value: string): string {
+  let escaped = "";
+  for (const character of value) {
+    const codePoint = character.codePointAt(0)!;
+    escaped +=
+      codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)
+        ? unicodeEscape(codePoint)
+        : character;
+  }
+  return escaped;
+}
+
+function terminalSafeJson(value: unknown): string | undefined {
+  const serialized = JSON.stringify(value, null, 2);
+  if (serialized === undefined) return undefined;
+  let escaped = "";
+  for (const character of serialized) {
+    const codePoint = character.codePointAt(0)!;
+    escaped += codePoint >= 0x7f && codePoint <= 0x9f ? unicodeEscape(codePoint) : character;
+  }
+  return escaped;
+}
+
 export function printJson(value: unknown): void {
-  console.log(JSON.stringify(value, null, 2));
+  console.log(terminalSafeJson(value));
 }
 
 export function printSourceRows(rows: Array<Record<string, unknown>>): void {
@@ -33,15 +60,16 @@ export function printValidation(
   json: boolean
 ): void {
   if (json) {
-    console.log(JSON.stringify(report, null, 2));
+    printJson(report);
     return;
   }
   console.log(report.valid ? pc.green("OKF bundle valid") : pc.red("OKF bundle invalid"));
   console.log(`Concepts: ${report.conceptCount}`);
   for (const item of report.issues) {
     const color = item.severity === "error" ? pc.red : pc.yellow;
+    const itemPath = item.path ? ` ${escapeTerminalControls(item.path)}` : "";
     console.log(
-      `${color(item.severity.toUpperCase())} ${item.code}${item.path ? ` ${item.path}` : ""}: ${item.message}`
+      `${color(item.severity.toUpperCase())} ${item.code}${itemPath}: ${escapeTerminalControls(item.message)}`
     );
   }
 }
